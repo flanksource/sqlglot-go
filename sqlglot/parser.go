@@ -116,6 +116,10 @@ func (p *parser) at(tt TokenType) bool {
 	return c != nil && c.Type == tt
 }
 
+func (p *parser) atStatementEnd() bool {
+	return p.curr() == nil || p.at(TokSEMICOLON)
+}
+
 func (p *parser) atAny(tts ...TokenType) bool {
 	c := p.curr()
 	if c == nil {

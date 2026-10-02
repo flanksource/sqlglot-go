@@ -399,7 +399,7 @@ func (p *parser) parseCreate() (*Expression, error) {
 		clone = New("Clone",
 			Arg{"this", source}, Arg{"shallow", shallow}, Arg{"copy", false})
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		// A VIEW has no properties of its own left to try after this point --
 		// the reference's own give-up, `CREATE VIEW v AS SELECT ... WITH
 		// CHECK OPTION`, which this port has no node for. A TABLE still has
@@ -944,7 +944,7 @@ func (p *parser) parseInsert() (*Expression, error) {
 			return nil, err
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("INSERT with more than this port reads")
 	}
 

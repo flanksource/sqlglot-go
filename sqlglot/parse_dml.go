@@ -101,7 +101,7 @@ func (p *parser) parseUpdate() (*Expression, error) {
 			node.Set("options", options)
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("UPDATE with more than this port reads")
 	}
 	return node, nil
@@ -325,7 +325,7 @@ func (p *parser) parseDelete() (*Expression, error) {
 		node.Set("limit", New("Limit", Arg{"this", nil}, Arg{"expression", count},
 			Arg{"limit_options", p.parseLimitOptions()}, Arg{"expressions", nil}))
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("DELETE with more than this port reads")
 	}
 	return node, nil
