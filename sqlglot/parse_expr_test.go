@@ -3085,7 +3085,7 @@ func TestInsertAndDrop(t *testing.T) {
 		}
 	}
 	for _, sql := range []string{
-		"INSERT INTO t", "INSERT t VALUES (1)", "INSERT INTO t VALUES 1",
+		"INSERT INTO t", "INSERT t", "INSERT INTO t VALUES 1",
 		"INSERT INTO t (a VALUES (1)", "DROP TABLE",
 		// A kind the reference has no CREATABLE for is raw text there and a
 		// refusal here.
@@ -3444,6 +3444,10 @@ func TestMerge(t *testing.T) {
 		{"a locking hint with no alias", "",
 			"MERGE INTO mytable WITH (HOLDLOCK) USING m AS S ON id = S.id WHEN MATCHED THEN DELETE",
 			"MERGE INTO mytable WITH (HOLDLOCK) USING m AS S ON id = S.id WHEN MATCHED THEN DELETE"},
+		// INTO is optional, as the reference reads it, and always written.
+		{"no INTO", "",
+			"MERGE t USING s ON a = b WHEN MATCHED THEN DELETE",
+			"MERGE INTO t USING s ON a = b WHEN MATCHED THEN DELETE"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, err := ParseOne(tc.sql, tc.dialect)
@@ -3467,7 +3471,6 @@ func TestMerge(t *testing.T) {
 		"MERGE INTO t WITH (HOLDLOCK) AS 5 USING s ON a = b WHEN MATCHED THEN DELETE",
 		"MERGE INTO t USING s ON a = b",
 		"MERGE INTO t USING s ON a = b WHEN MATCHED THEN TRUNCATE",
-		"MERGE t USING s ON a = b WHEN MATCHED THEN DELETE",
 	} {
 		if _, err := ParseOne(sql, ""); err == nil {
 			t.Errorf("ParseOne(%q) was read; it should be refused", sql)
@@ -12323,10 +12326,11 @@ func TestDateDiffAndDateName(t *testing.T) {
 		}
 	}
 	// DATEDIFF's start date, read as an INTEGER rather than a date-like
-	// string, is a shape the reference builds by counting days from 1900:
-	// not yet implemented, and refused rather than approximated.
-	if _, err := ParseOne("SELECT DATEDIFF(HOUR, 1, '2021-01-01')", "tsql"); err == nil {
-		t.Error("DATEDIFF over an integer date was read; it should be refused")
+	// string, is that many days after 1900-01-01, as the reference builds it.
+	if tree, err := ParseOne("SELECT DATEDIFF(HOUR, 1, '2021-01-01')", "tsql"); err != nil {
+		t.Errorf("DATEDIFF over an integer date: %v", err)
+	} else if got, err := Generate(tree, "tsql"); err != nil || got != "SELECT DATEDIFF(HOUR, CAST('1900-01-02' AS DATETIME2), CAST('2021-01-01' AS DATETIME2))" {
+		t.Errorf("DATEDIFF over an integer date wrote %q (%v)", got, err)
 	}
 	for _, c := range []struct{ sql, dialect string }{
 		{"SELECT DATEDIFF(WEEK, d2)", "tsql"},

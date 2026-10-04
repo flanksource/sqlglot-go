@@ -5090,6 +5090,10 @@ EXTRA_SHAPES = {
         (("this", "expression"), (("position", "BOTH"),)),
         (("this", "expression"), (("position", "LEADING"),)),
         (("this", "expression"), (("position", "TRAILING"),)),
+        # T-SQL's LTRIM(x) / RTRIM(x): a side and no characters to trim. The
+        # corpus never writes one, so no spelling was probed for either.
+        (("this",), (("position", "LEADING"),)),
+        (("this",), (("position", "TRAILING"),)),
     ],
     "Substring": [(("this",), ()), (("this", "start"), ()), (("this", "start", "length"), ())],
     # The storage format a table is written in. The corpus writes it only in
@@ -5134,7 +5138,9 @@ EXTRA_SHAPES = {
     # one, so no shape was observed for it -- and the port reads both.
     "IfBlock": [(("this", "true", "false"), ())],
     "Ceil": [(("this", "to"), ())],
-    "Floor": [(("this", "to"), ())],
+    # And a bare FLOOR(x): the T-SQL corpus writes FLOOR only with a TO
+    # unit, so the plain call had no spelling there.
+    "Floor": [(("this", "to"), ()), (("this",), ())],
 }
 
 

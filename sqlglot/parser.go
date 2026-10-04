@@ -117,7 +117,21 @@ func (p *parser) at(tt TokenType) bool {
 }
 
 func (p *parser) atStatementEnd() bool {
-	return p.curr() == nil || p.at(TokSEMICOLON)
+	return p.curr() == nil || p.at(TokSEMICOLON) || p.atNextStatement()
+}
+
+// atNextStatement reports a T-SQL statement beginning where the previous one
+// stopped. The semicolon is optional in a T-SQL batch -- `DECLARE @x INT
+// SET @x = 1 EXEC p @x` is three statements -- so the keyword that opens the
+// next one ends this one. Every statement reads its own clauses before asking,
+// so a keyword that belongs to it (INSERT … SELECT, UNION SELECT) has already
+// been consumed by then.
+func (p *parser) atNextStatement() bool {
+	if p.dialect != "tsql" {
+		return false
+	}
+	return p.atAny(TokSELECT, TokINSERT, TokUPDATE, TokDELETE, TokMERGE, TokEXECUTE, TokDECLARE, TokSET) ||
+		p.atWords("IF")
 }
 
 func (p *parser) atAny(tts ...TokenType) bool {
@@ -216,6 +230,9 @@ func (p *parser) parseOne() (*Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.atNextStatement() {
+		return p.finishStatementBlock([]*Expression{this})
+	}
 	if !p.match(TokSEMICOLON) || p.curr() == nil {
 		if p.curr() != nil {
 			return nil, p.unsupported("trailing tokens")
@@ -245,7 +262,7 @@ func (p *parser) finishStatementBlock(batch []*Expression) (*Expression, error) 
 	switch {
 	case p.curr() == nil:
 		return New("Block", Arg{"expressions", batch}), nil
-	case p.match(TokSEMICOLON):
+	case p.match(TokSEMICOLON), p.atNextStatement():
 		return p.finishStatementBlock(batch)
 	default:
 		return nil, p.unsupported("trailing tokens")

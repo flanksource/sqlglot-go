@@ -181,6 +181,9 @@ func init() {
 		"TriggerProperties":                   (*generator).writeTriggerProperties,
 		"TriggerEvent":                        (*generator).writeTriggerEvent,
 		"TriggerExecute":                      (*generator).writeTriggerExecute,
+		"OutputParameter":                     (*generator).writeOutputParameter,
+		"Execute":                             (*generator).writeExecute,
+		"ExecuteSql":                          (*generator).writeExecute,
 		"MacroOverload":                       (*generator).writeMacroOverload,
 		"AlterSet":                            (*generator).writeAlterSet,
 		"Partition":                           (*generator).writePartition,
@@ -7472,6 +7475,26 @@ func (g *generator) writeTriggerEvent(e *Expression) string {
 // writes only the one spelling.
 func (g *generator) writeTriggerExecute(e *Expression) string {
 	return "EXECUTE FUNCTION " + g.child(e, "this")
+}
+
+// writeOutputParameter writes a T-SQL EXEC argument that receives a value
+// back from the procedure: the variable, marked OUTPUT.
+func (g *generator) writeOutputParameter(e *Expression) string {
+	return g.child(e, "this") + " OUTPUT"
+}
+
+// writeExecute writes a procedure call that passes no arguments, which the
+// probed templates never saw: the reference T-SQL generator's execute_sql,
+// `EXECUTE [@status = ]proc`. A call with arguments is spelled as probed.
+func (g *generator) writeExecute(e *Expression) string {
+	if args, _ := e.Args["expressions"].([]*Expression); len(args) > 0 || !g.tables.ExecuteBuildsExecute {
+		return g.spell(e)
+	}
+	out := "EXECUTE "
+	if status := g.child(e, "return_status"); status != "" {
+		out += status + " = "
+	}
+	return out + g.child(e, "this")
 }
 
 // writeWithinGroup writes the ordering an ordered-set aggregate is computed

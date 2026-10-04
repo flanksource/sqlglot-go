@@ -799,10 +799,9 @@ func (p *parser) parseInsert() (*Expression, error) {
 		), nil
 	}
 
-	// INTO is optional after OVERWRITE, where TABLE takes its place.
-	if !p.match(TokINTO) && !p.atWords("TABLE") {
-		return nil, p.unsupported("INSERT without INTO")
-	}
+	// INTO is optional, as T-SQL and the reference have it -- after
+	// OVERWRITE, TABLE takes its place -- and always written.
+	p.match(TokINTO)
 	if p.atWords("TABLE") {
 		p.advance()
 	}
@@ -4643,7 +4642,7 @@ func (p *parser) parseSet() (*Expression, error) {
 			break
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("SET with more than this port reads")
 	}
 	return New("Set", Arg{"expressions", items},
@@ -6104,7 +6103,7 @@ func (p *parser) parseDeclare() (*Expression, error) {
 	if err != nil {
 		p.index = mark
 	}
-	if err != nil || len(items) == 0 || p.curr() != nil {
+	if err != nil || len(items) == 0 || !p.atStatementEnd() {
 		return p.parseAsCommand(start), nil
 	}
 	return New("Declare", Arg{"expressions", items}, Arg{"replace", replace}), nil
@@ -6241,9 +6240,9 @@ func (p *parser) parseExecute() (*Expression, error) {
 		return nil, err
 	}
 	var args []*Expression
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		for {
-			arg, err := p.parseExpression()
+			arg, err := p.parseExecuteArgument()
 			if err != nil {
 				return nil, err
 			}
@@ -6253,7 +6252,7 @@ func (p *parser) parseExecute() (*Expression, error) {
 			}
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("EXECUTE with more than this port reads")
 	}
 
@@ -6268,6 +6267,45 @@ func (p *parser) parseExecute() (*Expression, error) {
 		node.Set("return_status", returnStatus)
 	}
 	return node, nil
+}
+
+// parseExecuteArgument reads one procedure argument, `value` or `@name =
+// value`, where a variable may be marked OUTPUT (or OUT) to receive what the
+// procedure writes back. The reference stops at the marker; T-SQL needs it on
+// every output parameter, so the port reads it into an OutputParameter
+// around the variable, keeping a named argument's EQ intact.
+func (p *parser) parseExecuteArgument() (*Expression, error) {
+	arg, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if !p.atAny(TokRETURNING, TokOUT) || !p.atWordsAny("OUTPUT", "OUT") {
+		return arg, nil
+	}
+	p.advance()
+	target := arg
+	if arg.Class == "EQ" {
+		target, _ = arg.Args["expression"].(*Expression)
+	}
+	if target == nil || target.Class != "Parameter" {
+		return nil, p.unsupported("an OUTPUT argument that is not a variable")
+	}
+	output := New("OutputParameter", Arg{"this", target})
+	if arg.Class == "EQ" {
+		arg.Set("expression", output)
+		return arg, nil
+	}
+	return output, nil
+}
+
+// atWordsAny reports whether the current token spells one of the words.
+func (p *parser) atWordsAny(words ...string) bool {
+	for _, word := range words {
+		if p.atWords(word) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseShow reads the phrases this dialect gives SHOW a statement for. The
