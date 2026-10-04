@@ -1220,6 +1220,24 @@ func (p *parser) parsePrimary() (*Expression, error) {
 		return p.dotted(widget), nil
 	}
 
+	// T-SQL accepts the ODBC scalar-function escape `{fn CURDATE()}` and
+	// runs the call inside it. The reference reads the braces as a struct and
+	// stops at the missing colon; the port reads the call, since the escape
+	// adds nothing but the braces.
+	if c.Type == TokL_BRACE && p.dialect == "tsql" {
+		if n := p.next(); n != nil && n.Type != TokIDENTIFIER && strings.EqualFold(n.Text, "fn") {
+			p.advance()
+			p.advance()
+			call, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			if !p.match(TokR_BRACE) {
+				return nil, p.unsupported("an ODBC function escape without }")
+			}
+			return p.dotted(call), nil
+		}
+	}
 	// `{'a': 1, 'b': x}` is a Struct whose items are PropertyEQ: the key is an
 	// IDENTIFIER even though it is written as a string.
 	if c.Type == TokL_BRACE {
@@ -4333,6 +4351,14 @@ func (p *parser) parseParameter() *Expression {
 		return nil
 	}
 	n := p.next()
+	// T-SQL's system functions are `@@name`, which a dialect with no `@@`
+	// token reads as two `@`s: the reference reads the second as a Parameter
+	// of its own, the name of the first.
+	if c.Text == "@" && n != nil && n.Type == TokPARAMETER && n.Text == "@" &&
+		p.tables.Placeholder.AtName == "Parameter" && isParameterName(p.peekAt(2)) {
+		p.advance()
+		return New("Parameter", Arg{"this", p.parseParameter()})
+	}
 	// A QUOTED name counts here too: `@"x"` is a Parameter named `x`, an
 	// Identifier rather than the Var a bare word would give -- and `$"foo"`
 	// the same Placeholder a bare `$foo` would, its quotes just dropped.

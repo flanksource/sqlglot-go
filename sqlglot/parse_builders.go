@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Builders that READ the arguments they are handed.
@@ -65,6 +66,10 @@ func hasDateField(s string) bool {
 	return strings.ContainsAny(s, "dDmMyYhHsS")
 }
 
+// tsqlEpoch is the reference's DEFAULT_START_DATE: the date T-SQL reads the
+// integer 0 as.
+var tsqlEpoch = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // buildDateDiff is T-SQL's DATEDIFF and DATEDIFF_BIG:
 // DATEDIFF(unit, start, end) reads as DateDiff(this=end, expression=start,
 // unit=Var(unit)) -- the two dates SWAP position, and each is wrapped in
@@ -87,11 +92,19 @@ func (p *parser) buildDateDiff(upper string, args []*Expression, bigInt bool) (*
 	if start != nil && start.Class == "Literal" {
 		if isString, _ := start.Args["is_string"].(bool); !isString {
 			if isIntegerLiteral(start) {
-				return nil, p.unsupported("function " + upper + " over an integer date")
+				// An integer is that many days after 1900-01-01, T-SQL's
+				// epoch; the reference turns it into that date as a string
+				// and goes on as it does for any other start date.
+				days, err := strconv.Atoi(start.Name())
+				if err != nil {
+					return nil, p.unsupported("function " + upper + " over an integer date out of range")
+				}
+				start = New("Literal", Arg{"this", tsqlEpoch.AddDate(0, 0, days).Format("2006-01-02")}, Arg{"is_string", true})
+			} else {
+				return New("DateDiff",
+					Arg{"this", end}, Arg{"expression", start},
+					Arg{"unit", unitVar}, Arg{"big_int", bigInt}), nil
 			}
-			return New("DateDiff",
-				Arg{"this", end}, Arg{"expression", start},
-				Arg{"unit", unitVar}, Arg{"big_int", bigInt}), nil
 		}
 	}
 	return New("DateDiff",

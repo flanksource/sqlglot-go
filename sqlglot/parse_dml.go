@@ -57,7 +57,7 @@ func (p *parser) parseUpdate() (*Expression, error) {
 		return nil, err
 	}
 	if p.at(TokFROM) {
-		from, err := p.parseFrom()
+		from, err := p.parseFromWithJoins()
 		if err != nil {
 			return nil, err
 		}
@@ -105,6 +105,24 @@ func (p *parser) parseUpdate() (*Expression, error) {
 		return nil, p.unsupported("UPDATE with more than this port reads")
 	}
 	return node, nil
+}
+
+// parseFromWithJoins reads an UPDATE's FROM clause. T-SQL's `UPDATE a SET …
+// FROM t AS a JOIN u ON …` joins in it, and the reference reads that FROM
+// with joins=True, which hangs them off the FROM's table, as DELETE does.
+func (p *parser) parseFromWithJoins() (*Expression, error) {
+	from, err := p.parseFrom()
+	if err != nil {
+		return nil, err
+	}
+	joins, err := p.parseJoins()
+	if err != nil {
+		return nil, err
+	}
+	if len(joins) > 0 {
+		from.This().Set("joins", joins)
+	}
+	return from, nil
 }
 
 // parseAssignments reads the `a = 1, b = 2` of a SET clause. Each is an
@@ -331,7 +349,8 @@ func (p *parser) parseDelete() (*Expression, error) {
 	return node, nil
 }
 
-// parseMerge reads `MERGE INTO <target> USING <source> ON <cond> WHEN ...`.
+// parseMerge reads `MERGE [INTO] <target> USING <source> ON <cond> WHEN ...`.
+// INTO is optional, as T-SQL and the reference have it; it is always written.
 //
 // Two things are matched against each other and the WHENs say what to do about
 // each outcome, so the branches are where the statement's meaning is. DuckDB
@@ -344,9 +363,7 @@ func (p *parser) parseDelete() (*Expression, error) {
 func (p *parser) parseMerge(nested bool) (*Expression, error) {
 	p.advance() // MERGE
 
-	if !p.match(TokINTO) {
-		return nil, p.unsupported("MERGE without INTO")
-	}
+	p.match(TokINTO)
 	target, err := p.parseTable()
 	if err != nil {
 		return nil, err
@@ -419,7 +436,7 @@ func (p *parser) parseMerge(nested bool) (*Expression, error) {
 	if err := p.readReturning(node); err != nil {
 		return nil, err
 	}
-	if !nested && p.curr() != nil {
+	if !nested && !p.atStatementEnd() {
 		return nil, p.unsupported("MERGE with more than this port reads")
 	}
 	return node, nil
