@@ -6,3 +6,4 @@ cover.out
 # named test; these are pathological strings that prove nothing and cost
 # thirteen seconds on every run of the suite.
 sqlglot/testdata/fuzz/
+!sqlglot/parser_gen.go
