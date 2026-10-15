@@ -3,7 +3,7 @@ package harness
 import (
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 // The harness must be able to FAIL. A differential test that only ever

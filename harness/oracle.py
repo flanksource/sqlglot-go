@@ -121,6 +121,26 @@ EDGE_CORPUS: tuple[tuple[str, str], ...] = (
     # `IF>''->'\x0b\x0b\x0b'`, which the port misread as a JSON arrow path.
     ("databricks", "IF>''->'x'"),
     ("databricks", "IF 1 THEN 2 ELSE 3"),
+    # T-SQL routine definitions, the forms of testdata/tsql-routines/ the
+    # reference reads into the tree the port does. The forms it misreads --
+    # a single-statement IF branch, RETURN, THROW, a statement body for a
+    # scalar function -- are in docs/upstream-issues.md instead.
+    ("tsql", "CREATE OR ALTER PROCEDURE acme.p @a INT = 5 OUTPUT, @b INT OUT, @t acme.ids READONLY AS SELECT 1"),
+    ("tsql", "CREATE PROCEDURE acme.p (@a INT = 5 OUTPUT) AS SELECT 1"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN SET NOCOUNT ON; SELECT 1; END"),
+    ("tsql", "CREATE PROC acme.p AS BEGIN SELECT 1; END"),
+    ("tsql", "CREATE PROCEDURE acme.p @a INT WITH RECOMPILE, EXECUTE AS OWNER AS SELECT 1"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN CREATE TABLE #t (a INT, b NVARCHAR(10)); DROP TABLE IF EXISTS #t; END"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN SELECT a INTO #t FROM acme.orders; DROP TABLE #t; END"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN INSERT INTO acme.orders (a) SELECT m.dst FROM #map AS m JOIN acme.x AS x ON x.a = m.src; END"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN DECLARE @t TABLE (a INT); END"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN SELECT a FROM acme.orders OPTION (RECOMPILE); END"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN SELECT NEWID(), @@ROWCOUNT; END"),
+    ("tsql", "CREATE PROCEDURE acme.p AS BEGIN SET @n = @@ROWCOUNT; END"),
+    ("tsql", "CREATE FUNCTION acme.f(@a INT) RETURNS TABLE AS RETURN (SELECT id FROM acme.orders WHERE id = @a)"),
+    ("tsql", "IF @a > 1 BEGIN SELECT 1; END"),
+    ("tsql", "SET @label = N'empty'"),
+    ("tsql", "CREATE PROCEDURE [acme].[p] @a INT AS BEGIN UPDATE [acme].[t] SET [x] = @a; END"),
 )
 
 

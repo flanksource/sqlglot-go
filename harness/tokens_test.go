@@ -7,8 +7,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/harness"
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/harness"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 // TestTokensAgainstReference holds the port's tokenizer to the reference's,

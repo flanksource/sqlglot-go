@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 // TestGapReport tallies WHY the port refuses what it refuses.

@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 // TestJSONPathAgainstReference holds the port's JSONPath parser to the

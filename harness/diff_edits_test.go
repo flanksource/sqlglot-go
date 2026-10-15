@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 // TestDiffAgainstReference holds the port's Diff to the reference's own
