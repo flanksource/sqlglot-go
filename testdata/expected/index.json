@@ -1,6 +1,6 @@
 {
  "reference": "ceb5111421e9aa6135f7c650c1995ee19f9528a2",
- "count": 6475,
+ "count": 6491,
  "statements": [
   {
    "key": "1fe3eadc98e6df2d",
@@ -32376,6 +32376,86 @@
    "key": "af29aaa1ab0cfc7f",
    "dialect": "databricks",
    "sql": "IF 1 THEN 2 ELSE 3"
+  },
+  {
+   "key": "18ad1e55b7ca83aa",
+   "dialect": "tsql",
+   "sql": "CREATE OR ALTER PROCEDURE acme.p @a INT = 5 OUTPUT, @b INT OUT, @t acme.ids READONLY AS SELECT 1"
+  },
+  {
+   "key": "90661bf688587874",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p (@a INT = 5 OUTPUT) AS SELECT 1"
+  },
+  {
+   "key": "489e7ad28e9c549b",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN SET NOCOUNT ON; SELECT 1; END"
+  },
+  {
+   "key": "fa1c7526b90d705d",
+   "dialect": "tsql",
+   "sql": "CREATE PROC acme.p AS BEGIN SELECT 1; END"
+  },
+  {
+   "key": "1ce9c8a1fb07634c",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p @a INT WITH RECOMPILE, EXECUTE AS OWNER AS SELECT 1"
+  },
+  {
+   "key": "0ed32ce7f44abe6f",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN CREATE TABLE #t (a INT, b NVARCHAR(10)); DROP TABLE IF EXISTS #t; END"
+  },
+  {
+   "key": "6f53c6de2577cb7c",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN SELECT a INTO #t FROM acme.orders; DROP TABLE #t; END"
+  },
+  {
+   "key": "046bca5d7f3a7bcc",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN INSERT INTO acme.orders (a) SELECT m.dst FROM #map AS m JOIN acme.x AS x ON x.a = m.src; END"
+  },
+  {
+   "key": "bb2c4c6d45f5c429",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN DECLARE @t TABLE (a INT); END"
+  },
+  {
+   "key": "7b3cb7f0e9141a81",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN SELECT a FROM acme.orders OPTION (RECOMPILE); END"
+  },
+  {
+   "key": "5602263da33d40be",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN SELECT NEWID(), @@ROWCOUNT; END"
+  },
+  {
+   "key": "650a75fc03c4cec3",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE acme.p AS BEGIN SET @n = @@ROWCOUNT; END"
+  },
+  {
+   "key": "02c2ad2c3abc52e6",
+   "dialect": "tsql",
+   "sql": "CREATE FUNCTION acme.f(@a INT) RETURNS TABLE AS RETURN (SELECT id FROM acme.orders WHERE id = @a)"
+  },
+  {
+   "key": "a74059107448976f",
+   "dialect": "tsql",
+   "sql": "IF @a > 1 BEGIN SELECT 1; END"
+  },
+  {
+   "key": "7093ccf159fa131e",
+   "dialect": "tsql",
+   "sql": "SET @label = N'empty'"
+  },
+  {
+   "key": "58ba30fde12e435d",
+   "dialect": "tsql",
+   "sql": "CREATE PROCEDURE [acme].[p] @a INT AS BEGIN UPDATE [acme].[t] SET [x] = @a; END"
   }
  ]
 }

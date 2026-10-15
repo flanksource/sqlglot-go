@@ -1,7 +1,7 @@
 {
  "reference": "ceb5111421e9aa6135f7c650c1995ee19f9528a2",
- "total": 6475,
- "matched": 6475,
+ "total": 6491,
+ "matched": 6491,
  "by_dialect": {
   "databricks": {
    "total": 426,
@@ -76,8 +76,8 @@
    "mismatched": 0
   },
   "tsql": {
-   "total": 597,
-   "matched": 597,
+   "total": 613,
+   "matched": 613,
    "unparsed": 0,
    "mismatched": 0
   }
