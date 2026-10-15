@@ -9,7 +9,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 // tally counts one slice of the service corpus.

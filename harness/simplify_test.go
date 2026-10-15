@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/calvinchengx/sqlglot-go/sqlglot"
+	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
 type simplifyPairs struct {
