@@ -68,7 +68,7 @@ Regenerate with `make service`; nothing in it is authored here.
 | Dialect | Tokens | Trees matched | Of | Unparsed | Mismatched |
 |---|---|---|---|---|---|
 | neutral | 997/997 | 997 | 997 | 0 | 0 |
-| tsql | 597/597 | 597 | 597 | 0 | 0 |
+| tsql | 613/613 | 613 | 613 | 0 | 0 |
 | postgres | 857/857 | 857 | 857 | 0 | 0 |
 | duckdb | 1631/1631 | 1631 | 1631 | 0 | 0 |
 | databricks | 426/426 | 426 | 426 | 0 | 0 |
@@ -87,7 +87,7 @@ that matters** and must be zero: it counts statements the port parsed into a
 *different* tree than the reference. Unparsed is the honest size of the gap.
 
 The port also writes SQL back out, and is held to the reference's own output
-string for string: **6,435 of the statements it parses are written back
+string for string: **6,451 of the statements it parses are written back
 identically, none is written wrongly, and none is refused**, and the guard's own rewrite -- inject a row ceiling, emit --
 lands as `TOP 500` in T-SQL and `LIMIT 500` in DuckDB from the same edit to the
 same node. Where a dialect would transform a statement in a way the port does
@@ -99,16 +99,17 @@ The tokenizer is complete and has no gap tier: every statement the reference
 lexes, the port lexes into the same tokens — same types, same text, same line,
 column and offsets, same attached comments. A tokenizer has nowhere to
 legitimately give up, because the parser above it cannot see what it drops.
-The configured reference corpus parses in full: **6,475 of 6,475**, with
+The configured reference corpus parses in full: **6,491 of 6,491**, with
 nothing unparsed. A construct outside that grammar is still an
 `ErrUnsupported`, never a tree that merely looks plausible. That is why
 **mismatched is zero** and is the number to watch.
 
 ## How it is verified
 
-`testdata/expected/` holds 6,475 statements — sqlglot's own `identity.sql`, its
+`testdata/expected/` holds 6,491 statements — sqlglot's own `identity.sql`, its
 **whole** dialect suite, and a set chosen to reach the lexical corners those
-miss — each with the token stream and the tree the reference produced.
+miss (plus the T-SQL routine forms of `testdata/tsql-routines/` the reference
+reads) — each with the token stream and the tree the reference produced.
 
 "Whole" is the part worth stating. sqlglot pins a dialect's behaviour two ways:
 `validate_identity("…")`, a statement that round-trips, and
