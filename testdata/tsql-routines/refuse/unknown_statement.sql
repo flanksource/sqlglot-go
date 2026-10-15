@@ -1,0 +1,6 @@
+CREATE PROCEDURE acme.unknown_statement
+AS
+BEGIN
+    SET NOCOUNT ON;
+    FROBNICATE acme.orders WITH VIGOUR;
+END

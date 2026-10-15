@@ -1,0 +1,10 @@
+CREATE PROCEDURE acme.first_one
+AS
+BEGIN
+    SELECT 1;
+END
+CREATE PROCEDURE acme.second_one
+AS
+BEGIN
+    SELECT 2;
+END

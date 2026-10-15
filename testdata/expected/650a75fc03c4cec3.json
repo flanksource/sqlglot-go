@@ -1,0 +1,300 @@
+{
+ "dialect": "tsql",
+ "rendered": "CREATE PROCEDURE acme.p AS BEGIN SET @n = @@ROWCOUNT; END",
+ "sql": "CREATE PROCEDURE acme.p AS BEGIN SET @n = @@ROWCOUNT; END",
+ "tokens": [
+  {
+   "c": 6,
+   "e": 5,
+   "l": 1,
+   "s": 0,
+   "t": "CREATE",
+   "x": "CREATE"
+  },
+  {
+   "c": 16,
+   "e": 15,
+   "l": 1,
+   "s": 7,
+   "t": "PROCEDURE",
+   "x": "PROCEDURE"
+  },
+  {
+   "c": 21,
+   "e": 20,
+   "l": 1,
+   "s": 17,
+   "t": "VAR",
+   "x": "acme"
+  },
+  {
+   "c": 22,
+   "e": 21,
+   "l": 1,
+   "s": 21,
+   "t": "DOT",
+   "x": "."
+  },
+  {
+   "c": 23,
+   "e": 22,
+   "l": 1,
+   "s": 22,
+   "t": "VAR",
+   "x": "p"
+  },
+  {
+   "c": 26,
+   "e": 25,
+   "l": 1,
+   "s": 24,
+   "t": "ALIAS",
+   "x": "AS"
+  },
+  {
+   "c": 32,
+   "e": 31,
+   "l": 1,
+   "s": 27,
+   "t": "BEGIN",
+   "x": "BEGIN"
+  },
+  {
+   "c": 36,
+   "e": 35,
+   "l": 1,
+   "s": 33,
+   "t": "SET",
+   "x": "SET"
+  },
+  {
+   "c": 38,
+   "e": 37,
+   "l": 1,
+   "s": 37,
+   "t": "PARAMETER",
+   "x": "@"
+  },
+  {
+   "c": 39,
+   "e": 38,
+   "l": 1,
+   "s": 38,
+   "t": "VAR",
+   "x": "n"
+  },
+  {
+   "c": 41,
+   "e": 40,
+   "l": 1,
+   "s": 40,
+   "t": "EQ",
+   "x": "="
+  },
+  {
+   "c": 43,
+   "e": 42,
+   "l": 1,
+   "s": 42,
+   "t": "PARAMETER",
+   "x": "@"
+  },
+  {
+   "c": 44,
+   "e": 43,
+   "l": 1,
+   "s": 43,
+   "t": "PARAMETER",
+   "x": "@"
+  },
+  {
+   "c": 52,
+   "e": 51,
+   "l": 1,
+   "s": 44,
+   "t": "VAR",
+   "x": "ROWCOUNT"
+  },
+  {
+   "c": 53,
+   "e": 52,
+   "l": 1,
+   "s": 52,
+   "t": "SEMICOLON",
+   "x": ";"
+  },
+  {
+   "c": 57,
+   "e": 56,
+   "l": 1,
+   "s": 54,
+   "t": "END",
+   "x": "END"
+  }
+ ],
+ "tree": [
+  {
+   "c": "sqlglot.expressions.ddl.Create"
+  },
+  {
+   "c": "sqlglot.expressions.query.StoredProcedure",
+   "i": 0,
+   "k": "this"
+  },
+  {
+   "c": "sqlglot.expressions.query.Table",
+   "i": 1,
+   "k": "this"
+  },
+  {
+   "c": "sqlglot.expressions.core.Identifier",
+   "i": 2,
+   "k": "this",
+   "m": {
+    "col": 23,
+    "end": 22,
+    "line": 1,
+    "start": 22
+   }
+  },
+  {
+   "i": 3,
+   "k": "this",
+   "v": "p"
+  },
+  {
+   "i": 3,
+   "k": "quoted",
+   "v": false
+  },
+  {
+   "c": "sqlglot.expressions.core.Identifier",
+   "i": 2,
+   "k": "db",
+   "m": {
+    "col": 21,
+    "end": 20,
+    "line": 1,
+    "start": 17
+   }
+  },
+  {
+   "i": 6,
+   "k": "this",
+   "v": "acme"
+  },
+  {
+   "i": 6,
+   "k": "quoted",
+   "v": false
+  },
+  {
+   "i": 0,
+   "k": "kind",
+   "v": "PROCEDURE"
+  },
+  {
+   "i": 0,
+   "k": "replace",
+   "v": false
+  },
+  {
+   "i": 0,
+   "k": "refresh",
+   "v": false
+  },
+  {
+   "i": 0,
+   "k": "unique",
+   "v": false
+  },
+  {
+   "c": "sqlglot.expressions.query.Block",
+   "i": 0,
+   "k": "expression"
+  },
+  {
+   "a": true,
+   "c": "sqlglot.expressions.ddl.Set",
+   "i": 13,
+   "k": "expressions"
+  },
+  {
+   "a": true,
+   "c": "sqlglot.expressions.ddl.SetItem",
+   "i": 14,
+   "k": "expressions"
+  },
+  {
+   "c": "sqlglot.expressions.core.EQ",
+   "i": 15,
+   "k": "this"
+  },
+  {
+   "c": "sqlglot.expressions.core.Parameter",
+   "i": 16,
+   "k": "this"
+  },
+  {
+   "c": "sqlglot.expressions.core.Var",
+   "i": 17,
+   "k": "this"
+  },
+  {
+   "i": 18,
+   "k": "this",
+   "v": "n"
+  },
+  {
+   "c": "sqlglot.expressions.core.Parameter",
+   "i": 16,
+   "k": "expression"
+  },
+  {
+   "c": "sqlglot.expressions.core.Parameter",
+   "i": 20,
+   "k": "this"
+  },
+  {
+   "c": "sqlglot.expressions.core.Var",
+   "i": 21,
+   "k": "this"
+  },
+  {
+   "i": 22,
+   "k": "this",
+   "v": "ROWCOUNT"
+  },
+  {
+   "i": 14,
+   "k": "unset",
+   "v": false
+  },
+  {
+   "i": 14,
+   "k": "tag",
+   "v": false
+  },
+  {
+   "a": true,
+   "c": "sqlglot.expressions.query.EndStatement",
+   "i": 13,
+   "k": "expressions"
+  },
+  {
+   "i": 0,
+   "k": "exists",
+   "v": false
+  },
+  {
+   "i": 0,
+   "k": "begin",
+   "v": true
+  },
+  {
+   "i": 0,
+   "k": "concurrently",
+   "v": false
+  }
+ ]
+}

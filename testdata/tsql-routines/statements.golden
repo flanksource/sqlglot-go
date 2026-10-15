@@ -1,0 +1,167 @@
+bracket_identifiers.sql
+  Create PROCEDURE
+    Update
+    Select
+    EndStatement
+clone_tree_with_remap.sql
+  Create PROCEDURE
+    Set
+    Set
+    Declare
+    IfBlock
+      true:
+        Throw
+    Create TABLE
+    Set
+    Insert
+    Insert
+    Set
+    Insert
+    Insert
+    Select
+    Insert
+    Insert
+    Set
+    Drop
+    Union
+    EndStatement
+comments_everywhere.sql
+  Create PROCEDURE
+    Select
+    EndStatement
+derive_with_guards.sql
+  Create PROCEDURE
+    Set
+    IfBlock
+      true:
+        Return
+    Declare
+    Declare
+    Select
+    IfBlock
+      true:
+        Set
+        Throw
+        EndStatement
+    Insert
+    EndStatement
+if_begin_else.sql
+  Create PROCEDURE
+    Declare
+    IfBlock
+      true:
+        Set
+        Return
+        EndStatement
+      false:
+        IfBlock
+          true:
+            Set
+          false:
+            IfBlock
+              true:
+                Set
+              false:
+                Set
+            EndStatement
+    EndStatement
+if_exists_return.sql
+  Create PROCEDURE
+    Set
+    IfBlock
+      true:
+        Return
+    IfBlock
+      true:
+        Return
+    Update
+    Return
+    EndStatement
+inline_tvf.sql
+  Create FUNCTION
+    Return
+insert_select_join_temp.sql
+  Create PROCEDURE
+    Create TABLE
+    Insert
+    Insert
+    EndStatement
+output_param.sql
+  Create PROCEDURE
+    Set
+    Select
+    Return
+    EndStatement
+param_defaults.sql
+  Create PROCEDURE
+    Select
+scalar_function.sql
+  Create FUNCTION
+    Declare
+    Select
+    IfBlock
+      true:
+        Return
+    Return
+    EndStatement
+scoped_populate.sql
+  Create PROCEDURE
+    Set
+    Declare
+    Insert
+    IfBlock
+      true:
+        Select
+        Return
+        EndStatement
+      false:
+        Block
+          Delete
+          Insert
+          EndStatement
+        EndStatement
+    EndStatement
+select_into_temp.sql
+  Create PROCEDURE
+    Select
+    Select
+    Drop
+    EndStatement
+set_options.sql
+  Create PROCEDURE
+    Set
+    Set
+    Set
+    Set
+    Select
+    EndStatement
+string_with_go_and_semicolons.sql
+  Create PROCEDURE
+    Select
+    Select
+    EndStatement
+temp_table_create_drop.sql
+  Create PROCEDURE
+    Drop
+    Create TABLE
+    Insert
+    Drop
+    EndStatement
+throw.sql
+  Create PROCEDURE
+    IfBlock
+      true:
+        Throw
+    IfBlock
+      true:
+        Throw
+        EndStatement
+    IfBlock
+      true:
+        Throw
+    EndStatement
+with_options.sql
+  Create PROCEDURE
+    Set
+    Select
+    EndStatement
