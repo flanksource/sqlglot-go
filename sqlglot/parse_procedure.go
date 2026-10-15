@@ -74,12 +74,23 @@ func (p *parser) parseProcedureRest(table *Expression, kind string, replace, exi
 	expression := New("Block", Arg{"expressions", []*Expression{nil}})
 	begin := false
 	if p.match(TokALIAS) {
-		begin = p.match(TokBEGIN)
+		// `AS BEGIN TRANSACTION` begins a transaction, not the body's block.
+		begin = p.at(TokBEGIN) && (p.dialect != "tsql" || p.opensBlockAt(p.index))
+		if begin {
+			p.advance()
+		}
 		// A body written as a STRING stays a string: the reference reads
 		// `AS 'DECLARE BEGIN; END'` as a literal and does not look inside it.
 		if c := p.curr(); c != nil && c.Type == TokSTRING {
 			p.advance()
 			expression = New("Literal", Arg{"this", c.Text}, Arg{"is_string", true})
+		} else if p.dialect == "tsql" {
+			// A T-SQL body runs to its END, or to the end of the batch.
+			body, err := p.parseTSQLStatements(begin)
+			if err != nil {
+				return nil, err
+			}
+			expression = body
 		} else {
 			body, err := p.parseProcedureBody()
 			if err != nil {
@@ -111,7 +122,8 @@ func (p *parser) parseProcedureRest(table *Expression, kind string, replace, exi
 }
 
 // endOfBareParameters finds where an unparenthesised parameter list ends: the
-// AS that opens the body, or the end of the statement.
+// WITH of the procedure's options or the AS that opens the body, or the end of
+// the statement.
 func (p *parser) endOfBareParameters() int {
 	depth := 0
 	for i := p.index; i < len(p.tokens); i++ {
@@ -120,7 +132,7 @@ func (p *parser) endOfBareParameters() int {
 			depth++
 		case TokR_PAREN:
 			depth--
-		case TokALIAS:
+		case TokALIAS, TokWITH:
 			if depth == 0 {
 				return i
 			}

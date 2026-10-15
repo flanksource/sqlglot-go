@@ -285,7 +285,9 @@ func (p *parser) parseCreate() (*Expression, error) {
 		// A view may name its columns AND supply the query -- and the AS
 		// between them is optional wherever a query follows directly: the
 		// reference matches it if there, but reads the query either way.
-		if p.match(TokALIAS) || p.at(TokSELECT) || p.at(TokWITH) || p.at(TokL_PAREN) {
+		// In a T-SQL routine body a SELECT there is the next statement.
+		bareQuery := !p.inRoutineBody && (p.at(TokSELECT) || p.at(TokWITH) || p.at(TokL_PAREN))
+		if p.match(TokALIAS) || bareQuery {
 			// Teradata's own LOCKING stands where the query does, before it
 			// rather than after: it says how the QUERY behind the view
 			// takes its lock, not anything about the view itself.
@@ -1173,7 +1175,7 @@ func (p *parser) parseDrop() (*Expression, error) {
 	sync := p.matchUnquotedWord("SYNC")
 	force := p.matchUnquotedWord("FORCE")
 
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("DROP with more than this port reads")
 	}
 	return New("Drop",
@@ -3006,8 +3008,12 @@ func (p *parser) parseFunctionRest(name *Expression, kind string, replace, exist
 		props = New("Properties", Arg{"expressions", properties})
 	}
 	var begin any = false
-	if expression != nil && expression.Class == "Heredoc" {
+	switch {
+	case expression != nil && expression.Class == "Heredoc":
 		begin = nil
+	case expression != nil && expression.Class == "Block":
+		// Only a T-SQL statement body is a Block, opened by BEGIN.
+		begin = true
 	}
 	return New("Create",
 		Arg{"this", this},
@@ -3106,11 +3112,13 @@ func (p *parser) parseFunctionParam() (*Expression, error) {
 		// else that lands there.
 		constraints = append(constraints, mode)
 	}
-	rest, err := p.parseColumnConstraints()
-	if err != nil {
-		return nil, err
+	if !p.tables.ColumnDefaultAfterEquals || p.parameterModeWord() == "" {
+		rest, err := p.parseColumnConstraints()
+		if err != nil {
+			return nil, err
+		}
+		constraints = append(constraints, rest...)
 	}
-	constraints = append(constraints, rest...)
 	if len(constraints) > 0 {
 		def.Set("constraints", constraints)
 	}
@@ -3124,7 +3132,23 @@ func (p *parser) parseFunctionParam() (*Expression, error) {
 		}
 		def.Set("default", value)
 	}
+	// And after that, T-SQL's mode: OUTPUT (or OUT) hands a value back to the
+	// caller, READONLY marks a table-valued parameter. The reference keeps
+	// the word as written.
+	if word := p.parameterModeWord(); p.tables.ColumnDefaultAfterEquals && word != "" {
+		p.advance()
+		def.Set("output", word)
+	}
 	return def, nil
+}
+
+// parameterModeWord is the T-SQL parameter mode at the cursor, as written, or
+// "" when there is none.
+func (p *parser) parameterModeWord() string {
+	if p.atWordsAny("OUT", "OUTPUT", "READONLY") {
+		return p.curr().Text
+	}
+	return ""
 }
 
 // parseParameterMode reads `IN`, `OUT`, `INOUT` or `VARIADIC` when one of them
@@ -3176,6 +3200,15 @@ func (p *parser) parseParameterMode() (mode *Expression, wasModeWord bool) {
 func (p *parser) parseFunctionProperty() (*Expression, error) {
 	if p.atWords("SQL SECURITY") {
 		return p.parseSQLSecurityProperty()
+	}
+	// T-SQL's `WITH SCHEMABINDING` and the other options read as a
+	// procedure's do, as the reference reads them.
+	if p.dialect == "tsql" && p.at(TokWITH) {
+		options, err := p.parseProcedureOptions()
+		if err != nil {
+			return nil, err
+		}
+		return options[0], nil
 	}
 	switch {
 	case p.at(TokLANGUAGE) || p.atWords("LANGUAGE"):
@@ -3390,6 +3423,13 @@ func (p *parser) parseFunctionBody() (body, returns *Expression, err error) {
 				return nil, nil, err
 			}
 			return New("Return", Arg{"this", inner}), nil, nil
+		}
+		// A T-SQL scalar function's body is a block of statements ending in
+		// a RETURN. The reference reads its first statement and stops; the
+		// port reads the block a procedure's BEGIN opens.
+		if p.dialect == "tsql" && p.match(TokBEGIN) {
+			body, err := p.parseTSQLStatements(true)
+			return body, nil, err
 		}
 		if c := p.curr(); c != nil && c.Type == TokSTRING {
 			p.advance()
@@ -4088,7 +4128,7 @@ func (p *parser) parseTruncate() (*Expression, error) {
 		p.advance()
 		node.Set("option", "RESTRICT")
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("TRUNCATE with more than this port reads")
 	}
 	return node, nil
@@ -4860,12 +4900,20 @@ func (p *parser) parseSetValue() (*Expression, error) {
 	// A WORD standing alone here is a Var whatever the tokenizer called it:
 	// `SET XACT_ABORT ON` sets a setting to the word ON, and ON is a keyword
 	// that no expression rule would accept in this position.
-	if n := p.next(); (n == nil || n.Type == TokCOMMA || n.Type == TokSEMICOLON) &&
-		isBareWord(c.Text) && c.Type != TokIDENTIFIER && c.Type != TokSTRING {
+	// In a T-SQL batch the next statement may follow with no semicolon.
+	if n := p.next(); (n == nil || n.Type == TokCOMMA || n.Type == TokSEMICOLON || p.nextBeginsStatement()) &&
+		isBareWord(c.Text) && c.Type != TokIDENTIFIER && !stringTokens[c.Type] {
 		p.advance()
 		return New("Var", Arg{"this", c.Text}), nil
 	}
 	return p.parseExpression()
+}
+
+// stringTokens are the tokens whose text is a string's contents, without the
+// quotes round it: `N'on'` is the string on, never the word ON.
+var stringTokens = map[TokenType]bool{
+	TokSTRING: true, TokNATIONAL_STRING: true, TokUNICODE_STRING: true, TokRAW_STRING: true,
+	TokHEREDOC_STRING: true, TokBIT_STRING: true, TokBYTE_STRING: true, TokHEX_STRING: true,
 }
 
 // isBareWord reports whether a token's text is a word rather than punctuation

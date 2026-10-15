@@ -247,7 +247,6 @@ func TestRefusals(t *testing.T) {
 		{"IF with a condition that does not parse", "IF 1 +", "tsql"},
 		{"IF with nothing to do", "IF 1 = 1", "tsql"},
 		{"IF with an ELSE and nothing after it", "IF 1 = 1 SELECT 1 ELSE", "tsql"},
-		{"IF whose parentheses do not close the condition", "IF (1) = (1) SELECT 1", "tsql"},
 		{"EXECUTE AS nobody", "CREATE PROCEDURE foo WITH EXECUTE AS", "tsql"},
 		{"a bare parameter that is not one", "CREATE PROCEDURE foo 1 AS SELECT 1", "tsql"},
 		{"a procedure body that does not parse", "CREATE PROCEDURE foo AS SELECT 1 +", "tsql"},

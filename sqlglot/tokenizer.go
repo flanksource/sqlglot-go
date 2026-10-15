@@ -50,6 +50,11 @@ type Tokenizer struct {
 	cfg  *Config
 	sql  []rune
 	size int
+	// noCommandPayload keeps a command keyword a token of its own where the
+	// reference swallows the rest of the statement as its text. In a T-SQL
+	// routine `…; END ELSE BEGIN …` is the close of a block and what follows
+	// it, and in a script `GO` separates batches. Set only for those two.
+	noCommandPayload bool
 
 	tokens        []Token
 	start         int
@@ -286,7 +291,7 @@ func (t *Tokenizer) add(tt TokenType, text string, hasText bool) {
 
 	// A command's payload is taken verbatim as a string, but only where a
 	// command can start: at the very beginning, or after a ; or BEGIN.
-	if _, isCommand := t.cfg.Commands[tt]; !isCommand {
+	if _, isCommand := t.cfg.Commands[tt]; !isCommand || t.noCommandPayload {
 		return
 	}
 	if t.peekSet && t.peek == ';' {

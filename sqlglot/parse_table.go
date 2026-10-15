@@ -1431,7 +1431,7 @@ func (p *parser) atTableAliasName() bool {
 	}
 	// START is never an implicit alias when WITH follows: that would swallow
 	// the beginning of a START WITH ... CONNECT BY clause.
-	if p.atWords("START", "WITH") {
+	if p.atWords("START", "WITH") || p.atReservedStatementWord() {
 		return false
 	}
 	if c.Type == TokVAR || c.Type == TokIDENTIFIER {
