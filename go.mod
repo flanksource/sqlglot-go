@@ -1,3 +1,3 @@
-module github.com/calvinchengx/sqlglot-go
+module github.com/flanksource/sqlglot-go
 
 go 1.26
