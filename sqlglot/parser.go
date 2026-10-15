@@ -47,6 +47,14 @@ func ParseOne(sql, dialect string) (*Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+	// T-SQL that opens a BEGIN … END block is read with END as the keyword
+	// that closes it, not as a command swallowing the rest of the statement.
+	if dialect == "tsql" && opensABlock(toks) {
+		tk.noCommandPayload = true
+		if toks, err = tk.Tokenize(sql); err != nil {
+			return nil, err
+		}
+	}
 	cfg := tk.Config()
 	p := &parser{tokens: toks, cfg: cfg, tables: cfg.Tables, dialect: dialect, sql: sql}
 	return p.parseOne()
@@ -83,6 +91,9 @@ type parser struct {
 	// on the parser rather than the tree: it exists only to be read back by
 	// parsePostfix one call later, never serialised.
 	noJoinMark map[*Expression]bool
+	// inRoutineBody marks statements read inside a T-SQL routine body or IF
+	// branch, where more words begin a statement than at the top of a batch.
+	inRoutineBody bool
 }
 
 func (p *parser) curr() *Token {
@@ -130,8 +141,21 @@ func (p *parser) atNextStatement() bool {
 	if p.dialect != "tsql" {
 		return false
 	}
-	return p.atAny(TokSELECT, TokINSERT, TokUPDATE, TokDELETE, TokMERGE, TokEXECUTE, TokDECLARE, TokSET) ||
-		p.atWords("IF")
+	if p.atAny(TokSELECT, TokINSERT, TokUPDATE, TokDELETE, TokMERGE, TokEXECUTE, TokDECLARE, TokSET) ||
+		p.atWords("IF") {
+		return true
+	}
+	// Inside a routine body the statements it holds begin one too, and an
+	// ELSE ends the single statement an IF runs.
+	return p.inRoutineBody && (p.atAny(TokBEGIN, TokCREATE, TokDROP, TokTRUNCATE, TokCOMMIT, TokROLLBACK, TokELSE) ||
+		p.atWords("RETURN") || p.atWords("THROW"))
+}
+
+// nextBeginsStatement is atNextStatement asked of the token after this one.
+func (p *parser) nextBeginsStatement() bool {
+	p.index++
+	defer func() { p.index-- }()
+	return p.curr() != nil && p.atNextStatement()
 }
 
 func (p *parser) atAny(tts ...TokenType) bool {
@@ -295,6 +319,9 @@ func (p *parser) parseStatement() (*Expression, error) {
 	}
 	// A bare IF opens a STATEMENT where the dialect has one.
 	if p.tables.IfIsAStatement && p.atWords("IF") {
+		if p.dialect == "tsql" {
+			return p.parseTSQLIf()
+		}
 		return p.parseIfStatement()
 	}
 	// A bare IF not immediately followed by "(" is not a function call either

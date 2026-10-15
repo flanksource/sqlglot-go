@@ -182,6 +182,7 @@ func init() {
 		"TriggerEvent":                        (*generator).writeTriggerEvent,
 		"TriggerExecute":                      (*generator).writeTriggerExecute,
 		"OutputParameter":                     (*generator).writeOutputParameter,
+		"Throw":                               (*generator).writeThrow,
 		"Execute":                             (*generator).writeExecute,
 		"ExecuteSql":                          (*generator).writeExecute,
 		"MacroOverload":                       (*generator).writeMacroOverload,
@@ -2176,6 +2177,10 @@ func (g *generator) writeColumnDef(e *Expression) string {
 	// is given one.
 	if value := g.child(e, "default"); value != "" {
 		trailing += " = " + value
+	}
+	// And a T-SQL parameter's mode after it: OUTPUT, OUT or READONLY.
+	if output, _ := e.Args["output"].(string); output != "" {
+		trailing += " " + output
 	}
 	// The column's TYPE is not a column list, however deep the struct in it
 	// goes: `a STRUCT<c: MAP<...>>` keeps the field separator inside.
@@ -4230,7 +4235,7 @@ func (g *generator) writeCreate(e *Expression) string {
 	// recorded on the statement rather than on the block, so it is written
 	// here; the END is a statement of the block's own. A procedure with an
 	// EMPTY block has no body to write and no AS either.
-	if kind == "PROCEDURE" {
+	if kind == "PROCEDURE" || kind == "PROC" {
 		body := g.child(e, "expression")
 		if body == "" {
 			return out + afterSchema
@@ -5938,6 +5943,11 @@ func (g *generator) writeFunctionRest(e *Expression, out string) string {
 	for _, part := range afterAs {
 		out += " " + part
 	}
+	// The BEGIN of a statement body is recorded on the statement, as a
+	// procedure's is; its END is the block's last statement.
+	if begin, _ := e.Args["begin"].(bool); begin {
+		out += " BEGIN"
+	}
 	return out + " " + g.node(body)
 }
 
@@ -6149,6 +6159,10 @@ func (g *generator) writeInOutConstraint(e *Expression) string {
 // writeReturn writes what a function hands back. DuckDB writes no word at
 // all, leaving the body where the word would have been.
 func (g *generator) writeReturn(e *Expression) string {
+	// A T-SQL RETURN that leaves without a value.
+	if e.Args["this"] == nil {
+		return g.tables.ReturnWord
+	}
 	if word := g.tables.ReturnWord; word != "" {
 		return word + " " + g.child(e, "this")
 	}
@@ -8344,6 +8358,9 @@ func (g *generator) writeFunctionSpecification(e *Expression) string {
 }
 
 func (g *generator) writeIfBlock(e *Expression) string {
+	if g.dialect == "tsql" {
+		return g.writeTSQLIfBlock(e)
+	}
 	if g.dialect != "trino" {
 		return g.spell(e)
 	}
