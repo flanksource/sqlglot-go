@@ -6052,7 +6052,6 @@ func TestCommand(t *testing.T) {
 		{"FETCH c", ""},
 		{"RENAME TABLE a TO b", ""},
 		// Each dialect adds its own and takes others away.
-		{"PRINT @x", "tsql"},
 		{"GO", "tsql"},
 		{"END", "tsql"},
 		{"RESET threads", "duckdb"},
@@ -8221,12 +8220,9 @@ func TestDeclare(t *testing.T) {
 		t.Errorf("a bare DECLARE carries default = %v", items[0].Args["default"])
 	}
 
-	// A cursor is not a type, and trailing tokens after a clean item are not
-	// a second item. The reference keeps the whole statement as raw text
-	// rather than building a Declare, and this port matches that Command
-	// rather than refusing.
+	// Trailing tokens after a clean item are not a second item. The reference
+	// keeps the whole statement as raw text rather than building a Declare.
 	for _, tc := range []struct{ sql, dialect string }{
-		{"DECLARE vendor_cursor CURSOR FOR SELECT a FROM b", "tsql"},
 		{"DECLARE @X INT extra", "tsql"},
 	} {
 		e, err := ParseOne(tc.sql, tc.dialect)

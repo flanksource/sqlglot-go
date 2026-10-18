@@ -53,7 +53,8 @@ type Tokenizer struct {
 	// noCommandPayload keeps a command keyword a token of its own where the
 	// reference swallows the rest of the statement as its text. In a T-SQL
 	// routine `…; END ELSE BEGIN …` is the close of a block and what follows
-	// it, and in a script `GO` separates batches. Set only for those two.
+	// it, and in a script `GO` separates batches. PRINT also needs its value
+	// tokenized when the parser reads it as a T-SQL statement.
 	noCommandPayload bool
 
 	tokens        []Token

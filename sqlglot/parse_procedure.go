@@ -85,10 +85,20 @@ func (p *parser) parseProcedureRest(table *Expression, kind string, replace, exi
 			p.advance()
 			expression = New("Literal", Arg{"this", c.Text}, Arg{"is_string", true})
 		} else if p.dialect == "tsql" {
-			// A T-SQL body runs to its END, or to the end of the batch.
 			body, err := p.parseTSQLStatements(begin)
 			if err != nil {
 				return nil, err
+			}
+			if begin {
+				for p.match(TokSEMICOLON) {
+				}
+				if p.curr() != nil {
+					tail, err := p.parseTSQLStatements(false)
+					if err != nil {
+						return nil, err
+					}
+					body.Set("expressions", append(body.Args["expressions"].([]*Expression), tail.Args["expressions"].([]*Expression)...))
+				}
 			}
 			expression = body
 		} else {
@@ -99,7 +109,7 @@ func (p *parser) parseProcedureRest(table *Expression, kind string, replace, exi
 			expression = body
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("CREATE PROCEDURE with more than this port reads")
 	}
 	return New("Create",

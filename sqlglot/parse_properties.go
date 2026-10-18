@@ -69,6 +69,14 @@ func (p *parser) parseRisingWaveEncode() (*Expression, bool, error) {
 func (p *parser) parseTableProperties() ([]*Expression, error) {
 	var out []*Expression
 	for {
+		if p.dialect == "tsql" && p.matchUnquotedWord("TEXTIMAGE_ON") {
+			filegroup, err := p.parseIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, New("TextImageOnProperty", Arg{"this", filegroup}))
+			continue
+		}
 		// `PARTITION OF` is not in the generated table of property words: it
 		// carries a whole grammar of its own rather than a word and a shape.
 		if p.atWords("PARTITION", "OF") {
