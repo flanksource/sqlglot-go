@@ -1,6 +1,8 @@
 # sqlglot-go — a Go port of sqlglot, verified against the Python reference.
 #
 #   make doctor     # toolchain
+#   make build      # build the CLI
+#   make install    # install the CLI using Go's GOBIN
 #   make test       # unit tests + the differential run against the reference
 #   make oracle     # regenerate testdata/expected from the pinned sqlglot commit
 #   make coverage   # print per-dialect coverage against the reference
@@ -27,7 +29,7 @@ EXEC_PAIRS ?= $(shell echo $${TMPDIR:-/tmp})/sqlglot-go-exec-pairs.jsonl
 # other stacks is the normal case, and a wedged bind is not worth debugging.
 PGPORT ?= 55433
 
-.PHONY: help doctor test oracle oracle-exec postgres postgres-stop service coverage cover gaps lint clean
+.PHONY: help doctor build install test oracle oracle-exec postgres postgres-stop service coverage cover gaps lint clean
 
 help: ## Show the available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
@@ -37,6 +39,13 @@ doctor: ## Check the toolchain
 	@$(PYTHON) --version || echo "$(PYTHON) NOT found (only needed for make oracle and make service)"
 	@test -d $(SQLGLOT) && echo "reference: $(SQLGLOT) @ $$(git -C $(SQLGLOT) rev-parse --short HEAD)" || echo "reference NOT found at $(SQLGLOT) (only needed for make oracle)"
 	@$(PYTHON) -c 'import duckdb; print("duckdb:", duckdb.__version__)' 2>/dev/null || echo "duckdb NOT found (only needed for make oracle-exec)"
+
+build: ## Build the sqlglot CLI into .tmp/
+	@mkdir -p .tmp
+	go build -o .tmp/sqlglot ./cmd/sqlglot
+
+install: ## Install the sqlglot CLI to GOBIN (or GOPATH/bin)
+	go install ./cmd/sqlglot
 
 test: ## Unit tests and the differential run against the reference
 	go test ./...
