@@ -10516,6 +10516,9 @@ func TestBooleanCoercion(t *testing.T) {
 		{"SELECT 1 FROM t WHERE x", "SELECT 1 FROM t WHERE x <> 0"},
 		{"SELECT 1 FROM t GROUP BY x HAVING x", "SELECT 1 FROM t GROUP BY x HAVING x <> 0"},
 		{"SELECT 1 FROM t WHERE x = 1", "SELECT 1 FROM t WHERE x = 1"},
+		// A LIKE with an ESCAPE is still a LIKE: the reference writes it bare.
+		{"SELECT 1 FROM t WHERE LOWER(r) LIKE @p1 ESCAPE '!' AND x = 1", "SELECT 1 FROM t WHERE LOWER(r) LIKE @p1 ESCAPE '!' AND x = 1"},
+		{"SELECT 1 FROM t WHERE r LIKE 'a!%' ESCAPE '!'", "SELECT 1 FROM t WHERE r LIKE 'a!%' ESCAPE '!'"},
 		// A JOIN's ON, unlike WHERE and HAVING, is left alone at its own top
 		// level -- only a nested AND/OR/NOT operand is compared into one.
 		{"SELECT 1 FROM t JOIN u ON x", "SELECT 1 FROM t JOIN u ON x"},
