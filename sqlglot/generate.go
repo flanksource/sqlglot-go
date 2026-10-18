@@ -93,6 +93,9 @@ type generator struct {
 	// `REGEXP_EXTRACT(a, p)` for a zero group and
 	// `REGEXP_EXTRACT(a, p, 0, 'i')` for the same group beside a flag.
 	spellKeepsZeros bool
+	// inEventPredicate holds while an Extended Events predicate is written,
+	// where a predicate function is a condition as it stands.
+	inEventPredicate bool
 }
 
 // fail records the first failure. Later writers keep running and return empty
@@ -860,7 +863,7 @@ func isCastToNonInteger(e *Expression) bool {
 // `(1 = 1)` -- and everything else takes the comparison around whatever it
 // renders as.
 func (g *generator) requireCondition(e *Expression, keys ...string) {
-	if !g.tables.CoercesBooleans {
+	if !g.tables.CoercesBooleans || g.inEventPredicate {
 		return
 	}
 	for _, key := range keys {

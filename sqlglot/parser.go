@@ -360,6 +360,9 @@ func (p *parser) startsAValuesClause() bool {
 // parseStatementBody reads a statement once any WITH clause in front of it has
 // been taken off.
 func (p *parser) parseStatementBody() (*Expression, error) {
+	if p.atEventSession() {
+		return p.parseEventSession()
+	}
 	if p.at(TokCREATE) {
 		return p.parseCreate()
 	}

@@ -700,6 +700,11 @@ var writeClasses = map[string]bool{
 	"Kill":    true,
 	// REFRESH rebuilds a table or a materialized view.
 	"Refresh": true,
+	// An Extended Events session is a server object, and starting one
+	// changes what the server records.
+	"CreateEventSession": true,
+	"AlterEventSession":  true,
+	"DropEventSession":   true,
 }
 
 // IsWrite reports whether a parsed statement changes anything.
