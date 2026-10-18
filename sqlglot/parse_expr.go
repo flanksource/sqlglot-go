@@ -694,6 +694,9 @@ func (p *parser) parseFactor() (*Expression, error) {
 // parseFactorOperand inserts the exponent level only where the dialect has
 // one, exactly as the reference does.
 func (p *parser) parseFactorOperand() (*Expression, error) {
+	if p.dialect == "sqlite" {
+		return p.parseConcatTier()
+	}
 	if len(p.tables.Exponent) == 0 {
 		return p.parseUnary()
 	}
@@ -899,7 +902,8 @@ func (p *parser) parseColumnOps(this *Expression) (*Expression, error) {
 		}
 		// `->` / `->>` at the accessor tier, binding tighter than arithmetic.
 		// Dialects that read them level with `||` leave them for parseBitwise.
-		if c := p.curr(); c != nil && (c.Type == TokARROW || c.Type == TokDARROW) {
+		// SQLite reads them at its own concat tier instead (parseConcatTier).
+		if c := p.curr(); c != nil && (c.Type == TokARROW || c.Type == TokDARROW) && p.dialect != "sqlite" {
 			if _, atBitwise := p.tables.JSONOperatorsAtBitwise[c.Type]; !atBitwise {
 				var err error
 				this, err = p.consumeJSONArrow(this, p.parseJSONArrowAccessorRHS)
@@ -1240,6 +1244,11 @@ func (p *parser) parsePrimary() (*Expression, error) {
 	}
 	// `{'a': 1, 'b': x}` is a Struct whose items are PropertyEQ: the key is an
 	// IDENTIFIER even though it is written as a string.
+	if c.Type == TokL_BRACE && p.dialect == "clickhouse" {
+		if param, err := p.parseQueryParameter(); param != nil || err != nil {
+			return param, err
+		}
+	}
 	if c.Type == TokL_BRACE {
 		p.advance()
 		var items []*Expression
@@ -1267,6 +1276,9 @@ func (p *parser) parsePrimary() (*Expression, error) {
 		if !p.match(TokR_BRACE) {
 			return nil, p.unsupported("unclosed struct")
 		}
+		if p.dialect == "clickhouse" {
+			return braceMap(items), nil
+		}
 		return New("Struct", Arg{"expressions", items}), nil
 	}
 
@@ -1277,7 +1289,9 @@ func (p *parser) parsePrimary() (*Expression, error) {
 	// is no operand to quantify. The reference builds Anonymous(ALL) and the
 	// port refused, which the generator fuzzer found by writing `ALL()` and
 	// failing to read it back.
-	if (p.at(TokALL) || p.at(TokANY)) && p.next() != nil && p.next().Type == TokL_PAREN &&
+	// ClickHouse has no ANY quantifier: `any(x)` is its aggregate, AnyValue.
+	anyQuantifies := p.dialect != "clickhouse"
+	if (p.at(TokALL) || (p.at(TokANY) && anyQuantifies)) && p.next() != nil && p.next().Type == TokL_PAREN &&
 		p.quantifierHere() {
 		class := "All"
 		if p.at(TokANY) {
@@ -1308,7 +1322,7 @@ func (p *parser) parsePrimary() (*Expression, error) {
 	//
 	// ALL is left alone: `SELECT ALL x` is the quantity modifier rather than
 	// a quantifier, and `ALL()` is a Tuple.
-	if p.at(TokANY) && p.next() != nil && !endsSelectExpression(p.next()) {
+	if anyQuantifies && p.at(TokANY) && p.next() != nil && !endsSelectExpression(p.next()) {
 		p.advance()
 		inner, err := p.parsePrimary()
 		if err != nil {
@@ -2031,6 +2045,7 @@ func (p *parser) parseDataType() (*Expression, error) {
 		return nil, err
 	}
 	p.convertType(dt)
+	p.markNonNullable(dt)
 	// Spark reads a cast to CHAR(n) or VARCHAR(n) as a cast to STRING, and
 	// the reference drops the length everywhere but a column's definition,
 	// members of a nested type included.
@@ -2245,6 +2260,11 @@ func (p *parser) parseBaseDataType() (*Expression, error) {
 				Arg{"kind", named}), nil
 		}
 		return nil, p.unsupported("type " + c.Text)
+	}
+	// `Nullable(T)` is not a type of its own but T marked nullable, in every
+	// dialect: the reference reads the one member and flags it.
+	if c.Type == TokNULLABLE && p.next() != nil && p.next().Type == TokL_PAREN {
+		return p.parseNullableType()
 	}
 	if c.Type == TokMAP && p.next() != nil && p.next().Type == TokL_BRACKET {
 		if dt := p.parseBracketedMapType(); dt != nil {
@@ -2838,6 +2858,9 @@ func (p *parser) parseFunction() (*Expression, error) {
 	}
 	if isJSONPath {
 		if node := p.buildJSONPathFunction(jsonPath, args); node != nil {
+			if p.dialect == "sqlite" && upper == "JSON_EXTRACT" {
+				return sqliteJSONExtract(node), nil
+			}
 			return node, nil
 		}
 		return nil, p.unsupported("function " + upper + " over these arguments")
@@ -2981,6 +3004,11 @@ func (p *parser) parseFunction() (*Expression, error) {
 			}
 		}
 		built := p.buildFunction(upper, spec, args)
+		// The reference's PRESERVE_ORIGINAL_NAMES: the builder's node
+		// remembers the name it was called by, which ClickHouse writes back.
+		if len(p.tables.KeepsOriginalName) > 0 && built != nil {
+			built.Meta = map[string]any{"name": name}
+		}
 		if inner != "" {
 			return New(inner, Arg{"this", built}), nil
 		}
@@ -2993,7 +3021,7 @@ func (p *parser) parseFunction() (*Expression, error) {
 	if quotedName {
 		this = New("Identifier", Arg{"this", name}, Arg{"quoted", true})
 	}
-	return New("Anonymous", Arg{"this", this}, Arg{"expressions", args}), nil
+	return p.parseAggregateCombinator(New("Anonymous", Arg{"this", this}, Arg{"expressions", args}))
 }
 
 // buildFunction fills a function node's arguments from the call's, following
@@ -3058,11 +3086,21 @@ func namedWhereWrapped(keys []FuncArg, args []*Expression) bool {
 		if a.Wrap == "" || a.Index < 0 || a.Index >= len(args) {
 			continue
 		}
-		if args[a.Index].Name() == "" {
+		if wrapName(args[a.Index]) == "" {
 			return false
 		}
 	}
 	return true
+}
+
+// wrapName is the name a wrapper takes from an argument. A call has a name
+// but is not a word: the reference's TimeUnit turns only a column, a literal
+// or a var into its unit, and keeps a call -- `toDateTime(...)` -- as it is.
+func wrapName(e *Expression) string {
+	if e.Class == "Anonymous" {
+		return ""
+	}
+	return e.Name()
 }
 
 // heldAlone is the one argument position a nested wrapper holds, where it
@@ -3290,7 +3328,7 @@ func (p *parser) buildFromSpec(name, class string, keys []FuncArg, args []*Expre
 				// An argument with no NAME to take is kept as the node it is,
 				// where that is what the reference does: PostgreSQL's
 				// DATE_BIN puts a subquery straight into its unit slot.
-				if args[a.Index].Name() == "" {
+				if wrapName(args[a.Index]) == "" {
 					if _, keeps := p.tables.KeepsUnnamedWrapped[strings.ToUpper(name)]; keeps {
 						node.Set(a.Key, args[a.Index])
 						continue
@@ -4166,7 +4204,7 @@ func (p *parser) parseQualifiedName() (*Expression, error) {
 	if quoted {
 		this = New("Identifier", Arg{"this", name}, Arg{"quoted", true})
 	}
-	return New("Anonymous", Arg{"this", this}, Arg{"expressions", args}), nil
+	return p.parseAggregateCombinator(New("Anonymous", Arg{"this", this}, Arg{"expressions", args}))
 }
 
 // parseDotField reads what follows a dot in a chain of accesses: a call, a

@@ -80,6 +80,8 @@ Regenerate with `make service`; nothing in it is authored here.
 | trino | 253/253 | 253 | 253 | 0 | 0 |
 | dremio | 61/61 | 61 | 61 | 0 | 0 |
 | mysql | 638/638 | 638 | 638 | 0 | 0 |
+| sqlite | 256/256 | 232 | 256 | 24 | 0 |
+| clickhouse | 538/538 | 355 | 538 | 183 | 0 |
 <!-- coverage:end -->
 
 Reference: sqlglot `ceb5111421e9` (v30.17.0-64). **Mismatched is the number

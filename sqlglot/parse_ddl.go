@@ -571,6 +571,16 @@ func (p *parser) parseColumnDefs() ([]*Expression, error) {
 		if err != nil {
 			return nil, err
 		}
+		// A bare name, with neither a type nor a constraint, is the name
+		// itself in the reference -- `CREATE TABLE t (x, y)` -- not a
+		// definition of nothing.
+		if kind == nil && len(constraints) == 0 {
+			out = append(out, name)
+			if !p.match(TokCOMMA) {
+				break
+			}
+			continue
+		}
 		def := New("ColumnDef", Arg{"this", name}, Arg{"kind", kind})
 		if len(constraints) > 0 {
 			def.Set("constraints", constraints)
@@ -1074,6 +1084,14 @@ func (p *parser) parseValues() (*Expression, error) {
 				row[i] = New("Var", Arg{"this", strings.ToUpper(member.Name())})
 			}
 		}
+		// ClickHouse reads `VALUES (1, 2, 3)` as ONE column of three rows,
+		// each value its own one-member tuple, where the row is not already
+		// a list of tuples.
+		if p.dialect == "clickhouse" && len(row) > 0 && row[len(row)-1].Class != "Tuple" {
+			for i, member := range row {
+				row[i] = New("Tuple", Arg{"expressions", []*Expression{unnest(member)}})
+			}
+		}
 		rows = append(rows, New("Tuple", Arg{"expressions", row}))
 		if !p.match(TokCOMMA) {
 			break
@@ -1116,6 +1134,10 @@ func (p *parser) parseDrop() (*Expression, error) {
 	}
 	kind := strings.ToUpper(kindToken.Text)
 	p.advance()
+	// Whether the name is a DATABASE reference is read off the word as
+	// written: ClickHouse's DATABASE is recorded as a SCHEMA, but its name is
+	// still read as a table's.
+	written := kind
 	// A dialect may call the same thing another name; the reference records
 	// the name it settles on rather than the word that was written.
 	if renamed, ok := p.tables.CreatableKindNames[kind]; ok {
@@ -1136,7 +1158,7 @@ func (p *parser) parseDrop() (*Expression, error) {
 	// A TABLE or a VIEW may name several at once; everything else names one.
 	var tables []*Expression
 	for {
-		table, err := p.parseDroppedName(kind)
+		table, err := p.parseDroppedName(written)
 		if err != nil {
 			return nil, err
 		}
@@ -1440,6 +1462,10 @@ func (p *parser) parseColumnConstraints() ([]*Expression, error) {
 			}
 		case p.atWords("UNIQUE"):
 			p.advance()
+			if p.standaloneUnique() {
+				kind = New("UniqueColumnConstraint")
+				break
+			}
 			// `NULLS NOT DISTINCT` makes two NULLs equal for the purpose of
 			// the constraint, so a second row holding one is rejected. The
 			// reference keeps only whether the words were there.
@@ -2164,6 +2190,14 @@ func (p *parser) parseAlterAction() (*Expression, error) {
 	case p.at(TokSET):
 		p.advance()
 		return p.parseAlterSet()
+	// ClickHouse's MODIFY COLUMN is the generic ALTER COLUMN; a MODIFY of
+	// anything else sets properties, which is not read here.
+	case p.dialect == "clickhouse" && p.atWords("MODIFY"):
+		p.advance()
+		if !p.match(TokCOLUMN) {
+			return nil, p.unsupported("MODIFY of anything but a COLUMN")
+		}
+		return p.parseAlteredColumn()
 	case p.atWords("MODIFY"), p.atWords("CHANGE"):
 		rename := p.atWords("CHANGE")
 		p.advance()
@@ -3457,6 +3491,11 @@ func (p *parser) parseFunctionBody() (body, returns *Expression, err error) {
 		} else if matched {
 			return heredoc, nil, nil
 		}
+		// ClickHouse's user-defined function IS a lambda: `AS (x) -> x + 1`.
+		if p.dialect == "clickhouse" {
+			inner, err := p.parseCallArgument()
+			return inner, nil, err
+		}
 		inner, err := p.parseReturnBody()
 		if err != nil {
 			return nil, nil, err
@@ -3602,6 +3641,15 @@ func (p *parser) parseGenerated() (*Expression, error) {
 		}
 		if !p.match(TokR_PAREN) {
 			return nil, p.unsupported("unclosed generated expression")
+		}
+		// SQLite's own override: an expression-bearing GENERATED is always a
+		// computed column, recording whether STORED (not VIRTUAL) was said.
+		if p.dialect == "sqlite" {
+			stored := p.atWords("STORED")
+			if stored || p.atWords("VIRTUAL") {
+				p.advance()
+			}
+			return New("ComputedColumnConstraint", Arg{"this", value}, Arg{"persisted", stored}), nil
 		}
 		if p.atWords("STORED") || (p.atWords("VIRTUAL") && p.dialect == "mysql") {
 			// Only some dialects' own override records WHICH of the two was

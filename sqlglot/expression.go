@@ -34,6 +34,11 @@ type Expression struct {
 	Type *Expression
 	// Parent is set by the parser; never serialised.
 	Parent *Expression
+	// Meta is the reference's `meta`: facts about how a node was WRITTEN
+	// rather than what it is -- "name", the spelling a function was read
+	// with, in a dialect that writes it back that way. The dump's "m" is
+	// metadata and not compared, so this never affects tree equality.
+	Meta map[string]any
 	// rawType memoises what the annotator worked out for this node, BEFORE
 	// the conversion Annotate applies on the way out. It is the raw answer
 	// because that is what an operator above needs: `NULL + 1` is an INT and
@@ -319,7 +324,7 @@ func (e *Expression) Copy() *Expression {
 	if e == nil {
 		return nil
 	}
-	out := &Expression{Class: e.Class, Args: map[string]any{}, Type: e.Type.Copy()}
+	out := &Expression{Class: e.Class, Args: map[string]any{}, Type: e.Type.Copy(), Meta: copyMeta(e.Meta)}
 	for _, key := range e.Keys {
 		switch v := e.Args[key].(type) {
 		case *Expression:
@@ -339,6 +344,17 @@ func (e *Expression) Copy() *Expression {
 	return out
 }
 
+func copyMeta(meta map[string]any) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	out := make(map[string]any, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	return out
+}
+
 // shallowCopy copies a node WITHOUT its children: the class, the type and the
 // argument keys in order, with each child pointer carried across as it is.
 //
@@ -346,7 +362,7 @@ func (e *Expression) Copy() *Expression {
 // is duplicated, because that is a value the node owns rather than a node it
 // points at.
 func (e *Expression) shallowCopy() *Expression {
-	out := &Expression{Class: e.Class, Args: make(map[string]any, len(e.Args)), Type: e.Type.Copy()}
+	out := &Expression{Class: e.Class, Args: make(map[string]any, len(e.Args)), Type: e.Type.Copy(), Meta: copyMeta(e.Meta)}
 	for _, key := range e.Keys {
 		value := e.Args[key]
 		if strs, ok := value.([]string); ok {

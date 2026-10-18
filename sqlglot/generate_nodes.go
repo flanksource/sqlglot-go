@@ -120,7 +120,11 @@ func init() {
 		"If":                                  (*generator).writeIf,
 		"Cast":                                (*generator).writeCast,
 		"TryCast":                             (*generator).writeCast,
-		"DataType":                            (*generator).writeDataType,
+		"DataType":                            (*generator).writeNullableDataType,
+		"AnonymousAggFunc":                    (*generator).writeAggregateCombinator,
+		"CombinedAggFunc":                     (*generator).writeAggregateCombinator,
+		"ParameterizedAgg":                    (*generator).writeAggregateCombinator,
+		"CombinedParameterizedAgg":            (*generator).writeAggregateCombinator,
 		"Aliases":                             (*generator).writeAliases,
 		"PseudoType":                          (*generator).writeNamedTypeWord,
 		"ObjectIdentifier":                    (*generator).writeNamedTypeWord,
@@ -543,6 +547,17 @@ func (g *generator) writeSelect(e *Expression) string {
 	add(g.child(e, "cluster"))
 	add(g.child(e, "distribute"))
 	add(g.child(e, "sort"))
+	// The WINDOW clause comes BEFORE the QUALIFY that refers to its names,
+	// and both before ORDER BY -- the reference's AFTER_HAVING modifiers.
+	windows, _ := e.Args["windows"].([]*Expression)
+	if len(windows) > 0 {
+		names := make([]string, 0, len(windows))
+		for _, w := range windows {
+			names = append(names, g.node(w))
+		}
+		add("WINDOW " + strings.Join(names, ", "))
+	}
+	add(g.child(e, "qualify"))
 	add(g.child(e, "order"))
 
 	// A FETCH is written AFTER the offset where a LIMIT is written before it:
@@ -574,16 +589,6 @@ func (g *generator) writeSelect(e *Expression) string {
 		}
 		add(sample)
 	}
-	// The WINDOW clause comes BEFORE the QUALIFY that refers to its names.
-	windows, _ := e.Args["windows"].([]*Expression)
-	if len(windows) > 0 {
-		names := make([]string, 0, len(windows))
-		for _, w := range windows {
-			names = append(names, g.node(w))
-		}
-		add("WINDOW " + strings.Join(names, ", "))
-	}
-	add(g.child(e, "qualify"))
 	// A LATERAL VIEW is a clause of the query, and there may be several.
 	laterals, _ := e.Args["laterals"].([]*Expression)
 	for _, lateral := range laterals {
@@ -616,8 +621,14 @@ func (g *generator) withPrefix(e *Expression, body string) string {
 
 func (g *generator) writeSetOperation(e *Expression) string {
 	word := strings.ToUpper(e.Class)
-	if e.Args["distinct"] == false {
-		word += " ALL"
+	// The word the dialect assumes is left unsaid; the other is written.
+	assumed := g.tables.SetOpDistinctByDefault[e.Class]
+	distinct, given := e.Args["distinct"].(bool)
+	switch said := map[bool]string{true: "DISTINCT", false: "ALL"}[distinct]; {
+	case !given && assumed == "":
+		return g.fail(e.Class + " that says neither DISTINCT nor ALL in a dialect that needs one")
+	case given && said != assumed:
+		word += " " + said
 	}
 	if e.Args["by_name"] == true {
 		word += " BY NAME"
@@ -810,7 +821,7 @@ func (g *generator) writeJoin(e *Expression) string {
 	words := []string{}
 	// The METHOD comes first: NATURAL says HOW the rows are matched, and the
 	// side and kind say which of them are kept.
-	for _, key := range []string{"method", "side", "kind"} {
+	for _, key := range []string{"method", "global_", "side", "kind"} {
 		if s, ok := e.Args[key].(string); ok && s != "" {
 			words = append(words, s)
 		}
@@ -1207,6 +1218,12 @@ func (g *generator) writeLimitWord(e *Expression, word string) string {
 }
 
 func (g *generator) writeOffset(e *Expression) string {
+	// ClickHouse's OFFSET before a FETCH needs its ROWS.
+	if parent := e.Parent; g.dialect == "clickhouse" && parent != nil && parent.Class == "Select" {
+		if limit, _ := parent.Args["limit"].(*Expression); limit != nil && limit.Class == "Fetch" {
+			return "OFFSET " + g.child(e, "expression") + " ROWS"
+		}
+	}
 	if g.tables.LimitOnlyLiterals {
 		e = g.simplifyLimitOffsetArg(e, "expression")
 	}
@@ -1407,6 +1424,14 @@ func (g *generator) writeQuotedString(e *Expression) string {
 	}
 	template, escapes, _ := strings.Cut(spec, "\t")
 	body, _ := e.Args["this"].(string)
+	// A raw string written as a PLAIN one, in a dialect whose strings read a
+	// backslash as an escape, doubles its backslashes first -- the
+	// reference's rawstring_sql -- or `\$` would read back as `$`. Where the
+	// backslash is the PREFERRED escape the escaping below doubles it anyway.
+	if _, backslash := g.cfg.StringEscapes["\\"]; backslash && g.cfg.StringEscapePreferred != "\\" &&
+		e.Class == "RawString" && template == "'{body}'" {
+		body = strings.ReplaceAll(body, "\\", "\\\\")
+	}
 	switch escapes {
 	case "byte":
 		// A byte string goes further than a quoted one: a CONTROL character
@@ -2217,7 +2242,9 @@ func (g *generator) writeColumnDef(e *Expression) string {
 	return leading + g.child(e, "this") + sep + kind + trailing
 }
 
-func (g *generator) writeAnonymous(e *Expression) string { return g.anonymous(e, true) }
+func (g *generator) writeAnonymous(e *Expression) string {
+	return g.anonymous(e, !g.tables.KeepsFunctionCase)
+}
 
 func (g *generator) anonymous(e *Expression, upper bool) string {
 	name, quoted := anonymousName(e)
@@ -2316,6 +2343,10 @@ func (g *generator) writeIs(e *Expression) string {
 	op := "IS"
 	if e.Args["negate"] == true {
 		op = "IS NOT"
+	}
+	// ClickHouse parenthesises an IS under NOT: `NOT (x IS NULL)`.
+	if g.dialect == "clickhouse" && e.Parent != nil && e.Parent.Class == "Not" {
+		return "(" + g.binary(e, op) + ")"
 	}
 	return g.binary(e, op)
 }
@@ -4101,7 +4132,14 @@ func (g *generator) writeGroupConcat(e *Expression) string {
 // the node and the name is wrapped in a Schema when there are columns, so the
 // shape of `this` is what says which spelling this is.
 func (g *generator) writeCreate(e *Expression) string {
-	kind, _ := e.Args["kind"].(string)
+	if g.dialect == "sqlite" {
+		moved, err := sqliteTransformCreate(e)
+		if err != nil {
+			return g.fail(err.Error())
+		}
+		e = moved
+	}
+	kind := g.writtenKind(e)
 	// Presto drops a VIEW's own column list entirely: `CREATE VIEW x (cola)
 	// AS SELECT 1 AS cola` writes as `CREATE VIEW x AS SELECT 1 AS cola`,
 	// the column names carried by the SELECT's own aliases instead. The
@@ -4522,7 +4560,13 @@ func (g *generator) writeProperties(e *Expression) (before string, out string, f
 			if item.Class != "TemporaryProperty" {
 				beforeKind = append(beforeKind, g.node(item))
 			}
-		case "POST_EXPRESSION", "POST_NAME", "POST_ALIAS":
+		case "POST_NAME":
+			// ClickHouse writes these straight after the created name, a
+			// place no writer here fills; refused rather than dropped.
+			if g.dialect == "clickhouse" {
+				return "", "", g.fail("a " + item.Class + " written after the name")
+			}
+		case "POST_EXPRESSION", "POST_ALIAS":
 			// Written elsewhere in the statement, by the code that owns that
 			// place -- TEMPORARY before the kind, WITH DATA after the query.
 		case "UNSUPPORTED":
@@ -4779,8 +4823,21 @@ func (g *generator) writeValues(e *Expression) string {
 }
 
 // writeDrop writes `DROP <kind> [IF EXISTS] <name>`.
-func (g *generator) writeDrop(e *Expression) string {
+// writtenKind is the kind a CREATE or DROP is written with: the word the
+// dialect reads AS that kind -- ClickHouse records DATABASE as SCHEMA and
+// writes it back as DATABASE.
+func (g *generator) writtenKind(e *Expression) string {
 	kind, _ := e.Args["kind"].(string)
+	for word, recorded := range g.tables.CreatableKindNames {
+		if recorded == kind {
+			return word
+		}
+	}
+	return kind
+}
+
+func (g *generator) writeDrop(e *Expression) string {
+	kind := g.writtenKind(e)
 	out := "DROP"
 	// The words in front of the kind, then the kind, then the words after it,
 	// each in the order the reference writes them.

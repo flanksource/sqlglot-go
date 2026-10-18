@@ -10,6 +10,11 @@ import "strings"
 //
 // Entered with the name current and the opening parenthesis after it.
 func (p *parser) parseSyntaxFunction(upper string) (*Expression, error) {
+	if p.dialect == "clickhouse" {
+		if fn, ok, err := p.parseClickHouseSyntaxFunction(upper); ok {
+			return fn, err
+		}
+	}
 	switch upper {
 	case "EXTRACT":
 		return p.parseExtract()
@@ -294,9 +299,14 @@ func (p *parser) parsePosition() (*Expression, error) {
 		}
 		node = New("StrPosition", Arg{"this", haystack}, Arg{"substr", argAt(args, 0)})
 	} else {
+		// ClickHouse puts the haystack FIRST: `POSITION(haystack, needle)`.
+		haystack, needle := argAt(args, 1), argAt(args, 0)
+		if p.dialect == "clickhouse" {
+			haystack, needle = needle, haystack
+		}
 		node = New("StrPosition",
-			Arg{"this", argAt(args, 1)},
-			Arg{"substr", argAt(args, 0)})
+			Arg{"this", haystack},
+			Arg{"substr", needle})
 		if start := argAt(args, 2); start != nil {
 			node.Set("position", start)
 		}

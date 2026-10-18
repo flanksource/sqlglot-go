@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+# The oracle index names each expectation file by a 16-hex content hash under
+# "key", which the generic API key rule reads as a secret.
+[[allowlists]]
+description = "generated oracle index content-hash ids"
+paths = ['''^testdata/expected/index\.json$''']
