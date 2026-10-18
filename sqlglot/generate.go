@@ -941,7 +941,7 @@ func (g *generator) markCondition(e *Expression) {
 var predicates = map[string]bool{
 	"EQ": true, "NEQ": true, "GT": true, "GTE": true, "LT": true, "LTE": true,
 	"NullSafeEQ": true, "NullSafeNEQ": true, "And": true, "Or": true, "Not": true,
-	"Is": true, "In": true, "Between": true, "Like": true, "ILike": true,
+	"Is": true, "In": true, "Between": true, "Like": true, "ILike": true, "Escape": true,
 	"RegexpLike": true, "Glob": true, "SimilarTo": true, "Exists": true, "Paren": true,
 }
 
