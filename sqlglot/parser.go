@@ -397,12 +397,18 @@ func (p *parser) parseStatementBody() (*Expression, error) {
 		return p.parseSet()
 	}
 	if p.at(TokPRAGMA) {
+		if p.dialect == "sqlite" {
+			return p.parseSQLitePragma()
+		}
 		return p.parsePragma()
 	}
 	if p.at(TokUSE) {
 		return p.parseUse()
 	}
 	if p.at(TokATTACH) || p.at(TokDETACH) {
+		if p.dialect == "sqlite" {
+			return p.parseSQLiteAttachDetach()
+		}
 		return p.parseAttachDetach()
 	}
 	if p.at(TokINSTALL) || p.at(TokFORCE) {

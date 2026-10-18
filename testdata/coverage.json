@@ -1,8 +1,14 @@
 {
  "reference": "ceb5111421e9aa6135f7c650c1995ee19f9528a2",
- "total": 6491,
- "matched": 6491,
+ "total": 7285,
+ "matched": 7078,
  "by_dialect": {
+  "clickhouse": {
+   "total": 538,
+   "matched": 355,
+   "unparsed": 183,
+   "mismatched": 0
+  },
   "databricks": {
    "total": 426,
    "matched": 426,
@@ -67,6 +73,12 @@
    "total": 14,
    "matched": 14,
    "unparsed": 0,
+   "mismatched": 0
+  },
+  "sqlite": {
+   "total": 256,
+   "matched": 232,
+   "unparsed": 24,
    "mismatched": 0
   },
   "trino": {

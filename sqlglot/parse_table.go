@@ -62,10 +62,34 @@ func (p *parser) parseJoin() (*Expression, error) {
 	if c == nil {
 		return nil, nil
 	}
+	var method, side, kind, global *Token
+	if p.dialect == "clickhouse" {
+		global, side, kind = p.clickhouseJoinParts()
+	} else {
+		var err error
+		if method, side, kind, err = p.joinParts(c); err != nil {
+			return nil, err
+		}
+	}
+	join, err := p.parseJoinRest(method, side, kind)
+	if err != nil || join == nil || p.dialect != "clickhouse" {
+		return join, err
+	}
+	if global != nil {
+		join.Set("global_", strings.ToUpper(global.Text))
+	}
+	// `t ARRAY JOIN arr` unrolls a COLUMN, not a table.
+	if kind != nil && strings.EqualFold(kind.Text, "ARRAY") {
+		joinTablesToColumns(join)
+	}
+	return join, nil
+}
+
+// joinParts reads the words in front of JOIN: a method, a side and a kind.
+func (p *parser) joinParts(c *Token) (method, side, kind *Token, err error) {
 	// A METHOD says how the rows are matched rather than which of them are
 	// kept: NATURAL joins on every column the two tables share, ASOF on the
 	// nearest match rather than an equal one.
-	var method *Token
 	if _, isMethod := p.tables.JoinMethods[c.Type]; isMethod {
 		// NATURAL joins on every column the two tables share; POSITIONAL on
 		// the row's position in each; ASOF on the nearest row rather than an
@@ -74,28 +98,75 @@ func (p *parser) parseJoin() (*Expression, error) {
 		if !strings.EqualFold(c.Text, "NATURAL") &&
 			!strings.EqualFold(c.Text, "POSITIONAL") &&
 			!strings.EqualFold(c.Text, "ASOF") {
-			return nil, p.unsupported("join method " + c.Text)
+			return nil, nil, nil, p.unsupported("join method " + c.Text)
 		}
 		method = c
 		p.advance()
 		c = p.curr()
 		if c == nil {
-			return nil, p.unsupported("a join method with no join")
+			return nil, nil, nil, p.unsupported("a join method with no join")
 		}
 	}
-
-	var side, kind *Token
 	if _, ok := p.tables.JoinSides[c.Type]; ok {
 		side = c
 		p.advance()
 	}
-	if c2 := p.curr(); c2 != nil {
-		if _, ok := p.tables.JoinKinds[c2.Type]; ok {
-			kind = c2
+	kind = p.matchJoinKind()
+	return method, side, kind, nil
+}
+
+func (p *parser) matchJoinKind() *Token {
+	if c := p.curr(); c != nil {
+		if _, ok := p.tables.JoinKinds[c.Type]; ok {
+			p.advance()
+			return c
+		}
+	}
+	return nil
+}
+
+// clickhouseJoinParts is ClickHouse's own `_parse_join_parts`: GLOBAL, then a
+// kind that may stand before the side as well as after it -- `ANY LEFT JOIN`
+// and `LEFT ANY JOIN` are the same join.
+func (p *parser) clickhouseJoinParts() (global, side, kind *Token) {
+	if c := p.curr(); c != nil && c.Type == TokGLOBAL {
+		global = c
+		p.advance()
+	}
+	kindPre := p.matchJoinKind()
+	if c := p.curr(); c != nil {
+		if _, ok := p.tables.JoinSides[c.Type]; ok {
+			side = c
 			p.advance()
 		}
 	}
+	kind = p.matchJoinKind()
+	if side == nil {
+		side = kind
+	}
+	if kindPre != nil {
+		kind = kindPre
+	}
+	return global, side, kind
+}
 
+// joinTablesToColumns makes every table an ARRAY JOIN read into the column
+// it names, as the reference does after reading it as a table.
+func joinTablesToColumns(join *Expression) {
+	for _, table := range join.FindAll("Table") {
+		column := tableToColumn(table)
+		if column == nil || table.Parent == nil {
+			continue
+		}
+		if alias, _ := table.Args["alias"].(*Expression); alias != nil {
+			column = New("Alias", Arg{"this", column}, Arg{"alias", alias.This()})
+		}
+		replaceChild(table.Parent, table, column)
+	}
+}
+
+// parseJoinRest reads a join once the words in front of JOIN are known.
+func (p *parser) parseJoinRest(method, side, kind *Token) (*Expression, error) {
 	// CROSS APPLY and OUTER APPLY read as a join with a kind but build a
 	// Lateral instead, and the kind is recorded on the Lateral rather than on
 	// the Join. Both forms are parsed: the guard has been bypassed through
@@ -388,6 +459,14 @@ func (p *parser) redshiftSuperUnpivot() (*Expression, error) {
 }
 
 func (p *parser) parseTable() (*Expression, error) {
+	table, err := p.parseTableBase()
+	if err != nil || p.dialect != "clickhouse" {
+		return table, err
+	}
+	return p.clickhouseTableRest(table), nil
+}
+
+func (p *parser) parseTableBase() (*Expression, error) {
 	if p.dialect == "redshift" && p.at(TokUNPIVOT) {
 		return p.redshiftSuperUnpivot()
 	}

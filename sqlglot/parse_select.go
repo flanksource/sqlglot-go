@@ -393,13 +393,24 @@ func (p *parser) parseSetOperations(this *Expression) (*Expression, error) {
 		}
 		p.advance()
 
-		// UNION is distinct, UNION ALL is not; the reference records which.
-		distinct := true
+		// UNION ALL is not distinct and UNION DISTINCT is; a bare word means
+		// whatever the dialect says it means, and ClickHouse's bare UNION
+		// means nothing at all -- one of the two words is required.
+		var distinct bool
 		switch {
 		case p.match(TokALL):
 			distinct = false
 		case p.match(TokDISTINCT):
 			distinct = true
+		default:
+			switch p.tables.SetOpDistinctByDefault[class] {
+			case "DISTINCT":
+				distinct = true
+			case "ALL":
+				distinct = false
+			default:
+				return nil, p.unsupported(strings.ToUpper(class) + " without DISTINCT or ALL")
+			}
 		}
 		var byName any
 		if p.atWords("BY", "NAME") {

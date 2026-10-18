@@ -31,7 +31,7 @@ import pathlib
 import re
 import sys
 
-DIALECTS = ("", "tsql", "postgres", "duckdb", "databricks", "redshift", "materialize", "risingwave", "fabric", "presto", "trino", "dremio", "mysql")
+DIALECTS = ("", "tsql", "postgres", "duckdb", "databricks", "redshift", "materialize", "risingwave", "fabric", "presto", "trino", "dremio", "mysql", "sqlite", "clickhouse")
 
 
 def gostr(s: str) -> str:
@@ -1782,14 +1782,18 @@ def alter_column_type_word(dialect: str) -> str:
     """
     import sqlglot
 
+    from sqlglot import exp
+
     try:
-        text = sqlglot.parse_one(
-            "ALTER TABLE t ALTER COLUMN zzcol SET DATA TYPE BIGINT"
-        ).sql(dialect=dialect or None)
+        tree = sqlglot.parse_one("ALTER TABLE t ALTER COLUMN zzcol SET DATA TYPE BIGINT")
+        text = tree.sql(dialect=dialect or None)
+        # Cut on the type as THIS dialect writes it: ClickHouse's BIGINT is
+        # `Nullable(Int64)`, and looking for the word BIGINT found nothing.
+        written_type = tree.find(exp.DataType).sql(dialect=dialect or None)
     except Exception:  # noqa: BLE001
         return "SET DATA TYPE"
     head = text.find("zzcol ")
-    tail = text.find("BIGINT")
+    tail = text.find(written_type)
     if head < 0 or tail < 0 or tail < head:
         return "SET DATA TYPE"
     return text[head + len("zzcol ") : tail].strip()
@@ -3991,6 +3995,38 @@ def json_path_pieces_in_class(dialect: str, exp, cls_name: str) -> dict:
     return pieces
 
 
+def nullable_type_wrapping(exp, dialect: str, types_sql: dict) -> tuple[str, list]:
+    """Whether a type whose nullability the tree leaves open is written
+    wrapped, and which kinds never are.
+
+    ClickHouse's parser marks every type it reads non-nullable, and its
+    generator wraps every OTHER type in `Nullable(...)` -- so `CAST(x AS
+    TEXT)` read as DuckDB writes as `CAST(x AS Nullable(String))`. Probed per
+    kind by writing it once with the flag left unset and once marked
+    non-nullable (which is how TypeSQL was recorded): the difference is the
+    wrapper, and a kind with no difference is one the dialect never wraps.
+    Empty wherever no kind differs. PROBED.
+    """
+    template = ""
+    never = []
+    for kind, bare in sorted(types_sql.items()):
+        try:
+            open_ = exp.DataType(this=exp.DType(kind)).sql(dialect=dialect or None)
+        except Exception:  # noqa: BLE001
+            never.append(kind)
+            continue
+        if open_ == bare:
+            never.append(kind)
+            continue
+        if bare not in open_:
+            raise SystemExit(f"{dialect}: nullable {kind} {open_!r} does not contain {bare!r}")
+        found = open_.replace(bare, "{type}", 1)
+        if template and found != template:
+            raise SystemExit(f"{dialect}: nullable wrappers disagree: {template!r} vs {found!r}")
+        template = found
+    return template, (never if template else [])
+
+
 def composite_type_sql(dialect: str) -> dict[str, str]:
     """How a dialect writes a type that CONTAINS another type.
 
@@ -4007,6 +4043,7 @@ def composite_type_sql(dialect: str) -> dict[str, str]:
     text that went in. PROBED.
     """
     import sqlglot
+    from sqlglot import exp
 
     d = dialect or None
 
@@ -4017,7 +4054,16 @@ def composite_type_sql(dialect: str) -> dict[str, str]:
         # SIGNED, not INT) where a column never does, and the templates are
         # for the type itself. Everywhere else the two agree.
         type_sql = sql[len("CAST(x AS ") : -1]
-        written = sqlglot.parse_one(f"CREATE TABLE t (x {type_sql})", read="duckdb").sql(dialect=d)
+        tree = sqlglot.parse_one(f"CREATE TABLE t (x {type_sql})", read="duckdb")
+        # Marked non-nullable, as ClickHouse's own parser marks every type it
+        # reads: a type that came from another dialect is wrapped in
+        # `Nullable(...)` on the way out, and that wrapper is a property of
+        # the node (`nullable`), written by the port's own rule, not part of
+        # the dialect's spelling of the type. No other generator reads it.
+        for dt in tree.find_all(exp.DataType):
+            if dt.args.get("nullable") is None:
+                dt.set("nullable", False)
+        written = tree.sql(dialect=d)
         return written[len("CREATE TABLE t (x ") : -1]
 
     inner = to("CAST(x AS INT)")
@@ -4110,6 +4156,18 @@ def quantifier_wraps_subquery(dialect: str) -> dict[str, bool]:
     return out
 
 
+def quantifier_comparison_rewritten(dialect: str) -> bool:
+    """Whether `a = ANY (...)` is written as something other than a
+    comparison against a quantifier -- ClickHouse turns it into `has(...)`.
+    PROBED."""
+    import sqlglot
+
+    written = sqlglot.parse_one("SELECT x FROM t WHERE a = ANY (b)", read=dialect or None).sql(
+        dialect=dialect or None
+    )
+    return "a = ANY" not in written
+
+
 def quantifier_query_sql(dialect: str) -> dict[str, str]:
     """How a quantifier over a QUERY is written, as a template.
 
@@ -4129,6 +4187,12 @@ def quantifier_query_sql(dialect: str) -> dict[str, str]:
             f"SELECT x FROM t WHERE a = {word} (SELECT 1)", read=dialect or None
         )
         node = e.args["where"].this.args["expression"]
+
+        if quantifier_comparison_rewritten(dialect):
+            # ClickHouse writes `a = ANY (q)` as `has(q, a)`: there is no
+            # quantifier left to template, and the comparison writer refuses
+            # it instead (QuantifierComparisonRewritten).
+            continue
 
         def render(n):
             written = e.sql(dialect=dialect or None)
@@ -5567,6 +5631,38 @@ def render_functions(P, exp, dialect, funcs):
     return out
 
 
+def keeps_original_name(exp, dialect: str, rendered: dict) -> list:
+    """The function classes this dialect writes under the name they were READ
+    with rather than their own.
+
+    ClickHouse preserves original names: `count()` is a Count that remembers
+    it was spelled `count`, and the generic fallback writes it back that way
+    -- while a class with a spelling of its own (`has` for ArrayContains,
+    `dateTrunc` for a truncation) ignores the remembered name entirely.
+    Probed per class by stamping a sentinel name on a node built the way its
+    recorded spelling says, and seeing whether it comes back. PROBED.
+    """
+    from sqlglot.dialects.dialect import Dialect
+
+    if not Dialect.get_or_raise(dialect or None).PRESERVE_ORIGINAL_NAMES:
+        return []
+    kept = []
+    for cls_name, candidates in rendered.items():
+        cls = getattr(exp, cls_name, None)
+        keyword, keys, consts = candidates[0][:3]
+        kwargs = {k: exp.column(f"__probe_{i}") for i, k in enumerate(keys)}
+        kwargs.update({k: v for k, v in consts if v is not None and not isinstance(v, str)})
+        try:
+            node = cls(**kwargs)
+            node.meta["name"] = "zzOrigName"
+            written = node.sql(dialect=dialect or None)
+        except Exception:  # noqa: BLE001
+            continue
+        if written.startswith("zzOrigName"):
+            kept.append(cls_name)
+    return kept
+
+
 def sqlmap(name: str, rendered) -> str:
     lines = []
     for cls in sorted(rendered):
@@ -6102,6 +6198,25 @@ def main() -> int:
         "\t// other than NAME(a, b); the generator refuses it rather than\n",
         "\t// emitting something that would parse back differently.\n",
         "\tFunctionSQL map[string][]FuncSQL\n",
+        "\t// KeepsFunctionCase: a call is written in the case it was read in,\n",
+        "\t// not upper-cased -- ClickHouse's function names are case-sensitive.\n",
+        "\t// KeepsOriginalName names the classes written under the name they\n",
+        "\t// were read with (`count()` stays `count()`), rather than their own.\n",
+        "\tKeepsFunctionCase bool\n",
+        "\tKeepsOriginalName map[string]struct{}\n",
+        "\t// AggFunctions and AggFunctionSuffixes are ClickHouse's aggregate\n",
+        "\t// names and the combinator suffixes that may follow them, longest\n",
+        "\t// first: `sumIfMerge` is sum with If and Merge, and an aggregate node.\n",
+        "\t// SetOpDistinctByDefault is what a bare UNION, EXCEPT or INTERSECT\n",
+        "\t// means: \"DISTINCT\", \"ALL\", or \"\" where the dialect requires one\n",
+        "\t// of the two words (ClickHouse's UNION). The word that matches the\n",
+        "\t// default is not written back.\n",
+        "\tSetOpDistinctByDefault map[string]string\n",
+        "\tAggFunctions        map[string]struct{}\n",
+        "\tAggFunctionSuffixes []string\n",
+        "\t// StandaloneUniqueBefore holds the words before which UNIQUE is a\n",
+        "\t// whole constraint on its own (SQLite's `UNIQUE REFERENCES t`).\n",
+        "\tStandaloneUniqueBefore map[string]struct{}\n",
         "\t// BinarySQL and UnarySQL are how each operator node is written.\n",
         "\t// DuckDB writes Pow as ** where the default writes POWER(a, b), so\n",
         "\t// the spelling is read from the reference's generator, not assumed.\n",
@@ -6118,6 +6233,14 @@ def main() -> int:
         "\t// where that differs: Databricks writes a bare VARCHAR as STRING and\n",
         "\t// a VARCHAR(255) as itself.\n",
         "\tSizedTypeSQL map[string]string\n",
+        "\t// NullableTemplate wraps a type whose node does not say it is\n",
+        "\t// non-nullable -- ClickHouse writes a type read from another\n",
+        "\t// dialect as `Nullable(T)`, {type} where T goes -- and is empty\n",
+        "\t// wherever nullability is not part of a type's spelling.\n",
+        "\t// NeverNullableTypes are the kinds it never wraps: composites, and\n",
+        "\t// the geometry types ClickHouse cannot make nullable.\n",
+        "\tNullableTemplate   string\n",
+        "\tNeverNullableTypes map[string]struct{}\n",
         "\t// IdentifierStart and IdentifierEnd are the delimiters a quoted name\n",
         "\t// is written with: brackets in T-SQL, backticks in Databricks.\n",
         "\tIdentifierStart string\n",
@@ -6720,6 +6843,7 @@ def main() -> int:
         "\t// QuantifierQuerySQL is the same over a QUERY, where the\n",
         "\t// spacing and the parentheses both differ from the array form.\n",
         "\tQuantifierQuerySQL map[string]string\n",
+        "\t// QuantifierComparisonRewritten: `a = ANY (...)` is written as some\n\t// other call entirely (ClickHouse's `has`), which the port does not\n\t// perform, so a comparison against a quantifier is refused.\n\tQuantifierComparisonRewritten bool\n",
         "\t// NestedTypeKinds are the DataType kinds the reference marks\n",
         "\t// `nested`, whether or not they were written with parameters.\n",
         "\t// StructTypeKinds is the subset whose parameters are NAMED\n",
@@ -7486,7 +7610,37 @@ def main() -> int:
                 joined = ", ".join(str(i) for i in indexes)
                 out.append(f"\t\t\t{gostr(fname)}: {{{joined}}},\n")
             out.append("\t\t},\n")
-        out.append(sqlmap("FunctionSQL", render_functions(P, exp, name, render_forms)))
+        _rendered_funcs = render_functions(P, exp, name, render_forms)
+        out.append(sqlmap("FunctionSQL", _rendered_funcs))
+        # ClickHouse's aggregate combinators: a name that is an aggregate
+        # plus any stack of suffixes (`sumIfMerge`) is an aggregate node, not
+        # an Anonymous call. Read off the parser class, longest suffix first
+        # as the reference resolves them.
+        if getattr(P, "AGG_FUNCTIONS", None):
+            out.append(strset("AggFunctions", P.AGG_FUNCTIONS))
+            sfx = "".join(f"{gostr(s)}, " for s in P.AGG_FUNCTIONS_SUFFIXES)
+            out.append(f"\t\tAggFunctionSuffixes: []string{{{sfx}}},\n")
+        # SQLite's `_parse_unique` stops at UNIQUE when a constraint keyword
+        # follows (`UNIQUE REFERENCES t`): the words it stops on are the
+        # parser's constraint keys, emitted only where that override exists.
+        from sqlglot.parser import Parser as _BaseParser  # noqa: PLC0415
+
+        if P._parse_unique is not _BaseParser._parse_unique:
+            out.append(strset("StandaloneUniqueBefore", P.CONSTRAINT_PARSERS))
+        _sod = Dialect.get_or_raise(name or None).SET_OP_DISTINCT_BY_DEFAULT
+        out.append("\t\tSetOpDistinctByDefault: map[string]string{\n")
+        for _cls, _default in sorted((c.__name__, v) for c, v in _sod.items()):
+            _word = {True: "DISTINCT", False: "ALL", None: ""}[_default]
+            out.append(f"\t\t\t{gostr(_cls)}: {gostr(_word)},\n")
+        out.append("\t\t},\n")
+        _nf = Dialect.get_or_raise(name or None).NORMALIZE_FUNCTIONS
+        if _nf not in ("upper", True, False):
+            raise SystemExit(f"{name}: NORMALIZE_FUNCTIONS={_nf!r} is not a case the port writes")
+        if _nf is False:
+            out.append("\t\tKeepsFunctionCase: true,\n")
+            _kon = keeps_original_name(exp, name, _rendered_funcs)
+            if _kon:
+                out.append(strset("KeepsOriginalName", _kon))
         binary, unary = render_operators(P, exp, Dialect, name)
         out.append(strstrmap("BinarySQL", binary))
         out.append(strstrmap("UnarySQL", unary))
@@ -7496,11 +7650,18 @@ def main() -> int:
             key=lambda kv: kv[0].value,
         ):
             try:
-                rendered = exp.DataType(this=member).sql(dialect=name or None)
+                # Non-nullable, for the reason composite_type_sql gives:
+                # ClickHouse's `Nullable(...)` is the node's flag, not the
+                # type's name.
+                rendered = exp.DataType(this=member, nullable=False).sql(dialect=name or None)
             except Exception:  # noqa: BLE001
                 continue
             types_sql[member.value] = rendered
         out.append(strstrmap("TypeSQL", types_sql))
+        nullable_tmpl, never_wrapped = nullable_type_wrapping(exp, name, types_sql)
+        if nullable_tmpl:
+            out.append(f"\t\tNullableTemplate: {gostr(nullable_tmpl)},\n")
+            out.append(strset("NeverNullableTypes", never_wrapped))
         # The name a type takes when it carries PARAMETERS is not always the
         # one it takes bare: Databricks writes a bare VARCHAR as STRING and a
         # VARCHAR(255) as itself. Only the ones that differ are recorded.
@@ -7513,6 +7674,7 @@ def main() -> int:
                 node = exp.DataType(
                     this=member,
                     expressions=[exp.DataTypeParam(this=exp.Literal.number(10))],
+                    nullable=False,
                 )
                 rendered = node.sql(dialect=name or None)
             except Exception:  # noqa: BLE001
@@ -8155,6 +8317,8 @@ def main() -> int:
             f"\t\t\tWidgetPlaceholder: {str(_ph['WidgetPlaceholder']).lower()},\n"
         )
         out.append("\t\t},\n")
+        if quantifier_comparison_rewritten(name):
+            out.append("\t\tQuantifierComparisonRewritten: true,\n")
         _qq = quantifier_query_sql(name)
         out.append("\t\tQuantifierQuerySQL: map[string]string{\n")
         for k in sorted(_qq):

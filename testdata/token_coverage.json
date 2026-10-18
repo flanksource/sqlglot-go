@@ -1,5 +1,9 @@
 {
  "by_dialect": {
+  "clickhouse": {
+   "matched": 538,
+   "total": 538
+  },
   "databricks": {
    "matched": 426,
    "total": 426
@@ -44,6 +48,10 @@
    "matched": 14,
    "total": 14
   },
+  "sqlite": {
+   "matched": 256,
+   "total": 256
+  },
   "trino": {
    "matched": 253,
    "total": 253
@@ -53,7 +61,7 @@
    "total": 613
   }
  },
- "matched": 6491,
+ "matched": 7285,
  "reference": "ceb5111421e9aa6135f7c650c1995ee19f9528a2",
- "total": 6491
+ "total": 7285
 }

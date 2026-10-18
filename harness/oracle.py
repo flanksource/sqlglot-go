@@ -39,7 +39,7 @@ import sys
 
 # Dialects the executor configures. sqlglot's per-dialect suites supply
 # dialect-specific statements; identity.sql supplies the dialect-neutral core.
-DIALECTS = ("tsql", "postgres", "duckdb", "databricks", "redshift", "materialize", "risingwave", "fabric", "presto", "trino", "dremio", "mysql")
+DIALECTS = ("tsql", "postgres", "duckdb", "databricks", "redshift", "materialize", "risingwave", "fabric", "presto", "trino", "dremio", "mysql", "sqlite", "clickhouse")
 
 
 
@@ -141,6 +141,13 @@ EDGE_CORPUS: tuple[tuple[str, str], ...] = (
     ("tsql", "IF @a > 1 BEGIN SELECT 1; END"),
     ("tsql", "SET @label = N'empty'"),
     ("tsql", "CREATE PROCEDURE [acme].[p] @a INT AS BEGIN UPDATE [acme].[t] SET [x] = @a; END"),
+    # The paged and lookup shapes commons-db's SQL provider builds for SQLite
+    # and ClickHouse connections: a CTE over the base query, a windowed
+    # total, positional placeholders, and ClickHouse's case-sensitive
+    # function names, FINAL and arrayJoin.
+    ("sqlite", 'WITH "__cdb_base" AS (SELECT * FROM orders WHERE x = ?) SELECT "region" AS value, COUNT(*) AS count, COUNT(*) OVER () AS total FROM "__cdb_base" WHERE "env" IN (?, ?) AND "region" IS NOT NULL GROUP BY "region" ORDER BY 2 DESC, 1 ASC LIMIT 20 OFFSET 5'),
+    ("clickhouse", 'WITH "__cdb_base" AS (SELECT toStartOfHour(ts) AS h, count() AS c FROM events WHERE service = ?) SELECT h, c FROM "__cdb_base" WHERE c > ? ORDER BY h DESC LIMIT 20 OFFSET 5'),
+    ("clickhouse", "SELECT arrayJoin(tags) AS tag FROM events FINAL WHERE has(tags, ?) LIMIT 10"),
 )
 
 
@@ -348,11 +355,11 @@ def main() -> int:
             tree = dump(sql, dialect)
             tokens = dump_tokens(sql, dialect)
             rendered = render(sql, dialect)
-        except Exception as e:  # noqa: BLE001 -- the reference's own failures are recorded, not hidden
-            failed.append((dialect, sql, f"{type(e).__name__}: {e}"[:120]))
-            continue
-        (a.out / f"{key}.json").write_text(
-            json.dumps(
+            # Serialised inside the try: ClickHouse's JSON path parser stores
+            # the Dialect OBJECT itself as a DataType arg (`json.a.b[].c`),
+            # and a tree the reference cannot dump is one it gave no answer
+            # for -- recorded with the other failures, not written half-way.
+            body = json.dumps(
                 {
                     "dialect": dialect,
                     "sql": sql,
@@ -363,7 +370,10 @@ def main() -> int:
                 indent=1,
                 sort_keys=True,
             )
-        )
+        except Exception as e:  # noqa: BLE001 -- the reference's own failures are recorded, not hidden
+            failed.append((dialect, sql, f"{type(e).__name__}: {e}"[:120]))
+            continue
+        (a.out / f"{key}.json").write_text(body)
         index.append({"key": key, "dialect": dialect, "sql": sql})
         written += 1
 

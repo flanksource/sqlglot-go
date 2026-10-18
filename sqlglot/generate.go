@@ -193,6 +193,16 @@ func (g *generator) node(e *Expression) string {
 			}
 		}
 	}
+	switch g.dialect {
+	case "clickhouse":
+		if out, ok := g.clickhouseNode(e); ok {
+			return out
+		}
+	case "sqlite":
+		if out, ok := g.sqliteNode(e); ok {
+			return out
+		}
+	}
 	if fn, ok := generators[e.Class]; ok {
 		return fn(g, e)
 	}
@@ -286,6 +296,13 @@ func (g *generator) spell(e *Expression) string {
 	if word, ok := g.tables.UnarySQL[e.Class]; ok {
 		if e.Class == "Not" {
 			g.requireCondition(e, "this")
+			// ClickHouse parenthesises an IN under NOT: `NOT (x IN (1))`.
+			if in, _ := e.Args["this"].(*Expression); g.dialect == "clickhouse" && in != nil && in.Class == "In" {
+				if in.Args["is_global"] == true {
+					return g.fail("NOT over GLOBAL IN")
+				}
+				return word + "(" + g.node(in) + ")"
+			}
 			return g.unaryOperand(e, word)
 		}
 		return g.unary(e, word)
@@ -368,6 +385,11 @@ func (g *generator) binary(e *Expression, op string) string {
 	}
 	if this == nil || other == nil {
 		return g.fail(e.Class + " written as an operator without two operands")
+	}
+	// ClickHouse writes `a = ANY (q)` as `has(q, a)`, a rewrite not ported.
+	if g.tables.QuantifierComparisonRewritten && (e.Class == "EQ" || e.Class == "NEQ") &&
+		(this.Class == "Any" || other.Class == "Any") {
+		return g.fail(e.Class + " against ANY, which this dialect rewrites into a call")
 	}
 	return g.operand(this) + " " + op + " " + g.operand(other)
 }
@@ -771,7 +793,20 @@ func (g *generator) namedFunction(e *Expression, spec FuncSQL) string {
 	// Keyed by ARITY as well as index: DuckDB wraps ROUND's second argument in
 	// a cast when the call has four arguments and not when it has two, and
 	// applying that at every arity refused ordinary two-argument calls.
-	return spec.Name + "(" + strings.Join(parts, ", ") + ")"
+	return g.originalName(e, spec.Name) + "(" + strings.Join(parts, ", ") + ")"
+}
+
+// originalName is the name a call is written under: the one it was READ
+// with, where the dialect keeps that (ClickHouse's `count()`), else the
+// spelling the dialect gives the class.
+func (g *generator) originalName(e *Expression, spelling string) string {
+	if _, keeps := g.tables.KeepsOriginalName[e.Class]; !keeps {
+		return spelling
+	}
+	if name, _ := e.Meta["name"].(string); name != "" {
+		return name
+	}
+	return spelling
 }
 
 // isLiteral reports whether an argument is a literal of either kind. A literal
