@@ -255,6 +255,65 @@ make test       # includes the optimizer against sqlglot's simplify contract
 make postgres   # start a PostgreSQL for it, and print the DSN to export
 ```
 
+## T-SQL Extended Events sessions
+
+`CREATE`, `ALTER` and `DROP EVENT SESSION` have no grammar in the reference, which warns and keeps each as a `Command` (the port refused CREATE and DROP outright). Under `tsql` the port reads them into nodes of its own, so a caller can build the statement as a tree and let `Generate` do the quoting: a session name is an `Identifier` (`[a]]b]` when quoted), a file path is a `National` or `Literal` (`N'it''s.xel'`), and a predicate is an ordinary condition. No statement in the reference corpus has this shape, so no compared tree changes; ALTER EVENT SESSION is the one place the port now returns a tree where the reference returns a `Command`, which is the same choice the T-SQL routine bodies made. Any other form is still refused.
+
+| Class | Arg | Holds |
+|---|---|---|
+| `CreateEventSession` | `this` | `Identifier`, the session name |
+| | `scope` | `"SERVER"` or `"DATABASE"` |
+| | `events` | `[]EventSessionEvent`, at least one |
+| | `targets` | `[]EventSessionTarget` |
+| | `options` | `[]EventSessionOption`, the `WITH (...)` list |
+| `AlterEventSession` | `this`, `scope` | as above |
+| | `state` | `"START"` or `"STOP"`, alone; or else |
+| | `events`, `targets`, `options` | as above, where an event or target may carry `drop` |
+| `DropEventSession` | `this`, `scope` | as above |
+| `EventSessionEvent` | `this`, `package` | `Identifier`s: `sqlserver.rpc_completed` |
+| | `set` | `[]EventSessionOption`, the event's `SET` |
+| | `actions` | `[]Column`, `table` the package: `sqlserver.sql_text` |
+| | `where` | any condition, written inside `WHERE (...)` |
+| | `drop` | `true` for `DROP EVENT`, which takes nothing else |
+| `EventSessionTarget` | `this`, `package` | `Identifier`s: `package0.event_file` |
+| | `set` | `[]EventSessionOption`, written `(SET ...)` |
+| | `drop` | `true` for `DROP TARGET` |
+| `EventSessionOption` | `this` | `Var`, the option's name |
+| | `value` | a `Var` for a word (`OFF`), else any expression (`Literal`, `National`, `Paren`) |
+| | `unit` | `"SECONDS"`, `"KB"` or `"MB"`, optional |
+
+An XE predicate function such as `sqlserver.equal_i_sql_unicode_string(sqlserver.database_name, N'x')` is a `Dot` over an `Anonymous`, as anywhere else, and is written as it stands rather than compared with zero. A `Var` is written verbatim, so the writer refuses one that is not a single word.
+
+```go
+arg := func(k string, v any) sqlglot.Arg { return sqlglot.Arg{Key: k, Value: v} }
+ident := func(s string) *sqlglot.Expression { return sqlglot.New("Identifier", arg("this", s)) }
+nodes := func(n ...*sqlglot.Expression) []*sqlglot.Expression { return n }
+session := sqlglot.New("CreateEventSession",
+	arg("this", sqlglot.New("Identifier", arg("this", name), arg("quoted", true))),
+	arg("scope", "SERVER"),
+	arg("events", nodes(sqlglot.New("EventSessionEvent",
+		arg("this", ident("rpc_completed")), arg("package", ident("sqlserver")),
+		arg("actions", nodes(sqlglot.New("Column", arg("this", ident("sql_text")), arg("table", ident("sqlserver"))))),
+		arg("where", sqlglot.New("GTE",
+			arg("this", sqlglot.New("Column", arg("this", ident("duration")))),
+			arg("expression", sqlglot.New("Literal", arg("this", "1000"), arg("is_string", false)))))))),
+	arg("targets", nodes(sqlglot.New("EventSessionTarget",
+		arg("this", ident("event_file")), arg("package", ident("package0")),
+		arg("set", nodes(sqlglot.New("EventSessionOption",
+			arg("this", sqlglot.New("Var", arg("this", "filename"))),
+			arg("value", sqlglot.New("National", arg("this", path))))))))),
+	arg("options", nodes(sqlglot.New("EventSessionOption",
+		arg("this", sqlglot.New("Var", arg("this", "MAX_DISPATCH_LATENCY"))),
+		arg("value", sqlglot.New("Literal", arg("this", "1"), arg("is_string", false))),
+		arg("unit", "SECONDS")))))
+ddl, err := sqlglot.Generate(session, "tsql")
+// with name "trace]x" and path `C:\xe\it's.xel`, on one line:
+// CREATE EVENT SESSION [trace]]x] ON SERVER ADD EVENT sqlserver.rpc_completed
+//   (ACTION (sqlserver.sql_text) WHERE (duration >= 1000))
+//   ADD TARGET package0.event_file (SET filename = N'C:\xe\it''s.xel')
+//   WITH (MAX_DISPATCH_LATENCY = 1 SECONDS)
+```
+
 ## Working on Windows
 
 The port is pure Go with no dependencies, and the tests need nothing but the Go
