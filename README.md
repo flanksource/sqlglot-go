@@ -20,6 +20,27 @@ order is a measured gap, not the library's table of contents.
 [data-agent-service](https://github.com/calvinchengx/data-agent-service),
 whose Go executor is the first consumer, is stale.
 
+## Command line app
+
+Build the CLI with `make build` and run `.tmp/sqlglot`, install the current checkout with `make install` into Go's `GOBIN` (or `GOPATH/bin`), or install a tagged release with `go install github.com/flanksource/sqlglot-go/cmd/sqlglot@latest`. Releases attach Linux, macOS, and Windows archives for amd64 and arm64 to the GitHub release.
+
+```sh
+sqlglot dialects
+sqlglot parse --format json --dialect tsql 'SELECT TOP 2 name FROM users'
+sqlglot validate --file query.sql
+sqlglot format --file query.sql
+printf 'SELECT a FROM t' | sqlglot tokens --format json
+```
+
+`parse` shows formatted SQL and its expression class; `--format json` includes the reference-shaped tree. `validate` exits nonzero unless the input parses as one `SELECT`, `UNION`, `INTERSECT`, or `EXCEPT` query, and reports the class on success. It does not check database execution, schema names, or read-only policy; a parsed query may still have side effects. `format` only changes whitespace and also works on SQL that the parser does not support. SQL can come from one positional argument, `--file`, or stdin. `neutral` is the name for the default dialect; `dialects` lists the other supported names. SQL command errors begin with the selected dialect, or `neutral` when no dialect is selected.
+
+For T-SQL scripts, `parse` scans every `GO` batch and reports each unsupported statement with a dialect prefix, file, line, column, and a bounded highlighted SQL excerpt. It exits nonzero if any statement is unsupported. `--format json` emits structured diagnostics for tooling. `validate` still requires one query.
+
+```sh
+sqlglot parse -d tsql --file testdata/tsql-routines/if_begin_else.sql
+sqlglot parse -d tsql --format json --file testdata/tsql-routines/refuse/unknown_statement.sql
+```
+
 ## Coverage against data agent service
 
 The SQL the first consumer is actually held to -- the gold answers in its

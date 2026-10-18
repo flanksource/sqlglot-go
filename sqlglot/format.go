@@ -36,12 +36,28 @@ type formatFrame struct {
 // was written with, keyword case included, and comments stay where they stood.
 // A statement the tokenizer cannot lex is an error.
 func Format(sql, dialect string) (string, error) {
-	toks, err := Tokenize(sql, dialect)
+	return formatSQL(sql, dialect, false)
+}
+
+// FormatScript keeps existing line boundaries while formatting clauses.
+func FormatScript(sql, dialect string) (string, error) {
+	return formatSQL(sql, dialect, true)
+}
+
+func formatSQL(sql, dialect string, preserveLineBreaks bool) (string, error) {
+	tk, err := NewTokenizer(dialect)
+	if err != nil {
+		return "", fmt.Errorf("format: %w", err)
+	}
+	if preserveLineBreaks && dialect == "tsql" {
+		tk.noCommandPayload = true
+	}
+	toks, err := tk.Tokenize(sql)
 	if err != nil {
 		return "", fmt.Errorf("format: %w", err)
 	}
 	src := []rune(sql)
-	f := &formatter{frames: []formatFrame{{subquery: true}}}
+	f := &formatter{frames: []formatFrame{{subquery: true}}, preserveLineBreaks: preserveLineBreaks}
 	prevEnd := -1
 	for i, tok := range toks {
 		var next TokenType
@@ -58,12 +74,13 @@ func Format(sql, dialect string) (string, error) {
 }
 
 type formatter struct {
-	out          strings.Builder
-	frames       []formatFrame
-	prev         TokenType
-	caseDepth    int
-	afterBetween bool
-	breakPending bool
+	out                strings.Builder
+	frames             []formatFrame
+	prev               TokenType
+	caseDepth          int
+	afterBetween       bool
+	breakPending       bool
+	preserveLineBreaks bool
 }
 
 func (f *formatter) top() *formatFrame { return &f.frames[len(f.frames)-1] }
@@ -94,9 +111,10 @@ func (f *formatter) token(tok Token, next TokenType, gap, text string) {
 		}
 	case joinTokens[tok.Type] && !joinTokens[f.prev] && next != TokL_PAREN:
 		breakAt = depth
-	case tok.Type == TokON:
+	case tok.Type == TokON && (!f.preserveLineBreaks || f.top().clause != TokSET):
 		breakAt = depth + 1
-	case (tok.Type == TokAND || tok.Type == TokOR) && f.caseDepth == 0 && !f.afterBetween:
+	case (tok.Type == TokAND || tok.Type == TokOR) && f.caseDepth == 0 && !f.afterBetween &&
+		(!f.preserveLineBreaks || tok.Type != TokOR || f.prev != TokCREATE):
 		breakAt = depth + 1
 	case f.prev == TokCOMMA && listClauses[f.top().clause] && f.caseDepth == 0:
 		breakAt = depth + 1
@@ -104,10 +122,17 @@ func (f *formatter) token(tok Token, next TokenType, gap, text string) {
 	if f.breakPending && breakAt < 0 {
 		breakAt = depth
 	}
+	if f.preserveLineBreaks && breakAt < 0 && strings.ContainsAny(gap, "\r\n") {
+		breakAt = depth
+	}
 	f.breakPending = false
 	f.separate(strings.TrimSpace(gap), gap != "", breakAt)
 	f.out.WriteString(text)
 	f.advance(tok.Type, next)
+	if f.preserveLineBreaks && tok.Type == TokCOMMAND && strings.EqualFold(tok.Text, "GO") {
+		f.frames = []formatFrame{{subquery: true}}
+		f.caseDepth, f.afterBetween, f.breakPending = 0, false, false
+	}
 }
 
 // separate writes what stands between the previous token and the next one: a
