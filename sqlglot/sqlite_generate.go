@@ -153,9 +153,16 @@ func (g *generator) sqliteComputedColumn(e *Expression) string {
 
 // sqliteGroupConcat writes GROUP_CONCAT with its DISTINCT in front of the
 // first argument -- the reference keeps only the first of a DISTINCT's
-// expressions -- and refuses the ORDER BY SQLite cannot say.
+// expressions -- and its ORDER BY inside the call after the arguments.
+// The port DIVERGES here: the reference refuses the ORDER BY, but SQLite has
+// ordered an aggregate's input since 3.44.
 func (g *generator) sqliteGroupConcat(e *Expression) string {
 	this, _ := e.Args["this"].(*Expression)
+	ordering := ""
+	if this != nil && this.Class == "Order" {
+		ordering = " " + strings.TrimSpace(g.node(New("Order", Arg{"expressions", this.Args["expressions"]})))
+		this, _ = this.Args["this"].(*Expression)
+	}
 	prefix := ""
 	if this != nil && this.Class == "Distinct" {
 		items, _ := this.Args["expressions"].([]*Expression)
@@ -164,14 +171,11 @@ func (g *generator) sqliteGroupConcat(e *Expression) string {
 		}
 		this, prefix = items[0], "DISTINCT "
 	}
-	if this != nil && this.Class == "Order" {
-		return g.fail("GROUP_CONCAT with an ORDER BY, which SQLite does not support")
-	}
 	args := []string{g.node(this)}
 	if sep := g.child(e, "separator"); sep != "" {
 		args = append(args, sep)
 	}
-	return "GROUP_CONCAT(" + prefix + strings.Join(args, ", ") + ")"
+	return "GROUP_CONCAT(" + prefix + strings.Join(args, ", ") + ordering + ")"
 }
 
 // sqliteTransaction writes `BEGIN [DEFERRED|IMMEDIATE|EXCLUSIVE]

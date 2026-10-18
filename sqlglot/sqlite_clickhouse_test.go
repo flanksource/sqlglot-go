@@ -41,18 +41,38 @@ func TestProviderShapesRoundTrip(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		tree, err := ParseOne(c.sql, c.dialect)
-		if err != nil {
-			t.Errorf("[%s] parse %s: %v", c.dialect, c.sql, err)
-			continue
-		}
-		got, err := Generate(tree, c.dialect)
-		if err != nil {
-			t.Errorf("[%s] generate %s: %v", c.dialect, c.sql, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("[%s] %s\n want %s\n got  %s", c.dialect, c.sql, c.want, got)
-		}
+		assertRoundTrip(t, c.dialect, c.sql, c.want)
+	}
+}
+
+// TestSQLiteGroupConcatOrderBy: SQLite 3.44 orders an aggregate's input inside
+// the call, after its arguments, so GROUP_CONCAT keeps its ORDER BY -- with a
+// DISTINCT and with a separator -- where the reference refuses it.
+func TestSQLiteGroupConcatOrderBy(t *testing.T) {
+	cases := []struct{ sql, want string }{
+		{`SELECT group_concat(DISTINCT x ORDER BY x) FROM t`, `SELECT GROUP_CONCAT(DISTINCT x ORDER BY x) FROM t`},
+		{`SELECT group_concat(x, ';' ORDER BY y DESC) FROM t`, `SELECT GROUP_CONCAT(x, ';' ORDER BY y DESC) FROM t`},
+		{`SELECT group_concat(x ORDER BY y, z) FROM t`, `SELECT GROUP_CONCAT(x ORDER BY y, z) FROM t`},
+		{`SELECT group_concat(DISTINCT x) FROM t`, `SELECT GROUP_CONCAT(DISTINCT x) FROM t`},
+	}
+	for _, c := range cases {
+		assertRoundTrip(t, "sqlite", c.sql, c.want)
+	}
+}
+
+func assertRoundTrip(t *testing.T, dialect, sql, want string) {
+	t.Helper()
+	tree, err := ParseOne(sql, dialect)
+	if err != nil {
+		t.Errorf("[%s] parse %s: %v", dialect, sql, err)
+		return
+	}
+	got, err := Generate(tree, dialect)
+	if err != nil {
+		t.Errorf("[%s] generate %s: %v", dialect, sql, err)
+		return
+	}
+	if got != want {
+		t.Errorf("[%s] %s\n want %s\n got  %s", dialect, sql, want, got)
 	}
 }
