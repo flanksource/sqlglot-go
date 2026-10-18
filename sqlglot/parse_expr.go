@@ -3599,6 +3599,9 @@ func (p *parser) atIdentifierWhere(namingATable bool) bool {
 	if c.Type == TokVAR || c.Type == TokIDENTIFIER {
 		return true
 	}
+	if p.dialect == "tsql" && (c.Type == TokDATE || c.Type == TokTIME || c.Type == TokCOMMENT) {
+		return true
+	}
 	// A no-paren function -- CURRENT_DATE and friends -- is a call, not a
 	// name, even though it looks like a bare word.
 	if _, isFunc := p.tables.NoParenFunctions[c.Type]; isFunc && !namingATable {

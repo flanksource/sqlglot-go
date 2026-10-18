@@ -170,6 +170,7 @@ func init() {
 		"MacroOverloads":                      (*generator).writeMacroOverloads,
 		"SplitPart":                           (*generator).writeSplitPart,
 		"FileFormatProperty":                  (*generator).writeFileFormat,
+		"TextImageOnProperty":                 (*generator).writeTextImageOnProperty,
 		"EncodeProperty":                      (*generator).writeEncodeProperty,
 		"DateAdd":                             (*generator).writeDateAdd,
 		"DateSub":                             (*generator).writeDateSub,
@@ -187,6 +188,14 @@ func init() {
 		"TriggerExecute":                      (*generator).writeTriggerExecute,
 		"OutputParameter":                     (*generator).writeOutputParameter,
 		"Throw":                               (*generator).writeThrow,
+		"Print":                               (*generator).writeTSQLPrint,
+		"While":                               (*generator).writeTSQLWhile,
+		"TryCatch":                            (*generator).writeTSQLTryCatch,
+		"DeclareCursor":                       (*generator).writeTSQLDeclareCursor,
+		"OpenCursor":                          (*generator).writeTSQLCursorAction,
+		"FetchCursor":                         (*generator).writeTSQLFetchCursor,
+		"CloseCursor":                         (*generator).writeTSQLCursorAction,
+		"DeallocateCursor":                    (*generator).writeTSQLCursorAction,
 		"CreateEventSession":                  (*generator).writeCreateEventSession,
 		"AlterEventSession":                   (*generator).writeAlterEventSession,
 		"DropEventSession":                    (*generator).writeDropEventSession,
@@ -4170,7 +4179,14 @@ func (g *generator) writeCreate(e *Expression) string {
 			}
 		}
 	}
-	out := g.withPrefix(e, "CREATE") + " "
+	verb := "CREATE"
+	if alter, _ := e.Args["alter"].(bool); alter {
+		if g.dialect != "tsql" || (kind != "FUNCTION" && kind != "PROCEDURE") {
+			return g.fail("ALTER routine for a kind this dialect does not write")
+		}
+		verb = "ALTER"
+	}
+	out := g.withPrefix(e, verb) + " "
 	// A COLUMNSTORE index is CLUSTERED unless the flag says otherwise, and
 	// the words for which come right after CREATE -- before OR REPLACE,
 	// UNIQUE, or the kind itself. Unset (nil) means the index was never a
@@ -4427,6 +4443,13 @@ func (g *generator) writePropertyList(e *Expression) string {
 	return out
 }
 
+func (g *generator) writeTextImageOnProperty(e *Expression) string {
+	if g.dialect != "tsql" || e.Args["this"] == nil {
+		return g.fail("TEXTIMAGE_ON without a T-SQL filegroup")
+	}
+	return "TEXTIMAGE_ON " + g.child(e, "this")
+}
+
 // writeProperty writes a plain key and value -- the property with no word of
 // its own. The key is written by NAME rather than as the node it is, so a
 // string key loses its quotes and a bare one keeps none; the dialect that
@@ -4539,6 +4562,10 @@ func (g *generator) writeProperties(e *Expression) (before string, out string, f
 	var beforeKind []string
 	movedSecurity, security := false, ""
 	for _, item := range items {
+		if item.Class == "TextImageOnProperty" && g.dialect == "tsql" {
+			root = append(root, g.node(item))
+			continue
+		}
 		switch g.tables.PropertyLocation[item.Class] {
 		case "POST_SCHEMA":
 			// MySQL writes a VIEW's SQL SECURITY (the first one) after the
@@ -7306,6 +7333,9 @@ func (g *generator) writeCopyParameter(e *Expression) string {
 // template probe fills them all and so never sees the shapes that matter.
 func (g *generator) writeSequenceProperties(e *Expression) string {
 	out := ""
+	if dtype := g.child(e, "dtype"); dtype != "" {
+		out += " AS " + dtype
+	}
 	for _, part := range []struct{ key, word string }{
 		{"start", "START WITH"}, {"increment", "INCREMENT BY"},
 		{"minvalue", "MINVALUE"}, {"maxvalue", "MAXVALUE"},

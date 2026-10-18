@@ -108,7 +108,8 @@ func (p *parser) endOfTSQLStatement() int {
 // `SELECT a FROM t RETURN` is a query and a RETURN. (THROW is not reserved --
 // T-SQL itself needs a `;` before it -- so it is left to be an alias.)
 func (p *parser) atReservedStatementWord() bool {
-	return p.inRoutineBody && (p.atWords("RETURN") || p.atWords("IF"))
+	return p.inRoutineBody && (p.atWords("RETURN") || p.atWords("IF") || p.atWords("PRINT") || p.atWords("WHILE") ||
+		p.atWords("OPEN") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") || p.atWords("FETCH"))
 }
 
 // opensABlock reports whether any BEGIN in the tokens opens a BEGIN … END
@@ -159,13 +160,21 @@ func (p *parser) parseTSQLStatement() (*Expression, error) {
 		return nil, p.unsupported("a statement that reads nothing")
 	}
 	if statement.Class == "Command" {
-		return nil, &UnsupportedError{Construct: "a statement kept only as text in a routine body"}
+		token := p.tokens[start]
+		return nil, &UnsupportedError{Construct: "a statement kept only as text in a routine body",
+			Start: token.Start, End: token.End, HasRange: true}
 	}
 	return statement, nil
 }
 
 func (p *parser) parseTSQLStatementKind() (*Expression, error) {
 	c := p.curr()
+	if c.Type == TokBEGIN && p.atWords("BEGIN", "TRY") {
+		return p.parseTSQLTryCatch()
+	}
+	if p.atWords("FETCH") {
+		return p.parseTSQLFetchCursor()
+	}
 	switch {
 	case c.Type == TokVAR || c.Type == TokIDENTIFIER || c.Type == TokPARAMETER ||
 		c.Type == TokSTRING || c.Type == TokNUMBER:
@@ -175,8 +184,17 @@ func (p *parser) parseTSQLStatementKind() (*Expression, error) {
 		if p.atWords("THROW") {
 			return p.parseTSQLThrow()
 		}
+		if p.atWords("PRINT") {
+			return p.parseTSQLPrint()
+		}
 		if p.atWords("IF") {
 			return p.parseTSQLIf()
+		}
+		if p.atWords("WHILE") {
+			return p.parseTSQLWhile()
+		}
+		if p.atWords("OPEN") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") {
+			return p.parseTSQLCursorAction()
 		}
 		return nil, p.unsupported("a statement this port does not read in a routine body")
 	case c.Type == TokBEGIN && p.opensBlockAt(p.index):
@@ -193,6 +211,63 @@ func (p *parser) parseTSQLStatementKind() (*Expression, error) {
 		return nil, p.unsupported("ELSE without IF")
 	}
 	return p.parseStatement()
+}
+
+func (p *parser) parseTSQLTryCatch() (*Expression, error) {
+	p.advance() // BEGIN
+	p.advance() // TRY
+	tryBody, err := p.parseTSQLTrySection("TRY")
+	if err != nil {
+		return nil, err
+	}
+	if !p.atWords("BEGIN", "CATCH") {
+		return nil, p.unsupported("END TRY without BEGIN CATCH")
+	}
+	p.advance()
+	p.advance()
+	catchBody, err := p.parseTSQLTrySection("CATCH")
+	if err != nil {
+		return nil, err
+	}
+	return New("TryCatch", Arg{"try", tryBody}, Arg{"catch", catchBody}), nil
+}
+
+func (p *parser) parseTSQLTrySection(closing string) (*Expression, error) {
+	was := p.inRoutineBody
+	p.inRoutineBody = true
+	defer func() { p.inRoutineBody = was }()
+	var statements []*Expression
+	for {
+		for p.match(TokSEMICOLON) {
+		}
+		if p.curr() == nil || p.at(TokEND) {
+			if !p.atWords("END", closing) || len(statements) == 0 {
+				return nil, p.unsupported("BEGIN " + closing + " without a matching nonempty END " + closing)
+			}
+			p.advance()
+			p.advance()
+			return New("Block", Arg{"expressions", statements}), nil
+		}
+		run, err := p.parseTSQLRun()
+		if err != nil {
+			return nil, err
+		}
+		statements = append(statements, run...)
+	}
+}
+
+func (p *parser) parseTSQLPrint() (*Expression, error) {
+	keyword := p.curr()
+	p.advance()
+	if p.atStatementEnd() || p.at(TokEND) {
+		return nil, &UnsupportedError{Construct: "PRINT without an expression",
+			Start: keyword.Start, End: keyword.End, HasRange: true}
+	}
+	value, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	return New("Print", Arg{"this", value}), nil
 }
 
 // createsARoutine reports whether the CREATE here makes a module of its own:
@@ -241,6 +316,22 @@ func (p *parser) parseTSQLIf() (*Expression, error) {
 		}
 	}
 	return New("IfBlock", Arg{"this", condition}, Arg{"true", branch}, Arg{"false", otherwise}), nil
+}
+
+func (p *parser) parseTSQLWhile() (*Expression, error) {
+	p.advance()
+	condition, err := p.parseTSQLCondition()
+	if err != nil {
+		return nil, err
+	}
+	if p.curr() == nil || p.atAny(TokSEMICOLON, TokEND, TokELSE) {
+		return nil, p.unsupported("WHILE without a statement to run")
+	}
+	body, err := p.parseTSQLBranch()
+	if err != nil {
+		return nil, err
+	}
+	return New("While", Arg{"this", condition}, Arg{"expression", body}), nil
 }
 
 // parseTSQLCondition reads an IF's condition. Parentheses round the WHOLE of

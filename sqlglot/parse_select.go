@@ -1270,7 +1270,8 @@ func (p *parser) atAliasName() bool {
 	if c.Type == TokSTRING {
 		return p.tables.StringAliases
 	}
-	return c.Type == TokVAR || c.Type == TokIDENTIFIER
+	return c.Type == TokVAR || c.Type == TokIDENTIFIER ||
+		(p.dialect == "tsql" && (c.Type == TokDATE || c.Type == TokTIME || c.Type == TokCOMMENT))
 }
 
 // parseConnect reads Oracle's hierarchical query clause. START WITH may
@@ -1477,7 +1478,10 @@ func (p *parser) parseQueryModifiers(sel *Expression) error {
 			}
 			locks, _ := sel.Args["locks"].([]*Expression)
 			sel.Set("locks", append(locks, lock))
-		case p.at(TokFETCH):
+		case p.at(TokFETCH) && (p.dialect != "tsql" ||
+			(sel.Args["offset"] != nil && !p.nextWords("NEXT", "FROM") && !p.nextWords("PRIOR", "FROM") &&
+				!p.nextWords("FIRST", "FROM") && !p.nextWords("LAST", "FROM") &&
+				!p.nextWords("ABSOLUTE") && !p.nextWords("RELATIVE"))):
 			fetch, err := p.parseFetch()
 			if err != nil {
 				return err

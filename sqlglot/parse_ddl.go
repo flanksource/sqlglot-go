@@ -23,7 +23,7 @@ import (
 // SELECT` differ in what `this` holds, not just in what follows it.
 func (p *parser) parseCreate() (*Expression, error) {
 	start := *p.curr()
-	p.advance() // CREATE
+	p.advance() // CREATE, or T-SQL ALTER of a routine
 
 	// `OR <word>` turns on a flag of the reference's own: REPLACE and
 	// T-SQL's ALTER both mean `replace`, Databricks' REFRESH means
@@ -692,7 +692,15 @@ var writeClasses = map[string]bool{
 	// A Command is a statement nothing here understood -- the tokenizer took
 	// the payload verbatim and no grammar was applied to it. It is a write
 	// because it cannot be shown to be anything else.
-	"Command": true,
+	"Command":          true,
+	"Print":            true,
+	"While":            true,
+	"TryCatch":         true,
+	"DeclareCursor":    true,
+	"OpenCursor":       true,
+	"FetchCursor":      true,
+	"CloseCursor":      true,
+	"DeallocateCursor": true,
 	// A transaction verb changes no rows by itself, but it is not read-only
 	// either: what follows it is held open, committed or thrown away. A guard
 	// that let one past would be letting the session be steered.
@@ -1844,7 +1852,7 @@ func (p *parser) parseAlter() (*Expression, error) {
 		p.advance()
 		p.advance()
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("ALTER with more than this port reads")
 	}
 	return New("Alter",
@@ -3038,7 +3046,7 @@ func (p *parser) parseFunctionRest(name *Expression, kind string, replace, exist
 			properties = append(properties, returns)
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("CREATE " + kind + " with more than this port reads")
 	}
 
@@ -3441,6 +3449,11 @@ func (p *parser) parseFunctionBody() (body, returns *Expression, err error) {
 			return nil, nil, err
 		}
 		return New("Return", Arg{"this", inner}), nil, nil
+	case p.dialect == "tsql" && (p.at(TokBEGIN) || p.atWords("AS", "BEGIN")):
+		p.match(TokALIAS)
+		p.advance()
+		body, err := p.parseTSQLStatements(true)
+		return body, nil, err
 	case p.match(TokALIAS):
 		// `AS TABLE <query>` is DuckDB's way of saying the function returns a
 		// table; elsewhere those words are not a return type at all, and
@@ -3462,13 +3475,6 @@ func (p *parser) parseFunctionBody() (body, returns *Expression, err error) {
 				return nil, nil, err
 			}
 			return New("Return", Arg{"this", inner}), nil, nil
-		}
-		// A T-SQL scalar function's body is a block of statements ending in
-		// a RETURN. The reference reads its first statement and stops; the
-		// port reads the block a procedure's BEGIN opens.
-		if p.dialect == "tsql" && p.match(TokBEGIN) {
-			body, err := p.parseTSQLStatements(true)
-			return body, nil, err
 		}
 		if c := p.curr(); c != nil && c.Type == TokSTRING {
 			p.advance()
@@ -4325,6 +4331,9 @@ func (p *parser) parseTransaction() (*Expression, error) {
 		(p.atWords("WORK") && p.dialect != "tsql" && p.dialect != "fabric") {
 		p.advance()
 	}
+	if p.atStatementEnd() {
+		return node, nil
+	}
 	// `AND CHAIN` starts a new transaction where the old one ended, and
 	// `AND NO CHAIN` says so explicitly. Only a COMMIT records it.
 	if p.at(TokAND) {
@@ -4371,7 +4380,7 @@ func (p *parser) parseTransaction() (*Expression, error) {
 		}
 		return node, nil
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		name, err := p.parsePrimary()
 		if err != nil {
 			return nil, err
@@ -4428,7 +4437,7 @@ func (p *parser) parseTransaction() (*Expression, error) {
 			return nil, p.unsupported("unclosed COMMIT WITH")
 		}
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported(verb + " with more than this port reads")
 	}
 	return node, nil
@@ -6183,6 +6192,9 @@ func (p *parser) parseLoadData() (*Expression, error) {
 // and stopping where a type follows without a comma. That is the same rule
 // here, and it needs no lookahead.
 func (p *parser) parseDeclare() (*Expression, error) {
+	if p.dialect == "tsql" && p.startsTSQLCursorDeclaration() {
+		return p.parseTSQLDeclareCursor()
+	}
 	start := *p.curr()
 	p.advance() // DECLARE
 
@@ -7080,6 +7092,18 @@ func (p *parser) parseSequenceProperties() (*Expression, error) {
 
 	for p.curr() != nil {
 		p.match(TokCOMMA)
+		if p.match(TokALIAS) {
+			if p.dialect != "tsql" {
+				return nil, p.unsupported("SEQUENCE AS type in this dialect")
+			}
+			dtype, err := p.parseDataType()
+			if err != nil {
+				return nil, err
+			}
+			seq.Set("dtype", dtype)
+			read = true
+			continue
+		}
 		var key string
 		switch {
 		case p.matchUnquotedWord("INCREMENT"):
@@ -7178,7 +7202,7 @@ func (p *parser) parseSequenceRest(table *Expression, replace, exists bool) (*Ex
 	if err != nil {
 		return nil, err
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("CREATE SEQUENCE with more than this port reads")
 	}
 	var properties *Expression

@@ -47,9 +47,18 @@ func ParseOne(sql, dialect string) (*Expression, error) {
 	if err != nil {
 		return nil, err
 	}
-	// T-SQL that opens a BEGIN … END block is read with END as the keyword
-	// that closes it, not as a command swallowing the rest of the statement.
-	if dialect == "tsql" && opensABlock(toks) {
+	// T-SQL blocks and PRINT need each token, not a command payload that
+	// swallows the rest of the statement.
+	retokenizeTSQL := dialect == "tsql" && opensABlock(toks)
+	if dialect == "tsql" {
+		for _, token := range toks {
+			if token.Type == TokCOMMAND && (strings.EqualFold(token.Text, "PRINT") || strings.EqualFold(token.Text, "FETCH")) {
+				retokenizeTSQL = true
+				break
+			}
+		}
+	}
+	if retokenizeTSQL {
 		tk.noCommandPayload = true
 		if toks, err = tk.Tokenize(sql); err != nil {
 			return nil, err
@@ -141,13 +150,15 @@ func (p *parser) atNextStatement() bool {
 	if p.dialect != "tsql" {
 		return false
 	}
-	if p.atAny(TokSELECT, TokINSERT, TokUPDATE, TokDELETE, TokMERGE, TokEXECUTE, TokDECLARE, TokSET) ||
-		p.atWords("IF") {
+	if p.atAny(TokSELECT, TokINSERT, TokUPDATE, TokDELETE, TokMERGE, TokEXECUTE, TokDECLARE, TokSET,
+		TokBEGIN, TokCREATE, TokALTER, TokDROP, TokTRUNCATE, TokCOMMIT, TokROLLBACK) ||
+		p.atWords("IF") || p.atWords("PRINT") || p.atWords("WHILE") || p.atWords("OPEN") ||
+		p.atWords("FETCH") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") {
 		return true
 	}
 	// Inside a routine body the statements it holds begin one too, and an
 	// ELSE ends the single statement an IF runs.
-	return p.inRoutineBody && (p.atAny(TokBEGIN, TokCREATE, TokDROP, TokTRUNCATE, TokCOMMIT, TokROLLBACK, TokELSE) ||
+	return p.inRoutineBody && (p.atAny(TokEND, TokCREATE, TokDROP, TokTRUNCATE, TokCOMMIT, TokROLLBACK, TokELSE) ||
 		p.atWords("RETURN") || p.atWords("THROW"))
 }
 
@@ -202,6 +213,9 @@ func (p *parser) match(tt TokenType) bool {
 type UnsupportedError struct {
 	Construct string
 	Token     string
+	Start     int
+	End       int
+	HasRange  bool
 	// TokenIsKeyword reports whether Token is dialect vocabulary rather than
 	// something the caller wrote. Only a keyword is safe to record.
 	TokenIsKeyword bool
@@ -236,14 +250,16 @@ func (p *parser) unsupported(what string) error {
 	c := p.curr()
 	text := "end of statement"
 	keyword := false
+	start, end := 0, 0
 	if c != nil {
 		text = c.Text
+		start, end = c.Start, c.End
 		// Everything that is not a name, a string or a number came out of the
 		// dialect's own keyword trie.
 		keyword = c.Type != TokIDENTIFIER && c.Type != TokVAR &&
 			c.Type != TokSTRING && c.Type != TokNUMBER
 	}
-	return &UnsupportedError{Construct: what, Token: text, TokenIsKeyword: keyword}
+	return &UnsupportedError{Construct: what, Token: text, TokenIsKeyword: keyword, Start: start, End: end, HasRange: c != nil}
 }
 
 // parseOne parses one statement, or a Block when another statement follows
@@ -270,6 +286,9 @@ func (p *parser) finishStatementBlock(batch []*Expression) (*Expression, error) 
 	if p.curr() == nil {
 		return New("Block", Arg{"expressions", batch}), nil
 	}
+	if p.dialect == "tsql" && tsqlBatchOnlyRoutine(batch[len(batch)-1]) {
+		return nil, p.unsupported("a routine definition followed by another statement in one batch")
+	}
 	// A bare END here is the reference's EndStatement, the closer of a body.
 	// A column of that name would mean less than the input, so it is refused.
 	if c := p.curr(); c.Type != TokIDENTIFIER && strings.EqualFold(c.Text, "END") {
@@ -282,6 +301,9 @@ func (p *parser) finishStatementBlock(batch []*Expression) (*Expression, error) 
 	if err != nil {
 		return nil, err
 	}
+	if p.dialect == "tsql" && tsqlBatchOnlyRoutine(statement) && len(batch) > 0 {
+		return nil, p.unsupported("a routine definition after another statement in one batch")
+	}
 	batch = append(batch, statement)
 	switch {
 	case p.curr() == nil:
@@ -291,6 +313,14 @@ func (p *parser) finishStatementBlock(batch []*Expression) (*Expression, error) 
 	default:
 		return nil, p.unsupported("trailing tokens")
 	}
+}
+
+func tsqlBatchOnlyRoutine(statement *Expression) bool {
+	if statement == nil || statement.Class != "Create" {
+		return false
+	}
+	kind, _ := statement.Args["kind"].(string)
+	return kind == "PROCEDURE" || kind == "FUNCTION"
 }
 
 // parseStatement returns a tree or an error, never (nil, nil).
@@ -323,6 +353,9 @@ func (p *parser) parseStatement() (*Expression, error) {
 			return p.parseTSQLIf()
 		}
 		return p.parseIfStatement()
+	}
+	if p.dialect == "tsql" && p.atWords("WHILE") {
+		return p.parseTSQLWhile()
 	}
 	// A bare IF not immediately followed by "(" is not a function call either
 	// -- in a dialect without a real IF statement, the reference cannot parse
@@ -360,6 +393,9 @@ func (p *parser) startsAValuesClause() bool {
 // parseStatementBody reads a statement once any WITH clause in front of it has
 // been taken off.
 func (p *parser) parseStatementBody() (*Expression, error) {
+	if p.dialect == "tsql" && p.atWords("PRINT") {
+		return p.parseTSQLPrint()
+	}
 	if p.atEventSession() {
 		return p.parseEventSession()
 	}
@@ -373,6 +409,17 @@ func (p *parser) parseStatementBody() (*Expression, error) {
 		return p.parseDrop()
 	}
 	if p.at(TokALTER) {
+		if p.dialect == "tsql" && (p.nextWords("FUNCTION") || p.nextWords("PROCEDURE") || p.nextWords("PROC")) {
+			created, err := p.parseCreate()
+			if err != nil {
+				return nil, err
+			}
+			if created.Class != "Create" {
+				return nil, p.unsupported("ALTER routine without a typed body")
+			}
+			created.Set("alter", true)
+			return created, nil
+		}
 		return p.parseAlter()
 	}
 	if p.at(TokUPDATE) {
@@ -431,6 +478,12 @@ func (p *parser) parseStatementBody() (*Expression, error) {
 	}
 	if p.at(TokDECLARE) {
 		return p.parseDeclare()
+	}
+	if p.dialect == "tsql" && (p.atWords("OPEN") || p.atWords("CLOSE") || p.atWords("DEALLOCATE")) {
+		return p.parseTSQLCursorAction()
+	}
+	if p.dialect == "tsql" && p.atWords("FETCH") {
+		return p.parseTSQLFetchCursor()
 	}
 	if p.at(TokBEGIN) || p.at(TokCOMMIT) || p.at(TokROLLBACK) ||
 		(p.at(TokEND) && p.tables.EndCommits) {

@@ -203,6 +203,17 @@ func (p *parser) parseReturning() (*Expression, error) {
 			}
 			into = target
 		}
+		if p.at(TokL_PAREN) {
+			columns, err := p.parseParenthesisedIdentifiers()
+			if err != nil {
+				return nil, err
+			}
+			target, ok := into.(*Expression)
+			if !ok || target == nil {
+				return nil, p.unsupported("OUTPUT INTO columns without a target")
+			}
+			into = New("Schema", Arg{"this", target}, Arg{"expressions", columns})
+		}
 	}
 	return New("Returning", Arg{"expressions", items}, Arg{"into", into}), nil
 }
@@ -251,12 +262,17 @@ func (p *parser) parseDelete() (*Expression, error) {
 		}
 		earlyReturning = r
 	}
-	if !p.match(TokFROM) {
+	var table *Expression
+	if p.match(TokFROM) {
+		table, err = p.parseTable()
+		if err != nil {
+			return nil, err
+		}
+	} else if p.dialect == "tsql" && len(tables) == 1 {
+		table = tables[0]
+		tables = nil
+	} else {
 		return nil, p.unsupported("DELETE without FROM")
-	}
-	table, err := p.parseTable()
-	if err != nil {
-		return nil, err
 	}
 	// The target may itself be joined -- `DELETE t1 FROM t1 LEFT JOIN t2 ...`.
 	joins, err := p.parseJoins()

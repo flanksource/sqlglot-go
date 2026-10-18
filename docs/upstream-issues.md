@@ -580,3 +580,45 @@ it is a spelling change over the reference's own tree, not a re-derivation
 of what the database would actually return.
 
 **Reference:** sqlglot @ ceb5111421e9.
+
+---
+
+## sqlglot cannot read a T-SQL routine body -- and the port DIVERGES here
+
+**Found by:** reading the synthetic routine corpus (`testdata/tsql-routines/`)
+through the reference while adding routine definitions.
+
+This entry is the exception to "nothing here is worked around": a migration
+tool reads every stored procedure and function in a database from its
+`sys.sql_modules` definition, and the reference reads almost none of them
+correctly. Each form below either fails, falls back to a `Command`, or --
+worst -- parses into a tree that writes back as SQL with a different meaning.
+The port reads a real node instead. Every form the reference DOES read the
+port reads into the reference's tree, and those forms are in the differential
+corpus (`EDGE_CORPUS` in `harness/oracle.py`).
+
+| Written | Reference | Port |
+|---|---|---|
+| `IF NOT EXISTS (…) RETURN; SELECT 1` | `RETURN` becomes the condition's alias: `IF NOT EXISTS(…) AS RETURN BEGIN SELECT 1` | `IfBlock(true=Return)`, written `IF NOT EXISTS(…) RETURN` |
+| `IF c SELECT 1 ELSE SELECT 2` | `IF c BEGIN SELECT 1; ELSE BEGIN SELECT 2 AS END` | a branch is the statement itself, written without BEGIN |
+| `…; END ELSE BEGIN …; END` | the tokenizer makes END a command and swallows `ELSE BEGIN …` as its text | in a batch that opens a block, END stays a keyword (`Tokenizer.noCommandPayload`) |
+| `RETURN 1`, `RETURN` | parse error / a column called RETURN | `Return`, with or without a value |
+| `THROW 50001, 'm', 1` | parse error | `Throw(this, message, state)`, a port-only class |
+| `SET NOCOUNT ON SELECT 1` (no `;`) | parse error | two statements, as in a batch |
+| `RETURNS INT AS BEGIN DECLARE …; RETURN x; END` | reads the first statement, then `END` as a statement of its own | `Create(begin=True, expression=Block([…, EndStatement]))` |
+| `@b INT OUT` (no default) | `ColumnDef(output=OUT)` | the same; the port used to refuse it |
+| `CREATE PROC p AS BEGIN …; END` | writes `AS …; END`, dropping the BEGIN | writes the BEGIN back |
+
+The one IF form the reference reads its own way on purpose,
+`IF <cond> EXEC('<sql>')` (the EXEC is an alias there too), is in its own
+corpus and is still read its way.
+
+Inside a routine body the port refuses what it cannot model rather than
+keeping text: a bare word (`frobnicate;`) and a second
+`CREATE PROCEDURE|FUNCTION|VIEW|TRIGGER`, which needs a batch of its own.
+PRINT, WHILE, TRY/CATCH, and cursor declarations and actions now have typed
+nodes. RETURN and IF, which T-SQL reserves, are never an implicit alias in a
+body; THROW is not reserved, so -- as in SQL Server -- the statement before it
+needs its `;`.
+
+**Reference:** sqlglot @ ceb5111421e9.
