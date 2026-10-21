@@ -3,6 +3,7 @@ module github.com/flanksource/sqlglot-go
 go 1.26.1
 
 require (
+	ariga.io/atlas v0.38.0
 	github.com/flanksource/clicky v1.21.80
 	github.com/mattn/go-runewidth v0.0.21
 	github.com/onsi/ginkgo/v2 v2.32.1

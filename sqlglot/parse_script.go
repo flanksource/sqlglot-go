@@ -44,7 +44,7 @@ func ParseScript(sql, dialect string) (ScriptResult, error) {
 			continue
 		}
 		if batchStart < i {
-			batch := &parser{tokens: tokens[batchStart:i], cfg: tk.Config(), tables: tk.Config().Tables, dialect: dialect, sql: sql}
+			batch := &parser{tokens: tokens[batchStart:i], cfg: tk.Config(), tables: tk.Config().Tables, dialect: dialect, sql: sql, nativeTSQLModules: true}
 			trees, diagnostics, complete := batch.parseScriptBatch()
 			expressions = append(expressions, trees...)
 			result.Diagnostics = append(result.Diagnostics, diagnostics...)

@@ -2020,6 +2020,9 @@ func (g *generator) writeDataType(e *Expression) string {
 		return g.fail("DataType.USER-DEFINED naming nothing")
 	}
 	out, ok := g.tables.TypeSQL[string(kind)]
+	if name, native := e.Meta["tsql_type"].(string); native && g.dialect == "tsql" && g.preserveTSQLTypes {
+		out, ok = name, true
+	}
 	// MySQL's SET('a', 'b') is a type whose name is its spelling. The probe
 	// never recorded it: the members are strings, and a sized type's probe
 	// sends numbers.
@@ -4141,6 +4144,9 @@ func (g *generator) writeGroupConcat(e *Expression) string {
 // the node and the name is wrapped in a Schema when there are columns, so the
 // shape of `this` is what says which spelling this is.
 func (g *generator) writeCreate(e *Expression) string {
+	if e.Args["tsql_trigger"] == true {
+		return g.writeTSQLTrigger(e)
+	}
 	if g.dialect == "sqlite" {
 		moved, err := sqliteTransformCreate(e)
 		if err != nil {

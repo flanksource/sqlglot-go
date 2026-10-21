@@ -39,10 +39,21 @@ var ErrMultipleStatements = errors.New("sqlglot-go: more than one statement")
 
 // ParseOne parses a single statement in a dialect and returns its tree.
 func ParseOne(sql, dialect string) (*Expression, error) {
+	return parseStatement(sql, parseOptions{dialect: dialect})
+}
+
+type parseOptions struct {
+	dialect           string
+	nativeTSQLModules bool
+}
+
+func parseStatement(sql string, options parseOptions) (*Expression, error) {
+	dialect := options.dialect
 	tk, err := NewTokenizer(dialect)
 	if err != nil {
 		return nil, err
 	}
+	tk.noCommandPayload = options.nativeTSQLModules && dialect == "tsql"
 	toks, err := tk.Tokenize(sql)
 	if err != nil {
 		return nil, err
@@ -65,7 +76,7 @@ func ParseOne(sql, dialect string) (*Expression, error) {
 		}
 	}
 	cfg := tk.Config()
-	p := &parser{tokens: toks, cfg: cfg, tables: cfg.Tables, dialect: dialect, sql: sql}
+	p := &parser{tokens: toks, cfg: cfg, tables: cfg.Tables, dialect: dialect, sql: sql, nativeTSQLModules: options.nativeTSQLModules}
 	return p.parseOne()
 }
 
@@ -73,6 +84,8 @@ func ParseOne(sql, dialect string) (*Expression, error) {
 // addresses the current token, with prev and next either side, and every rule
 // is written against curr/prev the way the reference's rules are.
 type parser struct {
+	// Script analysis supports module syntax beyond the reference's opaque commands.
+	nativeTSQLModules bool
 	// inCallArgs is set while reading a call's own argument list, where a
 	// trailing IGNORE NULLS belongs to the CALL rather than to the argument.
 	inCallArgs bool
@@ -320,7 +333,7 @@ func tsqlBatchOnlyRoutine(statement *Expression) bool {
 		return false
 	}
 	kind, _ := statement.Args["kind"].(string)
-	return kind == "PROCEDURE" || kind == "FUNCTION"
+	return kind == "PROCEDURE" || kind == "FUNCTION" || statement.Args["tsql_trigger"] == true
 }
 
 // parseStatement returns a tree or an error, never (nil, nil).

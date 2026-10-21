@@ -40,11 +40,20 @@ func (e *GenerateError) Is(target error) bool { return target == ErrGenerate }
 
 // Generate renders a tree as SQL in a dialect.
 func Generate(e *Expression, dialect string) (string, error) {
-	cfg, ok := ConfigFor(dialect)
+	return generateSQL(e, generateOptions{dialect: dialect})
+}
+
+type generateOptions struct {
+	dialect           string
+	preserveTSQLTypes bool
+}
+
+func generateSQL(e *Expression, options generateOptions) (string, error) {
+	cfg, ok := ConfigFor(options.dialect)
 	if !ok {
-		return "", fmt.Errorf("sqlglot: no generator for dialect %q (have %v)", dialect, Dialects())
+		return "", fmt.Errorf("sqlglot: no generator for dialect %q (have %v)", options.dialect, Dialects())
 	}
-	g := &generator{cfg: cfg, tables: cfg.Tables, dialect: dialect, root: e}
+	g := &generator{cfg: cfg, tables: cfg.Tables, dialect: options.dialect, root: e, preserveTSQLTypes: options.preserveTSQLTypes}
 	out := g.node(e)
 	if g.err != nil {
 		return "", g.err
@@ -56,6 +65,7 @@ func Generate(e *Expression, dialect string) (string, error) {
 // every writer. Sixty writers each propagating an error they cannot act on is
 // noise that buries the one line in each that says anything.
 type generator struct {
+	preserveTSQLTypes bool
 	// root is the node the write started at: a PropertyEQ that is the whole
 	// statement is an assignment, not a struct field.
 	root    *Expression

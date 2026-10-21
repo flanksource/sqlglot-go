@@ -2026,9 +2026,16 @@ func (p *parser) parseCast(try bool) (*Expression, error) {
 // a plain type takes sizes. All three are read here; anything outside them is
 // refused rather than built as one of the three.
 func (p *parser) parseDataType() (*Expression, error) {
+	first := p.curr()
 	dt, err := p.parseBaseDataType()
 	if err != nil {
 		return nil, err
+	}
+	if p.dialect == "tsql" && first != nil && (strings.EqualFold(first.Text, "REAL") || strings.EqualFold(first.Text, "NTEXT")) {
+		if dt.Meta == nil {
+			dt.Meta = make(map[string]any)
+		}
+		dt.Meta["tsql_type"] = strings.ToUpper(first.Text)
 	}
 	// Materialize's `INT LIST LIST` -- a list of lists of integers -- is read
 	// by the base parser, so in every dialect, right after the base type and
