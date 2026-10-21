@@ -68,7 +68,7 @@ func separatesBatches(tokens []Token, i int) bool {
 // exactly as written. A definition that does not parse is an error -- there
 // is no textual fallback.
 func CanonicalSQL(sql, dialect string) (string, error) {
-	tree, err := ParseOne(sql, dialect)
+	tree, err := parseStatement(sql, parseOptions{dialect: dialect, nativeTSQLModules: true})
 	if err != nil {
 		return "", fmt.Errorf("canonical sql: %w", err)
 	}
@@ -77,7 +77,7 @@ func CanonicalSQL(sql, dialect string) (string, error) {
 		canonicalise(e, dialect)
 		return true
 	})
-	out, err := Generate(tree, dialect)
+	out, err := generateSQL(tree, generateOptions{dialect: dialect, preserveTSQLTypes: true})
 	if err != nil {
 		return "", fmt.Errorf("canonical sql: %w", err)
 	}
@@ -246,7 +246,7 @@ func ParseDataType(s, dialect string) (*Expression, error) {
 // DataTypeSpec is a data type taken apart: its kind, and what its parameters
 // say. A size the type was not written with is nil.
 type DataTypeSpec struct {
-	Kind string // the tree's kind: NVARCHAR, DECIMAL, UUID, USERDEFINED, ...
+	Kind string // dialect-preserving kind: NVARCHAR, DECIMAL, UUID, REAL, NTEXT, ...
 	Name string // as the dialect writes it: NUMERIC for DECIMAL, UNIQUEIDENTIFIER for UUID
 	Max  bool   // (MAX)
 	// Length is a string or binary type's size; Precision and Scale a
@@ -278,6 +278,9 @@ func DataTypeSpecOf(e *Expression, dialect string) (DataTypeSpec, error) {
 		return DataTypeSpec{}, fmt.Errorf("data type: %w", err)
 	}
 	spec := DataTypeSpec{Kind: typeKind(e), Name: name}
+	if original, ok := e.Meta["tsql_type"].(string); ok && dialect == "tsql" {
+		spec.Kind, spec.Name = original, original
+	}
 	params, _ := e.Args["expressions"].([]*Expression)
 	sizes := make([]*int, 0, len(params))
 	for _, param := range params {

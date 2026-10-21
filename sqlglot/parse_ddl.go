@@ -22,6 +22,9 @@ import (
 // there are columns, so `CREATE TABLE t (a INT)` and `CREATE TABLE t AS
 // SELECT` differ in what `this` holds, not just in what follows it.
 func (p *parser) parseCreate() (*Expression, error) {
+	if p.atTSQLTrigger() {
+		return p.parseTSQLTrigger()
+	}
 	start := *p.curr()
 	p.advance() // CREATE, or T-SQL ALTER of a routine
 
@@ -1772,6 +1775,9 @@ func (p *parser) parseDroppedPartitions() ([]*Expression, error) {
 }
 
 func (p *parser) parseAlter() (*Expression, error) {
+	if p.atTSQLTrigger() {
+		return p.parseTSQLTrigger()
+	}
 	start := *p.curr()
 	p.advance() // ALTER
 

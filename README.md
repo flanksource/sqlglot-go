@@ -278,6 +278,10 @@ make test       # includes the optimizer against sqlglot's simplify contract
 make postgres   # start a PostgreSQL for it, and print the DSN to export
 ```
 
+## Schema migration planning
+
+The [migration packages](migrate/README.md) compare typed SQL Server snapshots and generate ordered DDL without a database connection. They also expose an Atlas adapter used by commons-db. Run `go run ./examples/sqlserver-migration` for a planning example that prints SQL without executing it.
+
 ## T-SQL Extended Events sessions
 
 `CREATE`, `ALTER` and `DROP EVENT SESSION` have no grammar in the reference, which warns and keeps each as a `Command` (the port refused CREATE and DROP outright). Under `tsql` the port reads them into nodes of its own, so a caller can build the statement as a tree and let `Generate` do the quoting: a session name is an `Identifier` (`[a]]b]` when quoted), a file path is a `National` or `Literal` (`N'it''s.xel'`), and a predicate is an ordinary condition. No statement in the reference corpus has this shape, so no compared tree changes; ALTER EVENT SESSION is the one place the port now returns a tree where the reference returns a `Command`, which is the same choice the T-SQL routine bodies made. Any other form is still refused.
