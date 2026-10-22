@@ -54,13 +54,9 @@ FIXTURES = ROOT / "testdata" / "fixtures" / "schema.sql"
 class Engine:
     """One database, and how to run a statement in it without keeping it.
 
-    Isolation is per engine because the mechanism is: DuckDB gets a scratch
-    working directory (its side effects are FILES -- ATTACH, COPY), PostgreSQL
-    gets a transaction that is always rolled back (its side effects are
-    CATALOG -- CREATE, DROP). Without either, a corpus of a transpiler's tests
-    leaves debris and later statements fail on it: the first run of this
-    harness left a file.db in the repository root, and the PostgreSQL run
-    failed with 'relation "t" already exists'.
+    Both engines roll back every statement so DDL and DML cannot change the
+    fixtures used by later comparisons. DuckDB also gets a scratch working
+    directory for filesystem effects such as ATTACH and COPY.
     """
 
     name = ""
@@ -98,13 +94,14 @@ class DuckDB(Engine):
         self._con.execute(FIXTURES.read_text())
 
     def rows(self, sql: str):
-        cur = self._con.execute(sql)
+        self._con.execute("BEGIN TRANSACTION")
         try:
-            return cur.fetchall()
-        except Exception:
-            return None
+            return self._con.execute(sql).fetchall()
+        finally:
+            self._con.execute("ROLLBACK")
 
     def close(self) -> None:
+        self._con.close()
         os.chdir(self._home)
         self._scratch.cleanup()
 

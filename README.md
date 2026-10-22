@@ -217,6 +217,8 @@ worked around. PostgreSQL is skipped without `PGDSN`; CI supplies it as a
 service container and `make postgres` starts one locally. An engine it cannot
 reach is skipped with a note, not a failure.
 
+Install the execution harness dependencies with `python -m pip install -r harness/requirements-execute.txt`. The oracle uses DuckDB 1.4.4 and PostgreSQL 17 so engine upgrades cannot silently change its coverage baseline. Each statement runs in a rolled-back transaction to preserve the fixture tables and rows for subsequent comparisons. Run `python -m pytest harness/test_execute.py -q` to verify isolation.
+
 Most of the corpus is a transpiler's test suite rather than a workload: it
 says `SELECT x FROM t` and never creates `t`. `testdata/fixtures/schema.sql`
 supplies those tables, and their names are not invented — they are harvested
