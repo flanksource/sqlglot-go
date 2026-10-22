@@ -1,6 +1,6 @@
 # SQL Server migrations
 
-`migrate/sqlserver.Plan` compares typed current and desired schemas and generates ordered SQL without opening a database. `migrate/atlas/sqlserver` exposes the same differ and planner to Atlas consumers. Inspection, credentials, application locks, transactions, execution and deployment records belong to the caller.
+`migrate/sqlserver.Plan` compares typed current and desired schemas and generates ordered SQL without opening a database. `migrate/atlas/sqlserver` exposes the same differ and planner to Atlas consumers. Sqlglot also compiles and checks immutable migration artifacts. Inspection, credentials, application locks, transactions, execution and deployment records belong to the caller.
 
 ```go
 import (

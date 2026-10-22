@@ -84,8 +84,8 @@ var _ = Describe("SQL Server plan", func() {
 		added := schema.NewUniqueIndex("UX_acme_orders_status").AddColumns(status).AddAttrs(&planner.Clustered{})
 		dropped := schema.NewUniqueIndex("UQ_acme_orders_note").AddAttrs(&planner.UniqueConstraint{})
 		Expect(planCmds(modify(t, &schema.AddIndex{I: added}, &schema.DropIndex{I: dropped}))).To(Equal([]string{
-			"CREATE UNIQUE CLUSTERED INDEX [UX_acme_orders_status] ON [dbo].[acme_orders] ([status])",
 			"ALTER TABLE [dbo].[acme_orders] DROP CONSTRAINT [UQ_acme_orders_note]",
+			"CREATE UNIQUE CLUSTERED INDEX [UX_acme_orders_status] ON [dbo].[acme_orders] ([status])",
 		}))
 	})
 
