@@ -8,6 +8,16 @@ import (
 	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
+func executionOrdered(tree *sqlglot.Expression) bool {
+	for tree.Class == "Subquery" || tree.Class == "Paren" {
+		if tree.Args["order"] != nil {
+			return true
+		}
+		tree = tree.This()
+	}
+	return tree.Args["order"] != nil
+}
+
 // TestEmitExecutionPairs writes what the EXECUTION oracle needs: for every
 // statement the port can read, the SQL that was written and the SQL the port
 // writes back.
@@ -52,12 +62,13 @@ func TestEmitExecutionPairs(t *testing.T) {
 		if !engines[c.Dialect] {
 			continue
 		}
-		rec := map[string]string{"dialect": c.Dialect, "sql": c.SQL, "reference": c.Rendered}
+		rec := map[string]any{"dialect": c.Dialect, "sql": c.SQL, "reference": c.Rendered, "ordered": true}
 		tree, perr := sqlglot.ParseOne(c.SQL, c.Dialect)
 		switch {
 		case perr != nil:
 			rec["port_error"] = perr.Error()
 		default:
+			rec["ordered"] = executionOrdered(tree)
 			got, gerr := sqlglot.Generate(tree, c.Dialect)
 			if gerr != nil {
 				rec["port_error"] = gerr.Error()

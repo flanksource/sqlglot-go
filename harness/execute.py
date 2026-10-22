@@ -23,10 +23,8 @@ does.
 
 The verdicts:
 
-  agree            same rows, same order. What the port is held to.
-  reordered        same rows, different order. Not a failure: without an
-                   ORDER BY neither query promised an order.
-  DIVERGED         different rows. The two queries ask different questions.
+  agree            same rows and duplicate counts; order matters for ORDER BY.
+  DIVERGED         different rows, duplicates, or explicitly requested order.
   nondeterministic the statement disagrees with ITSELF across two runs --
                    CURRENT_TIME, RANDOM. Excluded rather than denylisted by
                    keyword, so the harness discovers the class instead of
@@ -160,6 +158,10 @@ def multiset(result):
     return sorted(result, key=repr) if isinstance(result, list) else result
 
 
+def same_rows(left, right, ordered):
+    return left == right if ordered else multiset(left) == multiset(right)
+
+
 def open_engines(dsn: str | None) -> tuple[list[Engine], list[str]]:
     """Whatever can be reached. Skipping is reported, never silent."""
     engines: list[Engine] = []
@@ -209,34 +211,26 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
             diverged.append({"engine": engine.name, "sql": src, "who": who, "written": out,
                              "why": "does not run: " + str(e).split("\n")[0][:70]})
             return
-        # The REWRITTEN side has to be stable too. Checking only the input was
-        # not enough: `USING SAMPLE 10%` returned the same thing twice and a
-        # different thing on the sixth run, so an unstable rewrite was
-        # reported as a divergence. A comparison is only meaningful if BOTH
-        # sides reproduce.
+        # Both sides must reproduce. Unordered row permutations are stable;
+        # changed values, duplicate counts, and requested order are not.
         try:
-            if engine.rows(out) != got:
+            if not same_rows(engine.rows(out), got, ordered):
                 bump(who + ": nondeterministic")
                 return
         except Exception:
             bump(who + ": nondeterministic")
             return
-        if got != first and multiset(got) != multiset(first):
-            # About to accuse. Look once more at BOTH sides first: a statement
-            # unstable enough to slip past the repeat checks above would
-            # otherwise be reported as a divergence, and a gate that cries
-            # wolf on a rerun is a gate people learn to ignore. Confirming
-            # costs two executions on the rare path and nothing on the common
-            # one.
+        if not same_rows(got, first, ordered):
+            # Confirm both sides once more before reporting a divergence.
             try:
-                if engine.rows(src) != first or engine.rows(out) != got:
+                if not same_rows(engine.rows(src), first, ordered) or not same_rows(engine.rows(out), got, ordered):
                     bump(who + ": nondeterministic")
                     return
             except Exception:
                 bump(who + ": nondeterministic")
                 return
 
-        if got == first:
+        if same_rows(got, first, ordered):
             # Two queries that both return NOTHING agree about nothing. With
             # fixture tables in place this is the cheap way to look busy --
             # any pair of mistakes over an empty result set matches -- so it
@@ -245,8 +239,6 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
                 bump(who + ": both returned no rows")
             else:
                 bump(who + ": agree")
-        elif multiset(got) == multiset(first):
-            bump(who + ": same rows, different order")
         else:
             bump("DIVERGED")
             diverged.append({"engine": engine.name, "sql": src, "who": who, "written": out,
@@ -256,6 +248,7 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
         if rec.get("dialect") != engine.dialect:
             continue
         src = rec["sql"]
+        ordered = rec["ordered"]
         try:
             first = engine.rows(src)
         except Exception:
@@ -265,7 +258,7 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
         # Three looks rather than two: sampling and hashing can repeat once by
         # luck, and every extra look is cheap next to a false divergence.
         try:
-            if any(engine.rows(src) != first for _ in range(2)):
+            if any(not same_rows(engine.rows(src), first, ordered) for _ in range(2)):
                 bump("nondeterministic")
                 continue
         except Exception:
