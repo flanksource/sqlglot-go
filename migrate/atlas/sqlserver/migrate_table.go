@@ -54,7 +54,9 @@ func (s *state) column(b *sqlx.Builder, t *schema.Table, c *schema.Column) error
 	}
 	b.Ident(c.Name).P(typ)
 	if collation, ok := attrOf[*schema.Collation](c.Attrs); ok {
-		b.P("COLLATE").Ident(collation.V)
+		if err := writeCollation(b, collation.V); err != nil {
+			return err
+		}
 	}
 	if identity, ok := attrOf[*Identity](c.Attrs); ok {
 		b.P(fmt.Sprintf("IDENTITY(%d,%d)", identity.Seed, identity.Increment))

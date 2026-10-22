@@ -40,7 +40,7 @@ var _ = Describe("Native migration contracts", func() {
 		table := migrate.Table{Name: migrate.Name{Schema: "dbo", Name: "orders"}, Columns: []migrate.Column{{Name: "code", Type: "nvarchar(20)", Collation: "Latin1_General_100_BIN2", Default: &migrate.Default{Name: "DF_order_code", Expression: "N'new'"}}}, Indexes: []migrate.Index{{Name: "UQ_order_code", Unique: true, Constraint: true, Columns: []migrate.IndexColumn{{Name: "code"}}}}}
 		plan, err := sqlserver.Plan(migrate.Request{Desired: migrate.Schema{Tables: []migrate.Table{table}}})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(plan.Steps[0].SQL).To(ContainSubstring("[code] nvarchar(20) COLLATE [Latin1_General_100_BIN2] NOT NULL CONSTRAINT [DF_order_code] DEFAULT N'new'"))
+		Expect(plan.Steps[0].SQL).To(ContainSubstring("[code] nvarchar(20) COLLATE Latin1_General_100_BIN2 NOT NULL CONSTRAINT [DF_order_code] DEFAULT N'new'"))
 		Expect(plan.Steps[1].SQL).To(Equal("ALTER TABLE [dbo].[orders] ADD CONSTRAINT [UQ_order_code] UNIQUE NONCLUSTERED ([code])"))
 	})
 	It("restores the database collation and preserves the named default", func() {
