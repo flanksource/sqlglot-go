@@ -67,7 +67,7 @@ func (s *state) column(b *sqlx.Builder, t *schema.Table, c *schema.Column) error
 		b.P("NOT NULL")
 	}
 	if c.Default != nil {
-		value, err := defaultSQL(c)
+		value, err := DefaultSQL(c)
 		if err != nil {
 			return err
 		}

@@ -80,10 +80,10 @@ func withoutParens(e *sqlglot.Expression, root bool) *sqlglot.Expression {
 	return e
 }
 
-// defaultSQL is the SQL text of a column default. An HCL string literal
+// DefaultSQL is the SQL text of a column default. An HCL string literal
 // arrives unquoted and is quoted for the column's type, N'...' for the
 // Unicode types; numbers and raw sql() expressions are written as they are.
-func defaultSQL(c *schema.Column) (string, error) {
+func DefaultSQL(c *schema.Column) (string, error) {
 	switch x := c.Default.(type) {
 	case *schema.RawExpr:
 		return x.X, nil
