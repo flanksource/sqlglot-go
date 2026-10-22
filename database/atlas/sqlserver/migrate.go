@@ -10,6 +10,9 @@ import (
 	planner "github.com/flanksource/sqlglot-go/migrate/atlas/sqlserver"
 )
 
+// DefaultPlan plans without a connection and refuses statement execution.
+var DefaultPlan migrate.PlanApplier = &planApply{conn: &conn{ExecQuerier: sqlx.NoRows}}
+
 type planApply struct{ *conn }
 
 func (*planApply) PlanChanges(ctx context.Context, name string, changes []schema.Change, options ...migrate.PlanOption) (*migrate.Plan, error) {
