@@ -1,7 +1,9 @@
 package dbtarget_test
 
 import (
+	"database/sql"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/flanksource/sqlglot-go/database/target"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	_ "modernc.org/sqlite"
 )
 
 var _ = Describe("database target DSNs", func() {
@@ -54,13 +57,32 @@ var _ = Describe("database target DSNs", func() {
 			parsed, err := url.Parse(target.DSN)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(parsed.Scheme).To(Equal("file"))
-			Expect(parsed.Path).To(Equal(expectedPath))
+			Expect(parsed.Host).To(BeEmpty())
+			path := parsed.Path
+			if filepath.VolumeName(expectedPath) != "" {
+				path = strings.TrimPrefix(path, "/")
+			}
+			Expect(filepath.FromSlash(path)).To(Equal(expectedPath))
 			Expect(parsed.Query()["_pragma"]).To(ConsistOf("foreign_keys(1)", "busy_timeout(5000)", "journal_mode(WAL)"))
 		},
-		Entry("absolute sqlite URL", "sqlite:///var/data/uir.db", "/var/data/uir.db"),
+		Entry("absolute sqlite URL", "sqlite:///var/data/uir.db", absolutePath("/var/data/uir.db")),
 		Entry("explicit relative sqlite URL with any extension", "sqlite://state/uir.sqlite", absolutePath("state/uir.sqlite")),
 		Entry("bare relative db path", "state/uir.db", absolutePath("state/uir.db")),
 	)
+
+	It("opens the exact native filename with spaces and URL punctuation", func(ctx SpecContext) {
+		filename := filepath.Join(GinkgoT().TempDir(), "tenant #1.db")
+		target, err := dbtarget.Parse(filename)
+		Expect(err).NotTo(HaveOccurred())
+		db, err := sql.Open("sqlite", target.DSN)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(db.Close)
+		_, err = db.ExecContext(ctx, "CREATE TABLE items (id integer)")
+		Expect(err).NotTo(HaveOccurred())
+		info, err := os.Stat(filename)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.IsDir()).To(BeFalse())
+	})
 
 	It("preserves SQLite query parameters and replaces managed pragmas", func() {
 		target, err := dbtarget.Parse("sqlite://state/uir.db?cache=shared&_pragma=foreign_keys(0)&_pragma=case_sensitive_like(1)")
