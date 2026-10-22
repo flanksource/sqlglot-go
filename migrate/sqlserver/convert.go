@@ -68,19 +68,50 @@ func realm(input migrate.Schema, namespaces []string) (*schema.Realm, error) {
 
 func uniqueObjects(input migrate.Schema) error {
 	seen := make(map[migrate.Name]bool)
-	for _, table := range input.Tables {
-		if seen[table.Name] {
-			return fmt.Errorf("sqlserver: duplicate object %+v", table.Name)
+	add := func(name migrate.Name) error {
+		if seen[name] {
+			return fmt.Errorf("sqlserver: duplicate object %+v", name)
 		}
-		seen[table.Name] = true
+		seen[name] = true
+		return nil
+	}
+	for _, table := range input.Tables {
+		if err := add(table.Name); err != nil {
+			return err
+		}
+		for _, name := range constraintNames(table) {
+			if err := add(migrate.Name{Schema: table.Name.Schema, Name: name}); err != nil {
+				return err
+			}
+		}
 	}
 	for _, d := range input.Definitions {
-		if seen[d.Name] {
-			return fmt.Errorf("sqlserver: duplicate object %+v", d.Name)
+		if err := add(d.Name); err != nil {
+			return err
 		}
-		seen[d.Name] = true
 	}
 	return nil
+}
+
+func constraintNames(table migrate.Table) []string {
+	var names []string
+	for _, c := range table.Columns {
+		if c.Default != nil && c.Default.Name != "" {
+			names = append(names, c.Default.Name)
+		}
+	}
+	for _, i := range table.Indexes {
+		if i.Primary || i.Constraint {
+			names = append(names, i.Name)
+		}
+	}
+	for _, f := range table.ForeignKeys {
+		names = append(names, f.Name)
+	}
+	for _, c := range table.Checks {
+		names = append(names, c.Name)
+	}
+	return names
 }
 
 func compareNames(a, b migrate.Name) int {

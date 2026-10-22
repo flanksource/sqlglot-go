@@ -150,7 +150,7 @@ func defaultChanged(from, to *schema.Column) (bool, error) {
 }
 
 func canonicalDefault(c *schema.Column) (string, error) {
-	value, err := defaultSQL(c)
+	value, err := DefaultSQL(c)
 	if err != nil {
 		return "", err
 	}

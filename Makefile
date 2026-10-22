@@ -18,7 +18,8 @@
 # "Working on Windows" in the README.
 SQLGLOT ?= $(HOME)/opensource/sqlglot
 SERVICE ?= $(HOME)/calvinchengx/emulators/data-agent-service
-GOLANGCI = golangci/golangci-lint:v2.13.1
+GOLANGCI ?= golangci-lint
+BINARY ?= .tmp/sqlglot
 # Windows spells it `python`; POSIX distributions increasingly only ship
 # `python3`. Override rather than edit.
 PYTHON ?= python3
@@ -42,7 +43,13 @@ doctor: ## Check the toolchain
 
 build: ## Build the sqlglot CLI into .tmp/
 	@mkdir -p .tmp
-	go build -o .tmp/sqlglot ./cmd/sqlglot
+	go build -o $(BINARY) ./cmd/sqlglot
+
+build-database-tests: ## Build the disposable database integration suite
+	@mkdir -p .tmp
+	go test -c -tags integration -o .tmp/database-review.test ./database/migrate/review
+	go test -c -tags integration -o .tmp/database-sqlserver.test ./database/migrate/sqlserver
+	go test -c -o .tmp/database-bundle.test ./database/migrate
 
 install: ## Install the sqlglot CLI to GOBIN (or GOPATH/bin)
 	go install ./cmd/sqlglot
@@ -111,7 +118,7 @@ coverage: test ## Per-dialect coverage, against the reference and against the se
 	@$(PYTHON) -c 'import json; c=json.load(open("testdata/service/coverage.json")); print("data agent service:"); [print("  %-24s %3d/%d" % (k, v["parsed"], v["total"])) for k, v in sorted(c["by_category"].items())]'
 	@$(PYTHON) -c 'import json; c=json.load(open("testdata/coverage.json")); print("reference %s  %d/%d" % (c["reference"][:12], c["matched"], c["total"])); [print("  %-10s %4d/%-4d unparsed %4d mismatched %d" % (d, v["matched"], v["total"], v["unparsed"], v["mismatched"])) for d, v in sorted(c["by_dialect"].items())]'
 
-lint: ## gofmt, vet and golangci-lint, in a container
+lint: ## gofmt, vet and native golangci-lint (v2.13.1)
 	@unformatted=$$(gofmt -l .); \
 	if [ -n "$$unformatted" ]; then \
 	  echo "not gofmt'd:"; echo "$$unformatted"; \
@@ -119,7 +126,7 @@ lint: ## gofmt, vet and golangci-lint, in a container
 	  exit 1; \
 	fi
 	go vet ./...
-	docker run --rm -v "$$(pwd):/src" -w /src $(GOLANGCI) golangci-lint run ./...
+	$(GOLANGCI) run ./...
 
 cover: ## Test coverage of the port
 	@go test ./... -coverpkg=./sqlglot/ -coverprofile=cover.out >/dev/null

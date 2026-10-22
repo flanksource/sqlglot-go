@@ -9,9 +9,13 @@ import (
 // modifyTable plans each change of a ModifyTable as its own statement.
 func (s *state) modifyTable(modify *schema.ModifyTable) error {
 	t := modify.T
-	for _, change := range modify.Changes {
-		if err := s.tableChange(t, change); err != nil {
+	for _, step := range orderedTableChanges(modify.Changes) {
+		start := len(s.Changes)
+		if err := s.tableChange(t, step.change); err != nil {
 			return fmt.Errorf("sqlserver: modify table %q: %w", t.Name, err)
+		}
+		for _, emitted := range s.Changes[start:] {
+			emitted.Source = step.source
 		}
 	}
 	return nil
@@ -32,9 +36,6 @@ func (s *state) tableChange(t *schema.Table, change schema.Change) error {
 		return s.addIndex(c, t, c.I)
 	case *schema.DropIndex:
 		s.dropIndex(c, t, c.I)
-	case *schema.ModifyIndex:
-		s.dropIndex(c, t, c.From)
-		return s.addIndex(c, t, c.To)
 	default:
 		return s.constraintChange(t, change)
 	}
@@ -47,23 +48,14 @@ func (s *state) constraintChange(t *schema.Table, change schema.Change) error {
 		s.addPrimaryKey(c, t, c.P)
 	case *schema.DropPrimaryKey:
 		s.dropConstraint(c, t, c.P.Name)
-	case *schema.ModifyPrimaryKey:
-		s.dropConstraint(c, t, c.From.Name)
-		s.addPrimaryKey(c, t, c.To)
 	case *schema.AddForeignKey:
 		s.addForeignKey(c, t, c.F)
 	case *schema.DropForeignKey:
 		s.dropConstraint(c, t, c.F.Symbol)
-	case *schema.ModifyForeignKey:
-		s.dropConstraint(c, t, c.From.Symbol)
-		s.addForeignKey(c, t, c.To)
 	case *schema.AddCheck:
 		s.addCheck(c, t, c.C)
 	case *schema.DropCheck:
 		s.dropConstraint(c, t, c.C.Name)
-	case *schema.ModifyCheck:
-		s.dropConstraint(c, t, c.From.Name)
-		s.addCheck(c, t, c.To)
 	default:
 		return fmt.Errorf("change %T is %w", change, errUnsupported)
 	}
@@ -97,15 +89,17 @@ func (s *state) modifyColumn(c *schema.ModifyColumn, t *schema.Table) error {
 		}
 		b := s.alterTable(t).P("ALTER COLUMN").Ident(c.To.Name).P(typ)
 		if collation, ok := attrOf[*schema.Collation](c.To.Attrs); ok {
-			b.P("COLLATE").Ident(collation.V)
-		} else if c.Change.Is(schema.ChangeAttr) {
+			if err := writeCollation(b, collation.V); err != nil {
+				return err
+			}
+		} else if c.Change.Is(schema.ChangeAttr) && supportsCollation(c.To.Type.Type) {
 			b.P("COLLATE DATABASE_DEFAULT")
 		}
 		b.P(nullability(c.To))
 		s.append(c, fmt.Sprintf("alter column %q", c.To.Name), b)
 	}
 	if rebind && c.To.Default != nil {
-		value, err := defaultSQL(c.To)
+		value, err := DefaultSQL(c.To)
 		if err != nil {
 			return err
 		}
