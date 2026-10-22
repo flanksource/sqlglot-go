@@ -282,6 +282,8 @@ make postgres   # start a PostgreSQL for it, and print the DSN to export
 
 The [migration packages](migrate/README.md) compare typed SQL Server snapshots and generate ordered DDL without a database connection. They also expose an Atlas adapter used by commons-db. Run `go run ./examples/sqlserver-migration` for a planning example that prints SQL without executing it.
 
+The [standalone database packages](database/README.md) own live schema inspection, HCL/script migration engines, and reviewed PostgreSQL, SQLite and SQL Server execution. The CLI exposes `schema inspect`, `migrate plan` and `migrate apply`. commons-db retains compatible APIs through shims. Run `go run ./examples/database` for a disposable SQLite plan/apply example.
+
 ## T-SQL Extended Events sessions
 
 `CREATE`, `ALTER` and `DROP EVENT SESSION` have no grammar in the reference, which warns and keeps each as a `Command` (the port refused CREATE and DROP outright). Under `tsql` the port reads them into nodes of its own, so a caller can build the statement as a tree and let `Generate` do the quoting: a session name is an `Identifier` (`[a]]b]` when quoted), a file path is a `National` or `Literal` (`N'it''s.xel'`), and a predicate is an ordinary condition. No statement in the reference corpus has this shape, so no compared tree changes; ALTER EVENT SESSION is the one place the port now returns a tree where the reference returns a `Command`, which is the same choice the T-SQL routine bodies made. Any other form is still refused.
@@ -343,9 +345,8 @@ ddl, err := sqlglot.Generate(session, "tsql")
 
 ## Working on Windows
 
-The port is pure Go with no dependencies, and the tests need nothing but the Go
-toolchain -- the expectations are committed, so there is no Python to install,
-no native library, nothing to fetch. CI runs the full differential on **Linux,
+The parser is pure Go; the database packages use pure Go drivers. The tests need the Go
+toolchain and module dependencies -- the expectations are committed, so there is no Python or native library to install. CI runs the full differential on **Linux,
 macOS and Windows, amd64 and arm64**, and it invokes `go` directly rather than
 `make`, so all five platforms are proven by the same commands you would type:
 
@@ -361,9 +362,7 @@ and a POSIX shell, so on Windows they want WSL or Git Bash. Nothing is lost by
 skipping it: `make test` is `go test ./...`, and `make gaps` is the last command
 above with the file-and-line prefix stripped.
 
-The remaining targets -- `oracle`, `service`, `lint` -- regenerate the committed
-expectations and the generated tables, or lint in a container. Those need
-Python, a checkout of the pinned sqlglot, and Docker. The asymmetry is
+The `oracle` and `service` targets regenerate committed expectations and generated tables and need Python and the pinned reference checkout. `lint` uses native golangci-lint v2.13.1; disposable database integration uses Docker. The asymmetry is
 deliberate: **contributing to the port needs a Go toolchain; maintaining the
 oracle needs more.** A contributor on Windows is held to exactly the same
 differential as everyone else without installing any of it.
