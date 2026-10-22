@@ -83,10 +83,18 @@ func parseSQLite(raw string) (Target, error) {
 		if resolveErr != nil {
 			return Target{}, fmt.Errorf("resolve SQLite path %q: %w", path, resolveErr)
 		}
-		parsed = &url.URL{Scheme: "file", Path: filepath.Clean(absolute)}
+		parsed = sqliteFileURL(filepath.Clean(absolute))
 	}
 	parsed.RawQuery = managedSQLiteQuery(query).Encode()
 	return Target{Dialect: SQLite, DSN: parsed.String()}, nil
+}
+
+func sqliteFileURL(path string) *url.URL {
+	path = filepath.ToSlash(path)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return &url.URL{Scheme: "file", Path: path}
 }
 
 func managedSQLiteQuery(query url.Values) url.Values {
