@@ -99,7 +99,7 @@ func (s *state) modifyColumn(c *schema.ModifyColumn, t *schema.Table) error {
 		s.append(c, fmt.Sprintf("alter column %q", c.To.Name), b)
 	}
 	if rebind && c.To.Default != nil {
-		value, err := defaultSQL(c.To)
+		value, err := DefaultSQL(c.To)
 		if err != nil {
 			return err
 		}

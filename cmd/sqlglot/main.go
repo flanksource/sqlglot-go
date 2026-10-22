@@ -51,6 +51,7 @@ func newRootCommand(stdin io.Reader) *cobra.Command {
 		return version, nil
 	})
 	versionCmd.Short = "Print the CLI version"
+	addDatabaseCommands(root)
 	return root
 }
 
