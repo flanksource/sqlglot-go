@@ -210,7 +210,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r harness/requirements-execute.txt
-      - name: verify execution isolation
-        run: python -m pytest harness/test_execute.py -q
+      - name: verify execution comparisons and isolation
+        run: python -m pytest harness -q
       - name: run it through both engines and compare the rows
         run: make oracle-exec
