@@ -1075,9 +1075,12 @@ func (g *generator) writeVarMap(e *Expression) string {
 	}
 	keyItems, _ := keys.Args["expressions"].([]*Expression)
 	valueItems, _ := values.Args["expressions"].([]*Expression)
-	parts := make([]string, 0, len(keyItems)+len(valueItems))
+	if len(keyItems) != len(valueItems) {
+		return g.fail(e.Class + " with mismatched key and value counts")
+	}
+	parts := make([]string, len(keyItems))
 	for i := range keyItems {
-		parts = append(parts, g.node(keyItems[i]), g.node(valueItems[i]))
+		parts[i] = g.node(keyItems[i]) + ", " + g.node(valueItems[i])
 	}
 	return "MAP(" + strings.Join(parts, ", ") + ")"
 }
