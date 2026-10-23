@@ -15,8 +15,11 @@ func TestRedshiftSuperUnpivot(t *testing.T) {
 		t.Fatalf("from-list join = %#v", joins)
 	}
 	pivot, _ := joins[0].Args["this"].(*Expression)
+	if pivot == nil {
+		t.Fatal("UNPIVOT relation is missing")
+	}
 	unpivot, _ := pivot.Args["unpivot"].(bool)
-	if pivot == nil || pivot.Class != "Pivot" || !unpivot || pivot.Args["this"].(*Expression).Class != "Bracket" {
+	if pivot.Class != "Pivot" || !unpivot || pivot.Args["this"].(*Expression).Class != "Bracket" {
 		t.Fatalf("UNPIVOT was not a pivot over a subscript: %#v", pivot)
 	}
 	got, err := Generate(tree, "redshift")

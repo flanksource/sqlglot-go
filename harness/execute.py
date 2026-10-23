@@ -306,7 +306,8 @@ def main() -> int:
     for engine in engines:
         tally, diverged = run(engine, pairs, known)
         engine.close()
-        compared = sum(n for k, n in tally.items() if k.endswith(": agree"))
+        compared = sum(n for k, n in tally.items()
+                       if k.endswith((": agree", ": same rows, different order")))
         results[engine.name] = {"tally": tally, "compared": compared}
         all_diverged.extend(diverged)
 
