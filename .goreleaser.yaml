@@ -1,8 +1,11 @@
 version: 2
+dist: .tmp/dist
 
 builds:
   - main: ./cmd/sqlglot
     binary: sqlglot
+    env:
+      - CGO_ENABLED=0
     ldflags:
       - -s -w -X main.version={{.Version}}
     goos:
@@ -22,6 +25,21 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+dockers_v2:
+  - images:
+      - ghcr.io/flanksource/sqlglot-go
+    tags:
+      - "v{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.source: https://github.com/flanksource/sqlglot-go
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.licenses: Apache-2.0 AND MIT
 
 release:
   mode: keep-existing
