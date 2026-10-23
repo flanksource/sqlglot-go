@@ -24,7 +24,7 @@ whose Go executor is the first consumer, is stale.
 
 Build the CLI with `make build` and run `.tmp/sqlglot`, install the current checkout with `make install` into Go's `GOBIN` (or `GOPATH/bin`), or install a tagged release with `go install github.com/flanksource/sqlglot-go/cmd/sqlglot@latest`. Releases attach Linux, macOS, and Windows archives for amd64 and arm64 to the GitHub release.
 
-The same release binaries are published in `ghcr.io/flanksource/sqlglot-go` for Linux amd64 and arm64, tagged with the release version (for example, `v1.0.6`) and `latest`. The image runs as a non-root user and includes CA certificates for database TLS connections.
+The same release binaries are published in `ghcr.io/flanksource/sqlglot-go` for Linux amd64 and arm64, tagged with the release version (for example, `v1.0.7`) and `latest`. The image runs as a non-root user and includes CA certificates for database TLS connections.
 
 ```sh
 docker run --rm ghcr.io/flanksource/sqlglot-go:latest version
@@ -33,7 +33,7 @@ docker run --rm -i ghcr.io/flanksource/sqlglot-go:latest format < query.sql
 docker run --rm -v "$PWD:/work:ro" ghcr.io/flanksource/sqlglot-go:latest parse --file /work/query.sql --dialect tsql
 ```
 
-To verify release packaging locally, run `go run github.com/goreleaser/goreleaser/v2@v2.12.7 release --snapshot --clean`. This builds all six binary archives and loads local container images with architecture suffixes, without publishing. GoReleaser supplies the prebuilt binaries to the Dockerfile; `docker build .` alone does not build the CLI.
+To verify release packaging locally, run `go run github.com/goreleaser/goreleaser/v2@v2.12.7 release --snapshot --clean --parallelism 2`. This builds all six binary archives and loads local container images with architecture suffixes, without publishing. CI uses the same concurrency limit to bound memory use during cross-compilation. GoReleaser supplies the prebuilt binaries to the Dockerfile; `docker build .` alone does not build the CLI.
 
 ```sh
 sqlglot dialects
