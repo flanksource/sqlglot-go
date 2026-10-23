@@ -218,7 +218,7 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
         # reported as a divergence. A comparison is only meaningful if BOTH
         # sides reproduce.
         try:
-            if engine.rows(out) != got:
+            if multiset(engine.rows(out)) != multiset(got):
                 bump(who + ": nondeterministic")
                 return
         except Exception:
@@ -232,7 +232,8 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
             # costs two executions on the rare path and nothing on the common
             # one.
             try:
-                if engine.rows(src) != first or engine.rows(out) != got:
+                if (multiset(engine.rows(src)) != multiset(first)
+                        or multiset(engine.rows(out)) != multiset(got)):
                     bump(who + ": nondeterministic")
                     return
             except Exception:
@@ -268,7 +269,7 @@ def run(engine: Engine, pairs, known) -> tuple[dict[str, int], list[dict[str, st
         # Three looks rather than two: sampling and hashing can repeat once by
         # luck, and every extra look is cheap next to a false divergence.
         try:
-            if any(engine.rows(src) != first for _ in range(2)):
+            if any(multiset(engine.rows(src)) != multiset(first) for _ in range(2)):
                 bump("nondeterministic")
                 continue
         except Exception:
@@ -316,7 +317,8 @@ def main() -> int:
     for engine in engines:
         tally, diverged = run(engine, pairs, known)
         engine.close()
-        compared = sum(n for k, n in tally.items() if k.endswith(": agree"))
+        compared = sum(n for k, n in tally.items()
+                       if k.endswith((": agree", ": same rows, different order")))
         results[engine.name] = {"tally": tally, "compared": compared}
         all_diverged.extend(diverged)
 
