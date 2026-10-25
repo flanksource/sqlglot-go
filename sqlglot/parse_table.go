@@ -309,6 +309,21 @@ func (p *parser) parseUsingColumns() ([]*Expression, error) {
 func (p *parser) parseApply(cross bool) (*Expression, error) {
 	lateral := New("Lateral")
 	switch {
+	case p.startsTSQLNodes():
+		target, err := p.parseTSQLNodes()
+		if err != nil {
+			return nil, err
+		}
+		alias, err := p.parseTableAlias()
+		if err != nil {
+			return nil, err
+		}
+		lateral.Set("this", target)
+		lateral.Set("view", nil)
+		lateral.Set("outer", nil)
+		lateral.Set("alias", alias)
+		lateral.Set("cross_apply", cross)
+		lateral.Set("ordinality", false)
 	case p.at(TokL_PAREN):
 		sub, err := p.parseSubqueryTable()
 		if err != nil {
@@ -467,6 +482,13 @@ func (p *parser) parseTable() (*Expression, error) {
 }
 
 func (p *parser) parseTableBase() (*Expression, error) {
+	if p.startsTSQLNodes() {
+		call, err := p.parseTSQLNodes()
+		if err != nil {
+			return nil, err
+		}
+		return p.tableRest(New("Table", Arg{"this", call}))
+	}
 	if p.dialect == "redshift" && p.at(TokUNPIVOT) {
 		return p.redshiftSuperUnpivot()
 	}

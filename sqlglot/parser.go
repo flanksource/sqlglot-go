@@ -166,13 +166,14 @@ func (p *parser) atNextStatement() bool {
 	if p.atAny(TokSELECT, TokINSERT, TokUPDATE, TokDELETE, TokMERGE, TokEXECUTE, TokDECLARE, TokSET,
 		TokBEGIN, TokCREATE, TokALTER, TokDROP, TokTRUNCATE, TokCOMMIT, TokROLLBACK) ||
 		p.atWords("IF") || p.atWords("PRINT") || p.atWords("WHILE") || p.atWords("OPEN") ||
-		p.atWords("FETCH") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") {
+		p.atWords("FETCH") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") || p.atWords("UPDATE STATISTICS") {
 		return true
 	}
 	// Inside a routine body the statements it holds begin one too, and an
 	// ELSE ends the single statement an IF runs.
 	return p.inRoutineBody && (p.atAny(TokEND, TokCREATE, TokDROP, TokTRUNCATE, TokCOMMIT, TokROLLBACK, TokELSE) ||
-		p.atWords("RETURN") || p.atWords("THROW"))
+		p.atWords("RETURN") || p.atWords("THROW") || p.atWords("RAISERROR") || p.atWords("REVERT") ||
+		p.atWordsAny("GOTO", "BREAK", "CONTINUE") || p.atTSQLLabel())
 }
 
 // nextBeginsStatement is atNextStatement asked of the token after this one.
@@ -406,6 +407,11 @@ func (p *parser) startsAValuesClause() bool {
 // parseStatementBody reads a statement once any WITH clause in front of it has
 // been taken off.
 func (p *parser) parseStatementBody() (*Expression, error) {
+	// A routine body refuses raw-text Commands, so it reads UPDATE STATISTICS
+	// as a statement; at top level it stays the reference's Command.
+	if p.dialect == "tsql" && p.inRoutineBody && p.atWords("UPDATE STATISTICS") {
+		return p.parseTSQLUpdateStatistics()
+	}
 	if p.dialect == "tsql" && p.atWords("PRINT") {
 		return p.parseTSQLPrint()
 	}
