@@ -14,8 +14,23 @@ func FromAtlas(input *schema.Realm) (migrate.Schema, error) {
 		return output, fmt.Errorf("unsupported Atlas realm")
 	}
 	for _, s := range input.Schemas {
-		if len(s.Objects)+len(s.Views)+len(s.Attrs) > 0 {
+		if len(s.Views)+len(s.Attrs) > 0 {
 			return output, fmt.Errorf("unsupported Atlas schema objects in %q", s.Name)
+		}
+		for _, o := range s.Objects {
+			switch o := o.(type) {
+			case *atlas.Sequence:
+				output.Sequences = append(output.Sequences, migrate.Sequence{Name: migrate.Name{Schema: s.Name, Name: o.Name}, Type: o.Type, Start: o.Start,
+					Increment: o.Increment, Minimum: o.Minimum, Maximum: o.Maximum, Cycle: o.Cycle, NoCache: o.NoCache, CacheSize: o.CacheSize})
+			case *atlas.TableType:
+				t, err := fromAtlasTableType(s.Name, o)
+				if err != nil {
+					return output, err
+				}
+				output.TableTypes = append(output.TableTypes, t)
+			default:
+				return output, fmt.Errorf("unsupported Atlas schema object %T in %q", o, s.Name)
+			}
 		}
 		for _, t := range s.Tables {
 			table, err := fromAtlasTable(t)
@@ -72,9 +87,11 @@ func fromAtlasTable(t *schema.Table) (migrate.Table, error) {
 				if column.Default == nil {
 					return result, fmt.Errorf("default constraint without expression")
 				}
-				column.Default.Name = a.Name
+				column.Default.Name, column.Default.SystemNamed = a.Name, a.SystemNamed
 			case *schema.Collation:
 				column.Collation = a.V
+			case *atlas.RowGUID:
+				column.RowGUID = true
 			default:
 				return result, fmt.Errorf("unsupported column attribute %T", a)
 			}
@@ -118,6 +135,52 @@ func fromAtlasTable(t *schema.Table) (migrate.Table, error) {
 	return result, nil
 }
 
+func fromAtlasTableType(schemaName string, t *atlas.TableType) (migrate.TableType, error) {
+	result := migrate.TableType{Name: migrate.Name{Schema: schemaName, Name: t.Name}, Checks: t.Checks}
+	for _, c := range t.Columns {
+		typ, err := atlas.FormatType(c.Type.Type)
+		if err != nil {
+			return result, err
+		}
+		column := migrate.Column{Name: c.Name, Type: typ, Nullable: c.Type.Null}
+		if c.Default != nil {
+			column.Default = &migrate.Default{}
+			if column.Default.Expression, err = atlas.DefaultSQL(c); err != nil {
+				return result, err
+			}
+		}
+		for _, a := range c.Attrs {
+			switch a := a.(type) {
+			case *atlas.Identity:
+				column.Identity = &migrate.Identity{Seed: a.Seed, Increment: a.Increment}
+			case *schema.Collation:
+				column.Collation = a.V
+			default:
+				return result, fmt.Errorf("unsupported table type column attribute %T", a)
+			}
+		}
+		result.Columns = append(result.Columns, column)
+	}
+	for _, key := range t.Keys {
+		index := migrate.Index{Unique: true}
+		for _, p := range key.Parts {
+			index.Columns = append(index.Columns, migrate.IndexColumn{Name: p.C.Name, Descending: p.Desc})
+		}
+		for _, a := range key.Attrs {
+			switch a.(type) {
+			case *atlas.Clustered:
+				index.Clustered = true
+			case *atlas.TableTypePrimaryKey:
+				index.Primary, index.Unique = true, false
+			default:
+				return result, fmt.Errorf("unsupported table type key attribute %T", a)
+			}
+		}
+		result.Keys = append(result.Keys, index)
+	}
+	return result, nil
+}
+
 func fromAtlasIndex(i *schema.Index, primary bool) (migrate.Index, error) {
 	result := migrate.Index{Name: i.Name, Unique: i.Unique, Primary: primary}
 	for _, p := range i.Parts {
@@ -136,6 +199,8 @@ func fromAtlasIndex(i *schema.Index, primary bool) (migrate.Index, error) {
 			result.Included = append([]string(nil), a.Columns...)
 		case *atlas.IndexPredicate:
 			result.Filter = a.P
+		case *atlas.FillFactor:
+			result.FillFactor = a.Percent
 		default:
 			return result, fmt.Errorf("unsupported index attribute %T", a)
 		}
@@ -146,9 +211,12 @@ func fromAtlasIndex(i *schema.Index, primary bool) (migrate.Index, error) {
 func fromAtlasDefinition(name migrate.Name, kind string, attrs []schema.Attr, deps []schema.Object) (migrate.Definition, error) {
 	result := migrate.Definition{Name: name, Kind: kind}
 	for _, a := range attrs {
-		if definition, ok := a.(*atlas.Definition); ok {
-			result.SQL = definition.Text
-		} else {
+		switch a := a.(type) {
+		case *atlas.Definition:
+			result.SQL = a.Text
+		case *atlas.QuotedIdentifierOff:
+			result.QuotedIdentifierOff = true
+		default:
 			return result, fmt.Errorf("unsupported routine attribute %T", a)
 		}
 	}

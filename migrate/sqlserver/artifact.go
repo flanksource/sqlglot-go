@@ -116,6 +116,16 @@ func artifactScope(artifact migrate.Artifact) error {
 				return fmt.Errorf("sqlserver: definition %v is outside artifact schema scope", definition.Name)
 			}
 		}
+		for _, sequence := range snapshot.Sequences {
+			if !seen[sequence.Name.Schema] {
+				return fmt.Errorf("sqlserver: sequence %v is outside artifact schema scope", sequence.Name)
+			}
+		}
+		for _, tableType := range snapshot.TableTypes {
+			if !seen[tableType.Name.Schema] {
+				return fmt.Errorf("sqlserver: table type %v is outside artifact schema scope", tableType.Name)
+			}
+		}
 	}
 	return nil
 }

@@ -43,7 +43,23 @@ func Plan(request migrate.Request) (migrate.Plan, error) {
 		}
 		result.Steps = append(result.Steps, migrate.Step{Change: change, SQL: step.Cmd})
 	}
+	runtime := map[migrate.Name][]migrate.RuntimeDependency{}
+	for _, d := range request.Desired.Definitions {
+		runtime[d.Name] = d.RuntimeDependencies
+	}
+	for i := range result.Changes {
+		flagRuntimeDependencies(&result.Changes[i], runtime)
+	}
+	for i := range result.Steps {
+		flagRuntimeDependencies(&result.Steps[i].Change, runtime)
+	}
 	return result, nil
+}
+
+func flagRuntimeDependencies(change *migrate.Change, runtime map[migrate.Name][]migrate.RuntimeDependency) {
+	if change.Action != "drop" && slices.Contains([]string{"procedure", "function", "view", "trigger"}, change.Kind) {
+		change.RuntimeDependencies = runtime[change.Object]
+	}
 }
 
 func realms(request migrate.Request) (*schema.Realm, *schema.Realm, error) {
@@ -54,6 +70,12 @@ func realms(request migrate.Request) (*schema.Realm, *schema.Realm, error) {
 		}
 		for _, d := range snapshot.Definitions {
 			namespaces = append(namespaces, d.Name.Schema)
+		}
+		for _, q := range snapshot.Sequences {
+			namespaces = append(namespaces, q.Name.Schema)
+		}
+		for _, t := range snapshot.TableTypes {
+			namespaces = append(namespaces, t.Name.Schema)
 		}
 	}
 	slices.Sort(namespaces)

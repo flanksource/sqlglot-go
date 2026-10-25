@@ -2,6 +2,7 @@ package sqlserver
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -55,6 +56,16 @@ func realm(input migrate.Schema, namespaces []string) (*schema.Realm, error) {
 			}
 		}
 	}
+	for _, q := range input.Sequences {
+		if err := sequence(r, q); err != nil {
+			return nil, err
+		}
+	}
+	for _, t := range input.TableTypes {
+		if err := tableType(r, t); err != nil {
+			return nil, err
+		}
+	}
 	for _, d := range input.Definitions {
 		if err := definition(r, d); err != nil {
 			return nil, err
@@ -87,6 +98,16 @@ func uniqueObjects(input migrate.Schema) error {
 	}
 	for _, d := range input.Definitions {
 		if err := add(d.Name); err != nil {
+			return err
+		}
+	}
+	for _, q := range input.Sequences {
+		if err := add(q.Name); err != nil {
+			return err
+		}
+	}
+	for _, t := range input.TableTypes {
+		if err := add(t.Name); err != nil {
 			return err
 		}
 	}
@@ -147,11 +168,20 @@ func convertTable(input migrate.Table) (*schema.Table, error) {
 			}
 			col.Default = &schema.RawExpr{X: c.Default.Expression}
 			if c.Default.Name != "" {
-				col.Attrs = append(col.Attrs, &atlas.DefaultConstraint{Name: c.Default.Name})
+				col.Attrs = append(col.Attrs, &atlas.DefaultConstraint{Name: c.Default.Name, SystemNamed: c.Default.SystemNamed})
 			}
 		}
 		if c.Collation != "" {
 			col.SetCollation(c.Collation)
+		}
+		if c.RowGUID {
+			if !strings.EqualFold(c.Type, "uniqueidentifier") {
+				return nil, fmt.Errorf("column %s: ROWGUIDCOL requires uniqueidentifier, not %s", c.Name, c.Type)
+			}
+			if slices.ContainsFunc(t.Columns, func(other *schema.Column) bool { return slices.ContainsFunc(other.Attrs, isRowGUID) }) {
+				return nil, fmt.Errorf("column %s: a table has at most one ROWGUIDCOL", c.Name)
+			}
+			col.Attrs = append(col.Attrs, &atlas.RowGUID{})
 		}
 		t.AddColumns(col)
 	}
@@ -203,6 +233,12 @@ func index(t *schema.Table, input migrate.Index) error {
 	}
 	if input.Filter != "" {
 		i.AddAttrs(&atlas.IndexPredicate{P: input.Filter})
+	}
+	switch {
+	case input.FillFactor < 0 || input.FillFactor > 100:
+		return fmt.Errorf("index %s: fill factor %d is outside 0-100", input.Name, input.FillFactor)
+	case input.FillFactor > 0 && input.FillFactor < 100:
+		i.AddAttrs(&atlas.FillFactor{Percent: input.FillFactor})
 	}
 	if input.Primary {
 		if t.PrimaryKey != nil || input.Filter != "" || len(input.Included) != 0 {
@@ -270,6 +306,11 @@ func definition(r *schema.Realm, input migrate.Definition) error {
 	if !ok {
 		return fmt.Errorf("sqlserver: definition requires a schema: %+v", input.Name)
 	}
+	qualified, err := atlas.QualifyDefinition(input.SQL, input.Name.Schema)
+	if err != nil {
+		return fmt.Errorf("sqlserver: definition %+v: %w", input.Name, err)
+	}
+	input.SQL = qualified
 	if input.Kind == "VIEW" || input.Kind == "TRIGGER" {
 		return module(r, s, input)
 	}
@@ -292,5 +333,98 @@ func definition(r *schema.Realm, input migrate.Definition) error {
 	if _, ok := s.Func(input.Name.Name); ok {
 		return fmt.Errorf("sqlserver: duplicate definition %+v", input.Name)
 	}
-	return routine.AddTo(s)
+	if err := routine.AddTo(s); err != nil {
+		return err
+	}
+	if input.QuotedIdentifierOff {
+		if p, ok := s.Proc(input.Name.Name); ok {
+			p.Attrs = append(p.Attrs, &atlas.QuotedIdentifierOff{})
+		} else if f, ok := s.Func(input.Name.Name); ok {
+			f.Attrs = append(f.Attrs, &atlas.QuotedIdentifierOff{})
+		}
+	}
+	return nil
+}
+
+func isRowGUID(attr schema.Attr) bool {
+	_, ok := attr.(*atlas.RowGUID)
+	return ok
+}
+
+func tableType(r *schema.Realm, input migrate.TableType) error {
+	s, ok := r.Schema(input.Name.Schema)
+	if !ok || input.Name.Name == "" || len(input.Columns) == 0 {
+		return fmt.Errorf("sqlserver: table type requires a schema, name and columns: %+v", input.Name)
+	}
+	t := &atlas.TableType{Schema: s, Name: input.Name.Name, Checks: input.Checks}
+	columns := schema.NewTable(input.Name.Name)
+	for _, c := range input.Columns {
+		if c.RowGUID || c.Default != nil && c.Default.Name != "" {
+			return fmt.Errorf("sqlserver: table type %s.%s column %s: ROWGUIDCOL and named defaults are not allowed", s.Name, t.Name, c.Name)
+		}
+		typ, err := atlas.ParseType(c.Type)
+		if err != nil {
+			return fmt.Errorf("sqlserver: table type %s.%s column %s: %w", s.Name, t.Name, c.Name, err)
+		}
+		col := &schema.Column{Name: c.Name, Type: &schema.ColumnType{Type: typ, Raw: c.Type, Null: c.Nullable}}
+		if c.Identity != nil {
+			col.Attrs = append(col.Attrs, &atlas.Identity{Seed: c.Identity.Seed, Increment: c.Identity.Increment})
+		}
+		if c.Default != nil {
+			col.Default = &schema.RawExpr{X: c.Default.Expression}
+		}
+		if c.Collation != "" {
+			col.SetCollation(c.Collation)
+		}
+		columns.AddColumns(col)
+		t.Columns = append(t.Columns, col)
+	}
+	for _, key := range input.Keys {
+		if key.Name != "" || !key.Primary && !key.Unique || key.Filter != "" || len(key.Included) > 0 || key.FillFactor != 0 || len(key.Columns) == 0 {
+			return fmt.Errorf("sqlserver: table type %s.%s keys are unnamed PRIMARY KEY or UNIQUE column lists", s.Name, t.Name)
+		}
+		index := schema.NewIndex("").SetUnique(true)
+		for _, part := range key.Columns {
+			c, ok := columns.Column(part.Name)
+			if !ok {
+				return fmt.Errorf("sqlserver: table type %s.%s key: missing column %s", s.Name, t.Name, part.Name)
+			}
+			index.AddParts(schema.NewColumnPart(c).SetDesc(part.Descending))
+		}
+		if key.Clustered {
+			index.AddAttrs(&atlas.Clustered{})
+		}
+		if key.Primary {
+			index.AddAttrs(&atlas.TableTypePrimaryKey{})
+		}
+		t.Keys = append(t.Keys, index)
+	}
+	s.AddObjects(t)
+	return nil
+}
+
+var sequenceNumber = regexp.MustCompile(`^-?[0-9]+$`)
+
+func sequence(r *schema.Realm, input migrate.Sequence) error {
+	s, ok := r.Schema(input.Name.Schema)
+	if !ok || input.Name.Name == "" {
+		return fmt.Errorf("sqlserver: sequence requires a schema and name: %+v", input.Name)
+	}
+	if strings.TrimSpace(input.Type) == "" {
+		return fmt.Errorf("sqlserver: sequence %s.%s requires a type", s.Name, input.Name.Name)
+	}
+	for label, value := range map[string]string{"start": input.Start, "increment": input.Increment, "minimum": input.Minimum, "maximum": input.Maximum} {
+		if !sequenceNumber.MatchString(value) {
+			return fmt.Errorf("sqlserver: sequence %s.%s %s %q is not an integer", s.Name, input.Name.Name, label, value)
+		}
+	}
+	if input.Increment == "0" {
+		return fmt.Errorf("sqlserver: sequence %s.%s increment must be nonzero", s.Name, input.Name.Name)
+	}
+	if input.NoCache && input.CacheSize != 0 || input.CacheSize < 0 {
+		return fmt.Errorf("sqlserver: sequence %s.%s has an invalid cache setting", s.Name, input.Name.Name)
+	}
+	s.AddObjects(&atlas.Sequence{Schema: s, Name: input.Name.Name, Type: input.Type, Start: input.Start, Increment: input.Increment,
+		Minimum: input.Minimum, Maximum: input.Maximum, Cycle: input.Cycle, NoCache: input.NoCache, CacheSize: input.CacheSize})
+	return nil
 }
