@@ -58,6 +58,33 @@ var _ = Describe("standalone database commands", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(output).To(ContainSubstring("already-applied"))
 	})
+	It("inspects and lists a named connection from the connections directory", func() {
+		dir := GinkgoT().TempDir()
+		dbPath := filepath.Join(dir, "named.db")
+		db, err := sql.Open("sqlite", dbPath)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Exec("CREATE TABLE widgets (id integer PRIMARY KEY)")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(db.Close()).To(Succeed())
+		connectionsDir := filepath.Join(dir, "connections")
+		Expect(os.Mkdir(connectionsDir, 0700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(connectionsDir, "local.yaml"), []byte("type: sqlite\nurl: "+dbPath+"\n"), 0600)).To(Succeed())
+		run := func(args ...string) (string, error) {
+			root := newRootCommand(strings.NewReader(""))
+			out := &bytes.Buffer{}
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			err := root.Execute()
+			return out.String(), err
+		}
+		output, err := run("schema", "inspect", "--dsn", "connection://local", "--connections-dir", connectionsDir, "--snapshot")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(ContainSubstring("widgets"))
+		summaries, err := listConnections(ConnectionListOptions{Dir: connectionsDir})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(summaries).To(Equal([]ConnectionSummary{{Name: "local", Type: "sqlite", Source: filepath.Join(connectionsDir, "local.yaml")}}))
+	})
 	It("requires an explicit reviewed hash before connecting", func() {
 		root := newRootCommand(strings.NewReader(""))
 		root.SetArgs([]string{"migrate", "apply", "--dsn", "missing.db", "--artifact", "missing.json"})

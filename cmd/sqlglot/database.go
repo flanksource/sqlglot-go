@@ -7,12 +7,16 @@ import (
 	"errors"
 	"fmt"
 	_ "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/flanksource/clicky"
 	_ "github.com/go-sql-driver/mysql"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/flanksource/sqlglot-go/database/connections"
 	inspection "github.com/flanksource/sqlglot-go/database/inspect"
 	"github.com/flanksource/sqlglot-go/database/inspect/snapshot"
 	"github.com/flanksource/sqlglot-go/database/migrate/review"
@@ -21,15 +25,17 @@ import (
 )
 
 type databaseFlags struct {
-	dsn     string
-	dialect string
-	schema  string
+	dsn            string
+	dialect        string
+	schema         string
+	connectionsDir string
 }
 
 func (f *databaseFlags) bind(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.dsn, "dsn", "", "Database connection string")
+	cmd.Flags().StringVar(&f.dsn, "dsn", "", "Database connection string, or connection://[<namespace>/]<name> from --connections-dir")
 	cmd.Flags().StringVar(&f.dialect, "driver", "", "Database driver (defaults to connection dialect)")
 	cmd.Flags().StringVar(&f.schema, "schema", "", "Schema to inspect or migrate (defaults to main, public or dbo)")
+	cmd.Flags().StringVar(&f.connectionsDir, "connections-dir", connections.DefaultDir(), "Directory of named connection YAML files")
 }
 
 func (f *databaseFlags) open(ctx context.Context, readOnly bool) (*sql.DB, error) {
@@ -37,6 +43,13 @@ func (f *databaseFlags) open(ctx context.Context, readOnly bool) (*sql.DB, error
 		return nil, fmt.Errorf("database dsn is required")
 	}
 	dsn := f.dsn
+	if strings.HasPrefix(dsn, connections.Prefix) {
+		resolved, err := connections.Resolve(ctx, connections.ResolveOptions{Dir: f.connectionsDir, Reference: dsn})
+		if err != nil {
+			return nil, err
+		}
+		dsn = resolved
+	}
 	f.dialect = inspection.NormalizeDriver(f.dialect)
 	if f.dialect == "" && strings.HasPrefix(dsn, "clickhouse://") {
 		f.dialect = "clickhouse"
@@ -115,6 +128,38 @@ func addDatabaseCommands(root *cobra.Command) {
 	migrateCmd := &cobra.Command{Use: "migrate", Short: "Plan and apply reviewed database migrations"}
 	migrateCmd.AddCommand(newMigrationPlanCommand(), newMigrationApplyCommand())
 	root.AddCommand(schemaCmd, migrateCmd)
+	connectionsCmd := &cobra.Command{Use: "connections", Short: "Manage named database connections"}
+	list := clicky.AddNamedCommand("list", connectionsCmd, ConnectionListOptions{}, listConnections)
+	list.Short = "List named connections without resolving their secrets"
+	root.AddCommand(connectionsCmd)
+}
+
+type ConnectionListOptions struct {
+	Dir string `json:"dir" flag:"connections-dir" help:"Directory of named connection YAML files (defaults to $XDG_CONFIG_HOME/sqlglot-go/connections)"`
+}
+
+type ConnectionSummary struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace,omitempty"`
+	Type        string `json:"type"`
+	KubeContext string `json:"kubecontext,omitempty"`
+	Source      string `json:"source"`
+}
+
+func listConnections(opts ConnectionListOptions) ([]ConnectionSummary, error) {
+	if opts.Dir == "" {
+		opts.Dir = connections.DefaultDir()
+	}
+	catalog, err := connections.Load(opts.Dir)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ConnectionSummary, 0, len(catalog))
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		c := catalog[name]
+		result = append(result, ConnectionSummary{Name: c.Name, Namespace: c.Namespace, Type: c.Type, KubeContext: c.Properties[connections.KubeContextProperty], Source: c.Source})
+	}
+	return result, nil
 }
 
 func writeDatabaseJSON(cmd *cobra.Command, path string, value any) (returnErr error) {
