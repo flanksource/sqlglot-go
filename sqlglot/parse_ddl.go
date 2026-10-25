@@ -554,7 +554,7 @@ func (p *parser) parseColumnDefs() ([]*Expression, error) {
 			def := New("ColumnDef", Arg{"this", name},
 				Arg{"constraints", append([]*Expression{computed}, rest...)})
 			out = append(out, def)
-			if !p.match(TokCOMMA) {
+			if !p.match(TokCOMMA) && !p.atTSQLTableKey() {
 				break
 			}
 			continue
@@ -589,7 +589,7 @@ func (p *parser) parseColumnDefs() ([]*Expression, error) {
 			def.Set("constraints", constraints)
 		}
 		out = append(out, def)
-		if !p.match(TokCOMMA) {
+		if !p.match(TokCOMMA) && !p.atTSQLTableKey() {
 			break
 		}
 	}
@@ -1400,6 +1400,9 @@ func (p *parser) parseColumnConstraints() ([]*Expression, error) {
 	}
 	for {
 		var kind *Expression
+		if p.atTSQLTableKey() {
+			return out, nil
+		}
 		switch {
 		case p.atRisingWaveComputed():
 			computed, compErr := p.parseRisingWaveComputed()
@@ -4738,6 +4741,10 @@ func (p *parser) parseComment() (*Expression, error) {
 // records an equality either way, so the sign is a spelling rather than part
 // of the tree.
 func (p *parser) parseSet() (*Expression, error) {
+	if p.dialect == "tsql" && p.next() != nil && p.next().Type == TokPARAMETER &&
+		p.index+4 < len(p.tokens) && p.tokens[p.index+3].Type == TokEQ && p.tokenIsWordAt(p.index+4, "CURSOR") {
+		return p.parseTSQLSetCursor()
+	}
 	p.advance() // SET
 	var items []*Expression
 	for {
@@ -6342,6 +6349,14 @@ func (p *parser) parseKill() (*Expression, error) {
 // `=` follows it. So does this.
 func (p *parser) parseExecute() (*Expression, error) {
 	p.advance() // EXEC or EXECUTE
+	if p.dialect == "tsql" {
+		if p.atWords("AS") {
+			return p.parseTSQLExecuteAs()
+		}
+		if p.at(TokL_PAREN) {
+			return p.parseTSQLDynamicExecute()
+		}
+	}
 
 	var returnStatus *Expression
 	if p.at(TokPARAMETER) {

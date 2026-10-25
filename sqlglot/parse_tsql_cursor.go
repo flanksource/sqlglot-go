@@ -3,6 +3,9 @@ package sqlglot
 import "strings"
 
 func (p *parser) startsTSQLCursorDeclaration() bool {
+	if p.next() != nil && p.next().Type == TokPARAMETER {
+		return false
+	}
 	i := p.index + 2
 	for i < len(p.tokens) && (p.tokenIsWordAt(i, "INSENSITIVE") || p.tokenIsWordAt(i, "SCROLL")) {
 		i++
@@ -24,11 +27,7 @@ func (p *parser) parseTSQLDeclareCursor() (*Expression, error) {
 	if !p.matchUnquotedWord("CURSOR") {
 		return nil, p.unsupported("DECLARE cursor without CURSOR")
 	}
-	var options []string
-	for p.atWordsAny("LOCAL", "GLOBAL", "FORWARD_ONLY", "SCROLL", "STATIC", "KEYSET", "DYNAMIC", "FAST_FORWARD", "READ_ONLY", "SCROLL_LOCKS", "OPTIMISTIC", "TYPE_WARNING") {
-		options = append(options, strings.ToUpper(p.curr().Text))
-		p.advance()
-	}
+	options := p.parseTSQLCursorOptions()
 	if !p.matchUnquotedWord("FOR") || !p.at(TokSELECT) {
 		return nil, p.unsupported("DECLARE CURSOR without FOR SELECT")
 	}
@@ -40,6 +39,64 @@ func (p *parser) parseTSQLDeclareCursor() (*Expression, error) {
 		return nil, err
 	}
 	return New("DeclareCursor", Arg{"this", name}, Arg{"pre_options", preOptions}, Arg{"options", options}, Arg{"expression", query}), nil
+}
+
+func (p *parser) parseTSQLCursorOptions() []string {
+	var options []string
+	for p.atWordsAny("LOCAL", "GLOBAL", "FORWARD_ONLY", "SCROLL", "STATIC", "KEYSET", "DYNAMIC", "FAST_FORWARD", "READ_ONLY", "SCROLL_LOCKS", "OPTIMISTIC", "TYPE_WARNING") {
+		options = append(options, strings.ToUpper(p.curr().Text))
+		p.advance()
+	}
+	return options
+}
+
+func (p *parser) parseTSQLSetCursor() (*Expression, error) {
+	p.advance() // SET
+	name := p.parseParameter()
+	p.advance() // =
+	p.advance() // CURSOR
+	options := p.parseTSQLCursorOptions()
+	if !p.matchUnquotedWord("FOR") || !p.at(TokSELECT) {
+		return nil, p.unsupported("SET CURSOR without FOR SELECT")
+	}
+	whole := p.tokens
+	depth := 0
+	for i := p.index; i+1 < len(whole); i++ {
+		if whole[i].Type == TokL_PAREN {
+			depth++
+		} else if whole[i].Type == TokR_PAREN {
+			depth--
+		} else if depth == 0 && p.tokenIsWordAt(i, "FOR") && p.tokenIsWordAt(i+1, "UPDATE") {
+			p.tokens = whole[:i]
+			break
+		}
+	}
+	query, err := p.parseQuery()
+	p.tokens = whole
+	if err != nil {
+		return nil, err
+	}
+	node := New("SetCursor", Arg{"this", name}, Arg{"options", options}, Arg{"expression", query})
+	if p.atWords("FOR", "UPDATE") {
+		p.advance()
+		p.advance()
+		node.Set("update", true)
+		if p.matchUnquotedWord("OF") {
+			var columns []*Expression
+			for {
+				column, err := p.parseColumn()
+				if err != nil {
+					return nil, err
+				}
+				columns = append(columns, column)
+				if !p.match(TokCOMMA) {
+					break
+				}
+			}
+			node.Set("columns", columns)
+		}
+	}
+	return node, nil
 }
 
 func (p *parser) parseTSQLCursorName() (*Expression, error) {

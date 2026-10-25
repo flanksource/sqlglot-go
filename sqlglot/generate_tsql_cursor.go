@@ -2,6 +2,28 @@ package sqlglot
 
 import "strings"
 
+func (g *generator) writeTSQLSetCursor(e *Expression) string {
+	if g.dialect != "tsql" || e.Args["this"] == nil || e.Args["expression"] == nil {
+		return g.fail("SET CURSOR without a variable or query, or outside T-SQL")
+	}
+	out := "SET " + g.child(e, "this") + " = CURSOR"
+	if options, _ := e.Args["options"].([]string); len(options) > 0 {
+		out += " " + strings.Join(options, " ")
+	}
+	out += " FOR " + g.child(e, "expression")
+	if update, _ := e.Args["update"].(bool); update {
+		out += " FOR UPDATE"
+		if columns, _ := e.Args["columns"].([]*Expression); len(columns) > 0 {
+			parts := make([]string, len(columns))
+			for i, column := range columns {
+				parts[i] = g.node(column)
+			}
+			out += " OF " + strings.Join(parts, ", ")
+		}
+	}
+	return out
+}
+
 func (g *generator) writeTSQLDeclareCursor(e *Expression) string {
 	if g.dialect != "tsql" {
 		return g.fail("DECLARE CURSOR, which this dialect does not write")

@@ -109,7 +109,9 @@ func (p *parser) endOfTSQLStatement() int {
 // T-SQL itself needs a `;` before it -- so it is left to be an alias.)
 func (p *parser) atReservedStatementWord() bool {
 	return p.inRoutineBody && (p.atWords("RETURN") || p.atWords("IF") || p.atWords("PRINT") || p.atWords("WHILE") ||
-		p.atWords("OPEN") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") || p.atWords("FETCH"))
+		p.atWords("RAISERROR") || p.atWords("REVERT") ||
+		p.atWords("OPEN") || p.atWords("CLOSE") || p.atWords("DEALLOCATE") || p.atWords("FETCH") ||
+		p.atWordsAny("GOTO", "BREAK", "CONTINUE") || p.atTSQLLabel())
 }
 
 // opensABlock reports whether any BEGIN in the tokens opens a BEGIN … END
@@ -169,6 +171,16 @@ func (p *parser) parseTSQLStatement() (*Expression, error) {
 
 func (p *parser) parseTSQLStatementKind() (*Expression, error) {
 	c := p.curr()
+	if p.atTSQLLabel() || p.atWordsAny("GOTO", "BREAK", "CONTINUE") {
+		return p.parseTSQLControlFlow()
+	}
+	if p.atWords("RAISERROR") {
+		return p.parseTSQLRaiserror()
+	}
+	if p.atWords("REVERT") {
+		p.advance()
+		return New("Revert"), nil
+	}
 	if c.Type == TokBEGIN && p.atWords("BEGIN", "TRY") {
 		return p.parseTSQLTryCatch()
 	}
