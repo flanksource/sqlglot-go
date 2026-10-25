@@ -29,6 +29,28 @@ Build with `make build`. Database commands emit JSON. Set the database connectio
 
 `--dsn` is required. Migration connections support PostgreSQL URLs or keyword DSNs, SQL Server URLs/ADO/ODBC strings, and SQLite file paths or file URIs. `--driver` selects a catalog backend explicitly, including `mysql` with its native driver DSN and `clickhouse` with its native URL. `--schema` defaults to `public`, `dbo`, or `main`. Catalog inspection is bounded and may report truncation; `--snapshot` requests a migration snapshot and rejects unsupported features instead of truncating.
 
+### Named connections
+
+`--dsn connection://<name>` (or `connection://<namespace>/<name>`) resolves a named connection instead of a literal DSN. Connections are commons-db connection YAML files, one per file, in `$XDG_CONFIG_HOME/sqlglot-go/connections` (default `~/.config/sqlglot-go/connections`, override with `--connections-dir`). The file stem is the name. `url` is the full DSN template: `$(username)` and `$(password)` insert the query-escaped credentials, and `{{.properties.<key>}}` inserts a property. Any value may be a `secret://<name>/<key>`, `configmap://<name>/<key>` or `helm://` reference, read from the connection's `namespace` through the kubeconfig context named by `properties.kubecontext` (the current context when unset). Files hold references only, never secret values.
+
+```yaml
+# ~/.config/sqlglot-go/connections/tenant-x.yaml
+namespace: tenant-x
+type: sql_server
+url: sqlserver://$(username):$(password)@{{.properties.host}}?database={{.properties.database}}
+username: secret://db/username
+password: secret://db/password
+properties:
+  kubecontext: example-cluster
+  host: secret://db/host
+  database: secret://db/database
+```
+
+```sh
+.tmp/sqlglot connections list
+.tmp/sqlglot schema inspect --dsn connection://tenant-x --snapshot --schema dbo
+```
+
 `migrate plan` requires exactly one of `--desired` or `--bundle`. Desired input is backend HCL or a saved snapshot JSON; SQL Server uses its typed snapshot JSON. `--out` stores the JSON with owner-only permissions. Bundle directories use the existing portable HCL conventions and default to retaining omitted columns, tables and types. `--allow-drops` includes their removal in the reviewed plan. SQL Server routine files can be selected with `--routines` relative to the bundle directory.
 
 Supply bundle variables with repeatable `--var 'name=HCL-literal'`, for example `--var 'prefix="app"'` or `--var 'limit=10'`. Variables, routines and the drop option require a bundle input. SQLite apply opens an existing file with `mode=rw`; the reviewed executor owns its temporary connection pragmas.
