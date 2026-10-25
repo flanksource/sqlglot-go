@@ -86,6 +86,18 @@ var _ = Describe("Native migration contracts", func() {
 		Expect(plan.Steps).To(ContainElement(MatchFields(IgnoreExtras, Fields{"SQL": Equal("CREATE OR ALTER VIEW dbo.order_ids AS SELECT id FROM dbo.orders")})))
 		Expect(plan.Steps).To(ContainElement(MatchFields(IgnoreExtras, Fields{"SQL": Equal("CREATE OR ALTER TRIGGER dbo.audit_orders ON dbo.orders AFTER INSERT AS BEGIN SELECT 1; END")})))
 	})
+	It("flags modules with runtime-dispatched dependencies without ordering on them", func() {
+		runtime := []migrate.RuntimeDependency{{Schema: "dbo", Name: "missing_rates"}, {Name: "OPENJSON"}}
+		proc := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "load_rates"}, Kind: "PROCEDURE", SQL: "CREATE PROCEDURE dbo.load_rates AS SELECT * FROM dbo.missing_rates", RuntimeDependencies: runtime}
+		plan, err := sqlserver.Plan(migrate.Request{Desired: migrate.Schema{Definitions: []migrate.Definition{proc}}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(plan.Steps).To(HaveLen(1))
+		Expect(plan.Steps[0].Change.RuntimeDependencies).To(Equal(runtime))
+		Expect(plan.Changes[0].RuntimeDependencies).To(Equal(runtime))
+		unchanged, err := sqlserver.Plan(migrate.Request{Current: migrate.Schema{Definitions: []migrate.Definition{proc}}, Desired: migrate.Schema{Definitions: []migrate.Definition{proc}}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(unchanged.Steps).To(BeEmpty())
+	})
 	It("creates dependent views in dependency order and rejects cycles", func() {
 		base := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "z_base"}, Kind: "VIEW", SQL: "CREATE VIEW dbo.z_base AS SELECT 1 AS id"}
 		child := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "a_child"}, Kind: "VIEW", SQL: "CREATE VIEW dbo.a_child AS SELECT id FROM dbo.z_base", Dependencies: []migrate.Name{base.Name}}

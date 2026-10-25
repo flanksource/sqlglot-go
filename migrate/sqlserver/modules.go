@@ -29,6 +29,9 @@ func module(r *schema.Realm, s *schema.Schema, input migrate.Definition) error {
 		return fmt.Errorf("sqlserver: module must name its qualified catalog identifier %+v", input.Name)
 	}
 	attrs := []schema.Attr{&atlas.Definition{Text: input.SQL}}
+	if input.QuotedIdentifierOff {
+		attrs = append(attrs, &atlas.QuotedIdentifierOff{})
+	}
 	if input.Kind == "VIEW" {
 		if input.Parent != nil || input.Disabled {
 			return fmt.Errorf("sqlserver: view cannot have a trigger parent or disabled state")

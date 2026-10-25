@@ -6,6 +6,7 @@ import (
 
 	"ariga.io/atlas/sql/schema"
 	"github.com/flanksource/sqlglot-go/migrate"
+	atlas "github.com/flanksource/sqlglot-go/migrate/atlas/sqlserver"
 )
 
 func describe(c schema.Change, table *schema.Table, metadata map[schema.Change]migrate.Change, changes *[]migrate.Change) error {
@@ -47,7 +48,7 @@ func changeOf(c schema.Change, table *schema.Table) (migrate.Change, error) {
 		change.Action, change.Kind, change.Member = "drop", "column", c.C.Name
 	case *schema.ModifyColumn:
 		change.Action, change.Kind, change.Member = "modify", "column", c.To.Name
-		if c.Change.Is(schema.ChangeType) || c.Change.Is(schema.ChangeAttr) || c.From.Type.Null && !c.To.Type.Null {
+		if c.Change.Is(schema.ChangeType) || atlas.CollationChanged(c.From, c.To) || c.From.Type.Null && !c.To.Type.Null {
 			change.Destructive, change.Reason = true, "Column type, collation or nullability change may reject or lose existing data"
 		}
 	case *schema.AddIndex:
@@ -98,6 +99,15 @@ func changeOf(c schema.Change, table *schema.Table) (migrate.Change, error) {
 		change.Action, change.Kind, change.Object = "modify", "trigger", triggerName(c.To)
 	case *schema.DropTrigger:
 		change.Action, change.Kind, change.Object = "drop", "trigger", triggerName(c.T)
+	case *schema.AddObject:
+		change.Action = "add"
+		change.Kind, change.Object = objectOf(c.O)
+	case *schema.ModifyObject:
+		change.Action = "modify"
+		change.Kind, change.Object = objectOf(c.To)
+	case *schema.DropObject:
+		change.Action = "drop"
+		change.Kind, change.Object = objectOf(c.O)
 	default:
 		return change, fmt.Errorf("sqlserver: cannot describe change %T", c)
 	}
@@ -118,6 +128,22 @@ func triggerName(t *schema.Trigger) migrate.Name {
 		return migrate.Name{Schema: t.View.Schema.Name, Name: t.Name}
 	}
 	return migrate.Name{}
+}
+
+// objectOf names a schema object change's kind and object; an unknown object
+// yields an empty name, which changeOf refuses.
+func objectOf(o schema.Object) (string, migrate.Name) {
+	switch o := o.(type) {
+	case *atlas.Sequence:
+		if o.Schema != nil {
+			return "sequence", migrate.Name{Schema: o.Schema.Name, Name: o.Name}
+		}
+	case *atlas.TableType:
+		if o.Schema != nil {
+			return "table-type", migrate.Name{Schema: o.Schema.Name, Name: o.Name}
+		}
+	}
+	return "object", migrate.Name{}
 }
 
 func tableName(table *schema.Table) migrate.Name {
