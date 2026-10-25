@@ -15,6 +15,9 @@ type (
 	DefaultConstraint struct {
 		schema.Attr
 		Name string
+		// SystemNamed marks a name SQL Server generated; it is not compared,
+		// and a new default for it is created unnamed.
+		SystemNamed bool
 	}
 
 	// Clustered marks a clustered index or primary key. Its absence means
@@ -45,7 +48,50 @@ type (
 	Disabled struct {
 		schema.Attr
 	}
+
+	// FillFactor is an index's FILLFACTOR percentage, 1-99. Its absence is the
+	// server default (0, equivalent to 100).
+	FillFactor struct {
+		schema.Attr
+		Percent int
+	}
+
+	// RowGUID marks the table's ROWGUIDCOL column.
+	RowGUID struct {
+		schema.Attr
+	}
+
+	// QuotedIdentifierOff marks a module created under SET QUOTED_IDENTIFIER OFF.
+	QuotedIdentifierOff struct {
+		schema.Attr
+	}
 )
+
+func fillFactorOf(attrs []schema.Attr) int {
+	if f, ok := attrOf[*FillFactor](attrs); ok {
+		return f.Percent
+	}
+	return 0
+}
+
+// CollationChanged reports an explicit collation change between two columns.
+func CollationChanged(from, to *schema.Column) bool {
+	c1, _ := attrOf[*schema.Collation](from.Attrs)
+	c2, _ := attrOf[*schema.Collation](to.Attrs)
+	return (c1 == nil) != (c2 == nil) || c1 != nil && c1.V != c2.V
+}
+
+// RowGUIDChanged reports a ROWGUIDCOL property change between two columns.
+func RowGUIDChanged(from, to *schema.Column) bool {
+	_, r1 := attrOf[*RowGUID](from.Attrs)
+	_, r2 := attrOf[*RowGUID](to.Attrs)
+	return r1 != r2
+}
+
+func quotedIdentifierOff(attrs []schema.Attr) bool {
+	_, ok := attrOf[*QuotedIdentifierOff](attrs)
+	return ok
+}
 
 func attrOf[T schema.Attr](attrs []schema.Attr) (T, bool) {
 	for _, attr := range attrs {

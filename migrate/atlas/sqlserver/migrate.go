@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/schema"
@@ -85,6 +86,12 @@ func (s *state) planChange(c schema.Change) error {
 		s.append(c, fmt.Sprintf("drop %q function", c.F.Name), s.build("DROP FUNCTION").Func(c.F))
 		return nil
 	}
+	if handled, err := s.tableTypeChange(c); handled {
+		return err
+	}
+	if handled, err := s.sequenceChange(c); handled {
+		return err
+	}
 	return s.moduleChange(c)
 }
 
@@ -98,8 +105,19 @@ func (s *state) createOrAlter(c schema.Change, name string, attrs []schema.Attr)
 	if err != nil {
 		return fmt.Errorf("sqlserver: routine %s: %w", name, err)
 	}
+	if quotedIdentifierOff(attrs) {
+		cmd = quotedIdentifierOffBatch(cmd)
+	}
 	s.Changes = append(s.Changes, &migrate.Change{Cmd: cmd, Source: c, Comment: fmt.Sprintf("create or alter %q", name)})
 	return nil
+}
+
+// quotedIdentifierOffBatch creates a module under QUOTED_IDENTIFIER OFF. The
+// setting is captured when the module text is parsed, and a module must start
+// its own batch, so the definition runs as a nested batch after the SET; the
+// trailing SET restores the default for the rest of the session.
+func quotedIdentifierOffBatch(definition string) string {
+	return "SET QUOTED_IDENTIFIER OFF;\nEXEC sys.sp_executesql N'" + strings.ReplaceAll(definition, "'", "''") + "';\nSET QUOTED_IDENTIFIER ON;"
 }
 
 func (s *state) build(phrases ...string) *sqlx.Builder {

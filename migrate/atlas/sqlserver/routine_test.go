@@ -85,4 +85,38 @@ var _ = Describe("SQL Server routine definitions", func() {
 		_, err := planner.CreateOrAlter("SELECT 1")
 		Expect(err).To(MatchError(ContainSubstring("module definition")))
 	})
+
+	It("reads a sysname parameter as nvarchar(128)", func() {
+		routine, err := planner.ParseRoutine("CREATE PROCEDURE dbo.acme_rows @table_name sysname AS SELECT @table_name")
+		Expect(err).NotTo(HaveOccurred())
+		s := schema.New("dbo")
+		Expect(routine.AddTo(s)).To(Succeed())
+		proc, ok := s.Proc("acme_rows")
+		Expect(ok).To(BeTrue())
+		Expect(planner.FormatType(proc.Args[0].Type)).To(Equal("nvarchar(128)"))
+	})
+
+	It("reads a routine body whose statements the command tokenizer would swallow", func() {
+		_, err := planner.ParseRoutine("CREATE PROCEDURE dbo.acme_refresh AS UPDATE STATISTICS dbo.acme_items\nRETURN")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	DescribeTable("qualifies unqualified module names with the catalog schema",
+		func(definition, expected string) {
+			qualified, err := planner.QualifyDefinition(definition, "dbo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(qualified).To(Equal(expected))
+		},
+		Entry("unqualified procedure", "CREATE PROCEDURE acme_p AS SELECT 1", "CREATE PROCEDURE [dbo].acme_p AS SELECT 1"),
+		Entry("bracketed procedure after a comment", "-- note\nCREATE PROC [acme p] AS SELECT 1", "-- note\nCREATE PROC [dbo].[acme p] AS SELECT 1"),
+		Entry("function after OR ALTER", orderTotalFunc, `CREATE OR ALTER FUNCTION [dbo].acme_order_total(@order_id INT)
+RETURNS DECIMAL(18, 2)
+AS
+BEGIN
+    RETURN (SELECT SUM(quantity) FROM dbo.acme_order_lines WHERE order_id = @order_id);
+END`),
+		Entry("trigger and its ON target", "CREATE TRIGGER audit ON orders AFTER INSERT AS SELECT 1", "CREATE TRIGGER [dbo].audit ON [dbo].orders AFTER INSERT AS SELECT 1"),
+		Entry("already qualified", "CREATE VIEW dbo.acme_v AS SELECT 1", "CREATE VIEW dbo.acme_v AS SELECT 1"),
+		Entry("qualified trigger target only", "CREATE TRIGGER audit ON dbo.orders AFTER INSERT AS SELECT 1", "CREATE TRIGGER [dbo].audit ON dbo.orders AFTER INSERT AS SELECT 1"),
+	)
 })

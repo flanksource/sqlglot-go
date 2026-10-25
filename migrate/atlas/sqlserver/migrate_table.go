@@ -61,19 +61,27 @@ func (s *state) column(b *sqlx.Builder, t *schema.Table, c *schema.Column) error
 	if identity, ok := attrOf[*Identity](c.Attrs); ok {
 		b.P(fmt.Sprintf("IDENTITY(%d,%d)", identity.Seed, identity.Increment))
 	}
-	if c.Type.Null {
-		b.P("NULL")
-	} else {
-		b.P("NOT NULL")
+	b.P(nullability(c))
+	if _, ok := attrOf[*RowGUID](c.Attrs); ok {
+		b.P("ROWGUIDCOL")
 	}
 	if c.Default != nil {
 		value, err := DefaultSQL(c)
 		if err != nil {
 			return err
 		}
-		b.P("CONSTRAINT").Ident(defaultName(t, c)).P("DEFAULT", value)
+		if !systemNamedDefault(c) {
+			b.P("CONSTRAINT").Ident(defaultName(t, c))
+		}
+		b.P("DEFAULT", value)
 	}
 	return nil
+}
+
+// systemNamedDefault reports a default SQL Server names itself when created.
+func systemNamedDefault(c *schema.Column) bool {
+	named, ok := attrOf[*DefaultConstraint](c.Attrs)
+	return ok && named.SystemNamed
 }
 
 // defaultName is the name a new default constraint is given.
@@ -90,6 +98,14 @@ func (s *state) primaryKey(b *sqlx.Builder, pk *schema.Index) {
 	}
 	b.P("PRIMARY KEY", clustering(pk))
 	indexParts(b, pk)
+	indexOptions(b, pk)
+}
+
+// indexOptions writes WITH (FILLFACTOR = n) for a non-default fill factor.
+func indexOptions(b *sqlx.Builder, idx *schema.Index) {
+	if percent := fillFactorOf(idx.Attrs); percent != 0 {
+		b.P(fmt.Sprintf("WITH (FILLFACTOR = %d)", percent))
+	}
 }
 
 func (s *state) foreignKey(b *sqlx.Builder, fk *schema.ForeignKey) {
@@ -142,6 +158,7 @@ func (s *state) addIndex(source schema.Change, t *schema.Table, idx *schema.Inde
 	if _, ok := attrOf[*UniqueConstraint](idx.Attrs); ok {
 		b := s.alterTable(t).P("ADD CONSTRAINT").Ident(idx.Name).P("UNIQUE", clustering(idx))
 		indexParts(b, idx)
+		indexOptions(b, idx)
 		s.append(source, fmt.Sprintf("create unique constraint %q", idx.Name), b)
 		return nil
 	}
@@ -159,7 +176,23 @@ func (s *state) addIndex(source schema.Change, t *schema.Table, idx *schema.Inde
 	if predicate, ok := attrOf[*IndexPredicate](idx.Attrs); ok {
 		b.P("WHERE", predicate.P)
 	}
+	indexOptions(b, idx)
 	s.append(source, fmt.Sprintf("create index %q to table: %q", idx.Name, t.Name), b)
+	return nil
+}
+
+// rebuildIndex applies a fill-factor-only change in place; orderedTableChanges
+// turns every other index change into a drop and re-create.
+func (s *state) rebuildIndex(source schema.Change, t *schema.Table, from, to *schema.Index) error {
+	if !fillFactorOnly(from, to) {
+		return fmt.Errorf("index %q: only a fill factor change can be rebuilt in place", to.Name)
+	}
+	percent := fillFactorOf(to.Attrs)
+	if percent == 0 {
+		percent = 100
+	}
+	s.append(source, fmt.Sprintf("rebuild index %q with fill factor %d", to.Name, percent),
+		s.build("ALTER INDEX").Ident(to.Name).P("ON").Table(t).P(fmt.Sprintf("REBUILD WITH (FILLFACTOR = %d)", percent)))
 	return nil
 }
 

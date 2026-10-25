@@ -35,12 +35,18 @@ func (*diff) RealmObjectDiff(_, to *schema.Realm) ([]schema.Change, error) {
 // SchemaAttrDiff reports no schema attribute changes.
 func (*diff) SchemaAttrDiff(_, _ *schema.Schema) []schema.Change { return nil }
 
-// SchemaObjectDiff validates module definitions and refuses unsupported schema objects.
+// SchemaObjectDiff validates module definitions, diffs sequences and table
+// types, and refuses other schema objects such as alias types.
 func (*diff) SchemaObjectDiff(from, to *schema.Schema, _ *schema.DiffOptions) ([]schema.Change, error) {
-	switch {
-	case len(to.Objects) > 0:
-		return nil, fmt.Errorf("sqlserver: schema %s: sequences and user-defined types are %w", to.Name, errUnsupported)
+	changes, err := sequenceDiff(from, to)
+	if err != nil {
+		return nil, err
 	}
+	types, err := tableTypeDiff(from, to)
+	if err != nil {
+		return nil, err
+	}
+	changes = append(changes, types...)
 	for _, s := range []*schema.Schema{from, to} {
 		for _, v := range s.Views {
 			text, err := definitionOf(v.Name, v.Attrs)
@@ -53,7 +59,7 @@ func (*diff) SchemaObjectDiff(from, to *schema.Schema, _ *schema.DiffOptions) ([
 			}
 		}
 	}
-	return nil, nil
+	return changes, nil
 }
 
 // TableAttrDiff diffs named check constraints by their canonical expression.
@@ -77,8 +83,14 @@ func (*diff) TableAttrDiff(from, to *schema.Table, _ *schema.DiffOptions) ([]sch
 	}), nil
 }
 
-// View attributes are compared through the complete module definition.
-func (*diff) ViewAttrChanges(_, _ *schema.View) []schema.Change { return nil }
+// View attributes are compared through the complete module definition and its
+// QUOTED_IDENTIFIER setting.
+func (*diff) ViewAttrChanges(from, to *schema.View) []schema.Change {
+	if quotedIdentifierOff(from.Attrs) != quotedIdentifierOff(to.Attrs) {
+		return []schema.Change{&schema.ModifyAttr{From: &QuotedIdentifierOff{}, To: &QuotedIdentifierOff{}}}
+	}
+	return nil
+}
 
 // ColumnChange compares nullability, canonical type spelling and canonical
 // default. Identity cannot be altered in place, so an identity change is an
@@ -109,9 +121,7 @@ func (*diff) ColumnChange(t *schema.Table, from, to *schema.Column, _ *schema.Di
 	if defaultChange {
 		change |= schema.ChangeDefault
 	}
-	c1, _ := attrOf[*schema.Collation](from.Attrs)
-	c2, _ := attrOf[*schema.Collation](to.Attrs)
-	if (c1 == nil) != (c2 == nil) || c1 != nil && c1.V != c2.V {
+	if CollationChanged(from, to) || RowGUIDChanged(from, to) {
 		change |= schema.ChangeAttr
 	}
 	if change.Is(schema.NoChange) {
@@ -138,7 +148,7 @@ func defaultChanged(from, to *schema.Column) (bool, error) {
 	}
 	n1, _ := attrOf[*DefaultConstraint](from.Attrs)
 	n2, _ := attrOf[*DefaultConstraint](to.Attrs)
-	if n2 != nil && (n1 == nil || n1.Name != n2.Name) {
+	if n2 != nil && !n2.SystemNamed && (n1 == nil || n1.Name != n2.Name) {
 		return true, nil
 	}
 	d1, err := canonicalDefault(from)
@@ -157,9 +167,15 @@ func canonicalDefault(c *schema.Column) (string, error) {
 	return canonicalValue(value)
 }
 
-// IndexAttrChanged compares clustering, included columns and the canonical
-// filter predicate set by Normalize.
+// IndexAttrChanged compares clustering, included columns, fill factor and the
+// canonical filter predicate set by Normalize.
 func (*diff) IndexAttrChanged(from, to []schema.Attr) bool {
+	return fillFactorOf(from) != fillFactorOf(to) || IndexDefinitionChanged(from, to)
+}
+
+// IndexDefinitionChanged reports index attribute changes other than fill
+// factor, which a rebuild applies in place.
+func IndexDefinitionChanged(from, to []schema.Attr) bool {
 	_, u1 := attrOf[*UniqueConstraint](from)
 	_, u2 := attrOf[*UniqueConstraint](to)
 	if u1 != u2 {
@@ -326,6 +342,9 @@ func findFunc(s *schema.Schema, name string) *schema.Func {
 }
 
 func sameDefinition(name string, live, declared []schema.Attr) (bool, error) {
+	if quotedIdentifierOff(live) != quotedIdentifierOff(declared) {
+		return false, nil
+	}
 	liveText, err := definitionOf(name, live)
 	if err != nil {
 		return false, err
