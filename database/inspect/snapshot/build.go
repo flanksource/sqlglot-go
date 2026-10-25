@@ -41,6 +41,11 @@ func build(c catalog) (migrate.Schema, error) {
 		d.Dependencies = c.dependencies[d.Name.Name]
 		out.Definitions = append(out.Definitions, d)
 	}
+	for i := range out.Definitions {
+		out.Definitions[i].QuotedIdentifierOff = c.quotedIdentifierOff[out.Definitions[i].Name.Name]
+	}
+	out.Sequences = c.sequences
+	out.TableTypes = c.tableTypes
 	return out, nil
 }
 
@@ -55,6 +60,10 @@ func buildTable(c catalog, input mssqlcatalog.Table) (migrate.Table, error) {
 			return out, fmt.Errorf("column %s: %w", col.Name, err)
 		}
 		column.Collation = c.collations[[2]string{col.Table, col.Name}]
+		column.RowGUID = c.rowGUIDs[[2]string{col.Table, col.Name}]
+		if column.Default != nil {
+			column.Default.SystemNamed = c.systemNamedDefaults[[2]string{col.Table, col.Name}]
+		}
 		out.Columns = append(out.Columns, column)
 	}
 	for _, index := range c.indexes {
@@ -65,6 +74,7 @@ func buildTable(c catalog, input mssqlcatalog.Table) (migrate.Table, error) {
 		if err != nil {
 			return out, err
 		}
+		idx.FillFactor = c.fillFactors[[2]string{index.Table, index.Name}]
 		out.Indexes = append(out.Indexes, idx)
 	}
 	for _, key := range c.keys {

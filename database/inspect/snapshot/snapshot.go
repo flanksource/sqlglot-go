@@ -19,17 +19,24 @@ type Result struct {
 }
 
 type catalog struct {
-	schema       string
-	tables       []mssqlcatalog.Table
-	columns      []mssqlcatalog.Column
-	indexes      []mssqlcatalog.Index
-	parts        []mssqlcatalog.IndexColumn
-	keys         []mssqlcatalog.ForeignKey
-	checks       []mssqlcatalog.CheckConstraint
-	routines     []mssqlcatalog.Routine
-	modules      []migrate.Definition
-	collations   map[[2]string]string
-	dependencies map[string][]migrate.Name
+	schema              string
+	tables              []mssqlcatalog.Table
+	columns             []mssqlcatalog.Column
+	indexes             []mssqlcatalog.Index
+	parts               []mssqlcatalog.IndexColumn
+	keys                []mssqlcatalog.ForeignKey
+	checks              []mssqlcatalog.CheckConstraint
+	routines            []mssqlcatalog.Routine
+	modules             []migrate.Definition
+	collations          map[[2]string]string
+	fillFactors         map[[2]string]int
+	rowGUIDs            map[[2]string]bool
+	systemNamedDefaults map[[2]string]bool
+	quotedIdentifierOff map[string]bool
+	sequences           []migrate.Sequence
+	tableTypes          []migrate.TableType
+	dependencies        map[string][]migrate.Name
+	runtimeDependencies map[string][]migrate.RuntimeDependency
 }
 
 func Inspect(ctx context.Context, db Querier, options Options) (Result, error) {
@@ -46,6 +53,7 @@ func Inspect(ctx context.Context, db Querier, options Options) (Result, error) {
 	result := Result{Schemas: slices.Clone(options.Schemas)}
 	seen := map[string]bool{}
 	dependencies := map[migrate.Name][]migrate.Name{}
+	runtimeDependencies := map[migrate.Name][]migrate.RuntimeDependency{}
 	for _, name := range options.Schemas {
 		if seen[name] {
 			return Result{}, fmt.Errorf("duplicate migration schema %q", name)
@@ -61,8 +69,13 @@ func Inspect(ctx context.Context, db Querier, options Options) (Result, error) {
 		}
 		result.Schema.Tables = append(result.Schema.Tables, schema.Tables...)
 		result.Schema.Definitions = append(result.Schema.Definitions, schema.Definitions...)
+		result.Schema.Sequences = append(result.Schema.Sequences, schema.Sequences...)
+		result.Schema.TableTypes = append(result.Schema.TableTypes, schema.TableTypes...)
 		for owner, refs := range c.dependencies {
 			dependencies[migrate.Name{Schema: name, Name: owner}] = refs
+		}
+		for owner, refs := range c.runtimeDependencies {
+			runtimeDependencies[migrate.Name{Schema: name, Name: owner}] = refs
 		}
 	}
 	for i := range result.Schema.Definitions {
@@ -71,6 +84,7 @@ func Inspect(ctx context.Context, db Querier, options Options) (Result, error) {
 			return Result{}, fmt.Errorf("definition %v is outside the inspected schema scope", d.Name)
 		}
 		d.Dependencies = dependencies[d.Name]
+		d.RuntimeDependencies = runtimeDependencies[d.Name]
 	}
 	if _, err := planner.Plan(migrate.Request{Current: result.Schema, Desired: result.Schema}); err != nil {
 		return Result{}, fmt.Errorf("migration snapshot validation: %w", err)
@@ -79,7 +93,8 @@ func Inspect(ctx context.Context, db Querier, options Options) (Result, error) {
 }
 
 func read(ctx context.Context, db Querier, name string) (catalog, error) {
-	c := catalog{schema: name, collations: map[[2]string]string{}, dependencies: map[string][]migrate.Name{}}
+	c := catalog{schema: name, collations: map[[2]string]string{}, fillFactors: map[[2]string]int{}, rowGUIDs: map[[2]string]bool{}, systemNamedDefaults: map[[2]string]bool{},
+		quotedIdentifierOff: map[string]bool{}, dependencies: map[string][]migrate.Name{}, runtimeDependencies: map[string][]migrate.RuntimeDependency{}}
 	q, scope := mssqlcatalog.FromDB(db), mssqlcatalog.Scope{Schema: name}
 	found, err := mssqlcatalog.Schemas(ctx, q, []string{name})
 	if err != nil {
@@ -97,6 +112,12 @@ func read(ctx context.Context, db Querier, name string) (catalog, error) {
 		func() error { var err error; c.checks, err = mssqlcatalog.CheckConstraints(ctx, q, scope); return err },
 		func() error { var err error; c.routines, err = mssqlcatalog.Routines(ctx, q, scope); return err },
 		func() error { return readCollations(ctx, db, &c) },
+		func() error { return readIndexOptions(ctx, db, &c) },
+		func() error { return readRowGUIDs(ctx, db, &c) },
+		func() error { return readSystemNamedDefaults(ctx, db, &c) },
+		func() error { return readModuleSettings(ctx, db, &c) },
+		func() error { return readSequences(ctx, db, &c) },
+		func() error { return readTableTypes(ctx, db, &c) },
 		func() error { return readTriggers(ctx, db, &c) },
 		func() error { return readDependencies(ctx, db, &c) },
 		func() error { return refuseUnsupported(ctx, db, name) },
