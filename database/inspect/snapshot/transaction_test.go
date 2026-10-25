@@ -17,7 +17,7 @@ var _ = Describe("Transaction-bound migration snapshots", func() {
 		mock.ExpectQuery("HAS_PERMS_BY_NAME").WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(1))
 		mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WithArgs("dbo").WillReturnRows(sqlmock.NewRows([]string{"schema"}).AddRow("dbo"))
 		mock.ExpectQuery(`OBJECT_DEFINITION\(o.object_id\)`).WithArgs("dbo", "").WillReturnRows(sqlmock.NewRows([]string{"empty"}))
-		for _, query := range []string{`FROM INFORMATION_SCHEMA.COLUMNS`, `FROM sys.indexes`, `FROM sys.index_columns`, `FROM sys.foreign_keys`, `FROM sys.check_constraints`, `FROM sys.objects o`, `FROM sys.columns c`, `SCHEMA_NAME\(trigger_object.schema_id\)`, `FROM sys.sql_expression_dependencies`, `SELECT object_name, feature`} {
+		for _, query := range []string{`FROM INFORMATION_SCHEMA.COLUMNS`, `FROM sys.indexes`, `FROM sys.index_columns`, `FROM sys.foreign_keys`, `FROM sys.check_constraints`, `FROM sys.objects o`, `FROM sys.columns c`, `i.fill_factor NOT IN`, `c.is_rowguidcol=1`, `dc.is_system_named=1`, `m.uses_quoted_identifier=0`, `FROM sys.sequences`, `col.object_id=tt.type_table_object_id`, `i.object_id=tt.type_table_object_id`, `tt.type_table_object_id=cc.parent_object_id`, `SCHEMA_NAME\(trigger_object.schema_id\)`, `FROM sys.sql_expression_dependencies`, `SELECT object_name, feature`} {
 			mock.ExpectQuery(query).WithArgs("dbo").WillReturnRows(sqlmock.NewRows([]string{"empty"}))
 		}
 		result, err := Inspect(GinkgoT().Context(), tx, Options{Schemas: []string{"dbo"}})
