@@ -36,6 +36,10 @@ func (s *state) tableChange(t *schema.Table, change schema.Change) error {
 		return s.addIndex(c, t, c.I)
 	case *schema.DropIndex:
 		s.dropIndex(c, t, c.I)
+	case *schema.ModifyIndex:
+		return s.rebuildIndex(c, t, c.From, c.To)
+	case *schema.ModifyPrimaryKey:
+		return s.rebuildIndex(c, t, c.From, c.To)
 	default:
 		return s.constraintChange(t, change)
 	}
@@ -76,13 +80,17 @@ func (s *state) addColumn(c *schema.AddColumn, t *schema.Table) error {
 // the bound default would block -- drops the old constraint and adds the new
 // default as DF_<table>_<column>.
 func (s *state) modifyColumn(c *schema.ModifyColumn, t *schema.Table) error {
-	rebind := c.Change.Is(schema.ChangeDefault) || c.Change.Is(schema.ChangeType) || c.Change.Is(schema.ChangeAttr)
+	collationChanged := CollationChanged(c.From, c.To)
+	rebind := c.Change.Is(schema.ChangeDefault) || c.Change.Is(schema.ChangeType) || collationChanged
 	if rebind {
 		if err := s.dropDefault(c, t, c.From); err != nil {
 			return err
 		}
 	}
-	if c.Change.Is(schema.ChangeType) || c.Change.Is(schema.ChangeNull) || c.Change.Is(schema.ChangeAttr) {
+	if _, ok := attrOf[*RowGUID](c.From.Attrs); ok && RowGUIDChanged(c.From, c.To) {
+		s.append(c, fmt.Sprintf("drop rowguidcol %q", c.To.Name), s.alterTable(t).P("ALTER COLUMN").Ident(c.To.Name).P("DROP ROWGUIDCOL"))
+	}
+	if c.Change.Is(schema.ChangeType) || c.Change.Is(schema.ChangeNull) || collationChanged {
 		typ, err := FormatType(c.To.Type.Type)
 		if err != nil {
 			return fmt.Errorf("column %q: %w", c.To.Name, err)
@@ -92,7 +100,7 @@ func (s *state) modifyColumn(c *schema.ModifyColumn, t *schema.Table) error {
 			if err := writeCollation(b, collation.V); err != nil {
 				return err
 			}
-		} else if c.Change.Is(schema.ChangeAttr) && supportsCollation(c.To.Type.Type) {
+		} else if collationChanged && supportsCollation(c.To.Type.Type) {
 			b.P("COLLATE DATABASE_DEFAULT")
 		}
 		b.P(nullability(c.To))
@@ -103,9 +111,15 @@ func (s *state) modifyColumn(c *schema.ModifyColumn, t *schema.Table) error {
 		if err != nil {
 			return err
 		}
-		b := s.alterTable(t).P("ADD CONSTRAINT").Ident(defaultName(t, c.To)).
-			P("DEFAULT", value, "FOR").Ident(c.To.Name)
+		b := s.alterTable(t).P("ADD")
+		if !systemNamedDefault(c.To) {
+			b.P("CONSTRAINT").Ident(defaultName(t, c.To))
+		}
+		b.P("DEFAULT", value, "FOR").Ident(c.To.Name)
 		s.append(c, fmt.Sprintf("set default of column %q", c.To.Name), b)
+	}
+	if _, ok := attrOf[*RowGUID](c.To.Attrs); ok && RowGUIDChanged(c.From, c.To) {
+		s.append(c, fmt.Sprintf("add rowguidcol %q", c.To.Name), s.alterTable(t).P("ALTER COLUMN").Ident(c.To.Name).P("ADD ROWGUIDCOL"))
 	}
 	return nil
 }

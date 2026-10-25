@@ -19,9 +19,13 @@ func orderedTableChanges(changes []schema.Change) []tableStep {
 		var drop, add schema.Change
 		switch c := change.(type) {
 		case *schema.ModifyIndex:
-			drop, add = &schema.DropIndex{I: c.From}, &schema.AddIndex{I: c.To}
+			if !fillFactorOnly(c.From, c.To) {
+				drop, add = &schema.DropIndex{I: c.From}, &schema.AddIndex{I: c.To}
+			}
 		case *schema.ModifyPrimaryKey:
-			drop, add = &schema.DropPrimaryKey{P: c.From}, &schema.AddPrimaryKey{P: c.To}
+			if !fillFactorOnly(c.From, c.To) {
+				drop, add = &schema.DropPrimaryKey{P: c.From}, &schema.AddPrimaryKey{P: c.To}
+			}
 		case *schema.ModifyForeignKey:
 			drop, add = &schema.DropForeignKey{F: c.From}, &schema.AddForeignKey{F: c.To}
 		case *schema.ModifyCheck:
@@ -42,4 +46,18 @@ func orderedTableChanges(changes []schema.Change) []tableStep {
 	}
 	slices.SortStableFunc(steps, func(a, b tableStep) int { return cmp.Compare(a.phase, b.phase) })
 	return steps
+}
+
+// fillFactorOnly reports an index change that a rebuild applies in place,
+// keeping the index instead of dropping and re-creating it.
+func fillFactorOnly(from, to *schema.Index) bool {
+	if from.Unique != to.Unique || IndexDefinitionChanged(from.Attrs, to.Attrs) || len(from.Parts) != len(to.Parts) {
+		return false
+	}
+	for i := range from.Parts {
+		if from.Parts[i].C == nil || to.Parts[i].C == nil || from.Parts[i].C.Name != to.Parts[i].C.Name || from.Parts[i].Desc != to.Parts[i].Desc {
+			return false
+		}
+	}
+	return true
 }
