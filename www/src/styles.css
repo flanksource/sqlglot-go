@@ -1,0 +1,9 @@
+@config "../tailwind.config.ts";
+@import "tailwindcss";
+@source "../../../clicky-ui/packages/ui/src";
+
+html,
+body,
+#root {
+  height: 100%;
+}

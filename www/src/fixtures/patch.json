@@ -1,0 +1,20 @@
+{
+  "dialect": "sqlite",
+  "artifact": {
+    "version": 1,
+    "dialect": "sqlite",
+    "hash": "sha256:9e2d7c41a0b86f35d1c4e7a9b2f0d6c8a1e3b5d7f9c0a2e4b6d8f0a1c3e5b7d9",
+    "selection": [
+      "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+      "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]"
+    ]
+  },
+  "sql": "ALTER TABLE \"customers\" ADD COLUMN \"email\" TEXT;\nCREATE UNIQUE INDEX \"idx_customers_email\" ON \"customers\" (\"email\");\n",
+  "hash": "sha256:9e2d7c41a0b86f35d1c4e7a9b2f0d6c8a1e3b5d7f9c0a2e4b6d8f0a1c3e5b7d9",
+  "acks": ["[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"],
+  "selection": [
+    "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+    "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+    "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"
+  ]
+}

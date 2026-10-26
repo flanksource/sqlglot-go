@@ -1,0 +1,41 @@
+{
+  "generatedAt": "2026-10-25T09:00:00Z",
+  "connections": [
+    {
+      "id": "default/dev",
+      "name": "dev",
+      "namespace": "default",
+      "type": "sqlite",
+      "endpoint": { "scheme": "sqlite", "host": "", "path": "/data/dev.db" },
+      "secretCount": 0,
+      "inlineCredential": false,
+      "insecureTLS": false,
+      "profileCount": 0,
+      "updatedAt": "2026-10-24T09:00:00Z"
+    },
+    {
+      "id": "default/dev-0a",
+      "name": "dev-0a",
+      "namespace": "default",
+      "type": "sqlite",
+      "endpoint": { "scheme": "sqlite", "host": "", "path": "/data/dev-0a.db" },
+      "secretCount": 0,
+      "inlineCredential": false,
+      "insecureTLS": false,
+      "profileCount": 0,
+      "updatedAt": "2026-10-24T09:05:00Z"
+    },
+    {
+      "id": "default/staging",
+      "name": "staging",
+      "namespace": "default",
+      "type": "postgres",
+      "endpoint": { "scheme": "postgres", "host": "staging.db.internal", "path": "/app" },
+      "secretCount": 1,
+      "inlineCredential": false,
+      "insecureTLS": false,
+      "profileCount": 0,
+      "updatedAt": "2026-10-23T12:00:00Z"
+    }
+  ]
+}
