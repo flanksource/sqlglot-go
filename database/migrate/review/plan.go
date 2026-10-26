@@ -15,6 +15,8 @@ import (
 	"ariga.io/atlas/sql/postgres"
 	"ariga.io/atlas/sql/schema"
 	"ariga.io/atlas/sql/sqlite"
+	"github.com/flanksource/sqlglot-go/migrate"
+	"github.com/flanksource/sqlglot-go/migrate/changeset"
 	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
@@ -151,7 +153,7 @@ func Build(ctx context.Context, db *sql.DB, opts Options) (_ Artifact, returnErr
 	if err := validateScope(scope); err != nil {
 		return Artifact{}, err
 	}
-	current, err := inspect(ctx, conn, b, scope)
+	current, err := b.baseline(ctx, conn, scope, opts.Baseline)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -170,26 +172,49 @@ func Build(ctx context.Context, db *sql.DB, opts Options) (_ Artifact, returnErr
 	if err != nil {
 		return Artifact{}, err
 	}
-	steps, err := b.plan(ctx, current, desired)
+	selection := slices.Sorted(slices.Values(opts.Selection))
+	steps, changes, err := b.plan(ctx, current, desired, selection)
 	if err != nil {
 		return Artifact{}, err
 	}
-	a := Artifact{Version: 2, Baseline: baseline, Desired: after, Steps: steps, Advisory: opts.Advisory}
+	a := Artifact{Version: 2, Baseline: baseline, Desired: after, Changes: changes, Selection: selection, Steps: steps, Advisory: opts.Advisory}
 	a.Hash, err = a.digest()
 	return a, err
 }
 
-func (b backend) plan(ctx context.Context, current, desired *schema.Schema) ([]Step, error) {
-	changes, err := b.diff(current, desired)
-	if err != nil {
-		return nil, err
+// baseline decodes a reviewed snapshot when one is given, and otherwise
+// inspects the live schema.
+func (b backend) baseline(ctx context.Context, q schema.ExecQuerier, scope Snapshot, reviewed *Snapshot) (*schema.Schema, error) {
+	if reviewed == nil {
+		return inspect(ctx, q, b, scope)
 	}
-	plan, err := b.driver.PlanChanges(ctx, "reviewed-schema", changes)
+	if reviewed.Dialect != scope.Dialect || reviewed.Schema != scope.Schema {
+		return nil, fmt.Errorf("baseline snapshot scope %s/%s differs from %s/%s", reviewed.Dialect, reviewed.Schema, scope.Dialect, scope.Schema)
+	}
+	return b.decode(*reviewed)
+}
+
+// plan describes every change between current and desired and plans the
+// selected ones (all when selection is empty).
+func (b backend) plan(ctx context.Context, current, desired *schema.Schema, selection []string) ([]Step, []migrate.Change, error) {
+	diff, err := b.diff(current, desired)
 	if err != nil {
-		return nil, fmt.Errorf("plan schema: %w", err)
+		return nil, nil, err
+	}
+	set, err := changeset.Describe(diff, b.changeDialect())
+	if err != nil {
+		return nil, nil, err
+	}
+	selected, err := set.Select(diff, selection)
+	if err != nil {
+		return nil, nil, err
+	}
+	plan, err := b.driver.PlanChanges(ctx, "reviewed-schema", selected)
+	if err != nil {
+		return nil, nil, fmt.Errorf("plan schema: %w", err)
 	}
 	if !plan.Transactional {
-		return nil, fmt.Errorf("nontransactional plans require phased migration artifacts")
+		return nil, nil, fmt.Errorf("nontransactional plans require phased migration artifacts")
 	}
 	steps := make([]Step, 0, len(plan.Changes))
 	for _, change := range plan.Changes {
@@ -197,12 +222,19 @@ func (b backend) plan(ctx context.Context, current, desired *schema.Schema) ([]S
 			continue
 		}
 		if len(change.Args) > 0 {
-			return nil, fmt.Errorf("unsupported parameterized schema migration")
+			return nil, nil, fmt.Errorf("unsupported parameterized schema migration")
+		}
+		var ids []string
+		if change.Source == nil && len(steps) > 0 {
+			// SQLite's rebuild row copy has no source; it continues the rebuild before it.
+			ids = steps[len(steps)-1].Changes
+		} else if ids, err = set.Lookup(change.Source); err != nil {
+			return nil, nil, err
 		}
 		id := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s", len(steps), change.Cmd))))
-		steps = append(steps, Step{ID: id, SQL: change.Cmd, Comment: change.Comment, Destructive: destructive(change.Source)})
+		steps = append(steps, Step{ID: id, SQL: change.Cmd, Comment: change.Comment, Destructive: destructive(change.Source), Changes: ids})
 	}
-	return steps, nil
+	return steps, set.Changes, nil
 }
 
 func destructive(change schema.Change) bool {

@@ -21,10 +21,8 @@ func validate(request Request) error {
 		return fmt.Errorf("migration lock timeout must be between zero and %s", math.MaxInt32*time.Millisecond)
 	}
 	required := map[string]bool{}
-	for _, change := range request.Artifact.Plan.Changes {
-		if change.Destructive {
-			required[change.ID] = true
-		}
+	for _, id := range planner.Acknowledgements(request.Artifact) {
+		required[id] = true
 	}
 	for _, id := range request.Acknowledgements {
 		if !required[id] {

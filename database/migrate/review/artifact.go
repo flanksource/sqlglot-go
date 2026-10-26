@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/flanksource/sqlglot-go/migrate"
 )
 
 type Snapshot struct {
@@ -21,15 +23,21 @@ type Step struct {
 	SQL         string `json:"sql"`
 	Comment     string `json:"comment,omitempty"`
 	Destructive bool   `json:"destructive,omitempty"`
+	// Changes are the IDs of the described changes this statement implements.
+	Changes []string `json:"changes,omitempty"`
 }
 
 type Artifact struct {
 	Version  int      `json:"version"`
 	Baseline Snapshot `json:"baseline"`
 	Desired  Snapshot `json:"desired"`
-	Steps    []Step   `json:"steps"`
-	Advisory []string `json:"advisory,omitempty"`
-	Hash     string   `json:"hash"`
+	// Changes lists every change between baseline and desired, selected or not.
+	Changes []migrate.Change `json:"changes,omitempty"`
+	// Selection limits Steps to these change IDs; empty means every change.
+	Selection []string `json:"selection,omitempty"`
+	Steps     []Step   `json:"steps"`
+	Advisory  []string `json:"advisory,omitempty"`
+	Hash      string   `json:"hash"`
 }
 
 type Options struct {
@@ -38,6 +46,10 @@ type Options struct {
 	DesiredHCL      string
 	Advisory        []string
 	PreserveOmitted bool
+	// Selection limits the plan to these change IDs; empty plans every change.
+	Selection []string
+	// Baseline plans from this reviewed snapshot instead of inspecting the database.
+	Baseline *Snapshot
 }
 
 type Request struct {

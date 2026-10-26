@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/flanksource/sqlglot-go/migrate"
@@ -17,6 +18,21 @@ var _ = Describe("Migration inspection boundary", func() {
 		mock.ExpectQuery(`dependent default, check or column expression`).WithArgs("dbo").WillReturnRows(sqlmock.NewRows([]string{"object", "feature"}).AddRow("DF_orders_id", "dependent default, check or column expression"))
 		err = refuseUnsupported(GinkgoT().Context(), db, "dbo")
 		Expect(err).To(MatchError(And(ContainSubstring("dbo.DF_orders_id"), ContainSubstring("migration snapshot is incomplete"))))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+	It("reports each catalog read as progress and names the read that failed", func() {
+		db, mock, err := sqlmock.New()
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { mock.ExpectClose(); Expect(db.Close()).To(Succeed()) })
+		mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WithArgs("dbo").WillReturnRows(sqlmock.NewRows([]string{"schema"}).AddRow("dbo"))
+		mock.ExpectQuery(`OBJECT_DEFINITION\(o.object_id\)`).WithArgs("dbo", "").WillReturnRows(sqlmock.NewRows([]string{"schema", "name", "type", "definition"}))
+		mock.ExpectQuery(`FROM INFORMATION_SCHEMA.COLUMNS`).WithArgs("dbo").WillReturnError(errors.New("columns unavailable"))
+		var reported []string
+		_, err = read(GinkgoT().Context(), db, "dbo", func(step string, done, total int) {
+			reported = append(reported, fmt.Sprintf("%s %d/%d", step, done, total))
+		})
+		Expect(err).To(MatchError(ContainSubstring("read columns: ")))
+		Expect(reported).To(Equal([]string{"tables 0/17", "columns 1/17"}))
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 	It("requires full definition visibility before enumerating objects", func() {

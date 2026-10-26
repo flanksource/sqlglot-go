@@ -31,19 +31,33 @@ Build with `make build`. Database commands emit JSON. Set the database connectio
 
 ### Named connections
 
-`--dsn connection://<name>` (or `connection://<namespace>/<name>`) resolves a named connection instead of a literal DSN. Connections are commons-db connection YAML files, one per file, in `$XDG_CONFIG_HOME/sqlglot-go/connections` (default `~/.config/sqlglot-go/connections`, override with `--connections-dir`). The file stem is the name. `url` is the full DSN template: `$(username)` and `$(password)` insert the query-escaped credentials, and `{{.properties.<key>}}` inserts a property. Any value may be a `secret://<name>/<key>`, `configmap://<name>/<key>` or `helm://` reference, read from the connection's `namespace` through the kubeconfig context named by `properties.kubecontext` (the current context when unset). Files hold references only, never secret values.
+`--dsn connection://<name>` (or `connection://<namespace>/<name>`) resolves a named connection instead of a literal DSN. Connections are typed mission-control `Connection` resources, one per file, read from the commons-db connection store in three layers, each overriding the one before by namespace and name:
+
+1. `$XDG_CONFIG_HOME/flanksource/connections` (default `~/.config/flanksource/connections`), shared with every Flanksource tool;
+2. `$XDG_CONFIG_HOME/sqlglot-go/connections`, sqlglot's own layer, where `sqlglot ui` saves connections (override with `--connections-dir`);
+3. `./.connections` in the working directory.
+
+The file stem is the name when `metadata.name` is unset. `spec.url` is the full DSN template: `$(username)` and `$(password)` insert the query-escaped credentials, and `{{.properties.<key>}}` inserts a property. Credentials and properties may be `secret://<name>/<key>`, `configmap://<name>/<key>` or `helm://` references (`valueFrom` in the resource), read from the connection's `namespace` through the kubeconfig context named by `properties.kubecontext` (the current context when unset). The UI refuses literal credentials, so files it writes hold references only. A flat connection file from earlier versions (top-level `type`/`url`) fails with an error naming the file and the expected `apiVersion`/`kind`.
 
 ```yaml
 # ~/.config/sqlglot-go/connections/tenant-x.yaml
-namespace: tenant-x
-type: sql_server
-url: sqlserver://$(username):$(password)@{{.properties.host}}?database={{.properties.database}}
-username: secret://db/username
-password: secret://db/password
-properties:
-  kubecontext: example-cluster
-  host: secret://db/host
-  database: secret://db/database
+apiVersion: mission-control.flanksource.com/v1
+kind: Connection
+metadata:
+  name: tenant-x
+  namespace: tenant-x
+spec:
+  type: sql_server
+  url:
+    value: sqlserver://$(username):$(password)@{{.properties.host}}?database={{.properties.database}}
+  username:
+    valueFrom: {secretKeyRef: {name: db, key: username}}
+  password:
+    valueFrom: {secretKeyRef: {name: db, key: password}}
+  properties:
+    kubecontext: example-cluster
+    host: secret://db/host
+    database: secret://db/database
 ```
 
 ```sh
@@ -65,6 +79,33 @@ Applying a bundle replans it and requires the resulting hash to match the review
 
 SQLite inspection and preview open existing files in read-only mode. They do not create files or change journal mode. Bundle preview never runs pre/post scripts, creates migration metadata or creates a PostgreSQL schema. Pre-scripts are parsed with sqlglot and reported as DML, DDL, mixed or unknown, with parser completeness and diagnostics. DDL or unknown pre-scripts produce warnings, and schema planning is still attempted against the current database. Planning errors return the script analysis and a nonzero exit code.
 
+### Comparing two connections
+
+`schema compare` inspects a reference connection (the desired schema) and a target connection (the database to patch) of the same dialect, and lists every difference as a selectable change grouped by object, with each object's definition on both sides and a `diffHash`. `schema patch` re-inspects both sides, refuses with a schema drift error when the differences no longer match `diffHash`, and plans only the `--select`ed change IDs into a reviewed artifact plus a plain SQL script. Selecting a change without the changes it `requires` fails. Apply the artifact to the target with `migrate apply` and the returned `hash` and `acks`.
+
+```sh
+.tmp/sqlglot schema compare --reference connection://dev --target connection://dev-0a > .tmp/compare.json
+.tmp/sqlglot schema patch --reference connection://dev --target connection://dev-0a \
+  --diff-hash "$(jq -r .diffHash .tmp/compare.json)" --select '["add","table","dbo","customers",""]' > .tmp/patch.json
+jq .artifact .tmp/patch.json > .tmp/artifact.json
+.tmp/sqlglot migrate apply --dsn connection://dev-0a --artifact .tmp/artifact.json --hash "$(jq -r .hash .tmp/patch.json)"
+```
+
+Repeat `--select` once per change ID; each value is taken whole, never split on commas. Over HTTP, `select` is a JSON array of IDs.
+
+PostgreSQL and SQLite comparisons cover one schema with the same name on both sides. SQL Server accepts several `--schema` values. On SQLite, a change that forces a table rebuild requires every other change to that table, because the rebuild applies the table's full desired definition. Once a partial artifact is applied, `already-applied` and the postcondition expect exactly the unselected changes to remain.
+
+### Run history
+
+Every `schema inspect`, `schema compare`, `schema patch`, `migrate plan` and `migrate apply` is recorded with its result, or its error, in a local SQLite file, `$XDG_DATA_HOME/sqlglot-go/history.db` (override with the global `--history` flag). A comparison records the comparison and the inspection of each side (`<run>/reference`, `<run>/target`); a patch names the comparison it was reviewed in (`--comparison`). Each compare and patch runs as one clicky task group whose id is the run id (`--run`, a new UUID by default), and its task progress and logs are stored with it. Recorded runs are read back without contacting any database, so a comparison stays reviewable after its databases go offline. Connections are recorded as `connection://` references or SQLite paths whole; other DSNs lose their password and query, and keyword DSNs are withheld.
+
+```sh
+.tmp/sqlglot history list --kind comparison --connection connection://dev-0a
+.tmp/sqlglot history get <run-id> --format json | jq .payload.diffHash
+```
+
+`sqlglot ui` serves the same workflow in a browser: manage connections, pick the reference and target, tick the changes to carry, and download the patch. Each comparison and patch streams its task progress over clicky's `/api/v1/tasks/stream` while it runs, opens from history by its run id afterwards, and the History page lists every recorded run, offline. Over HTTP, history is `GET /api/v1/history` and `GET /api/v1/history/{id}`. `make build` and `make install` embed the UI. For frontend work, `sqlglot ui --dev` (run from the repository root) starts Vite over `www/` with `@flanksource/clicky-ui` resolved to the sibling `../clicky-ui` checkout and serves it through the same address; `SQLGLOT_LOCAL_UI=0` selects the published package instead.
+
 ## Reviewed schema scope
 
 PostgreSQL and SQLite artifacts use version 2. They bind dialect, schema, baseline and desired HCL snapshots, ordered SQL, destructive IDs and advisory reasons to a SHA-256 hash. SQL Server retains its existing version 1 artifact and hash algorithm. All use the same CLI commands.
@@ -77,7 +118,7 @@ Bundles containing scripts or security declarations produce advisory schema prev
 
 ## Library use
 
-`inspect.Inspect(ctx, db, driver, Limits{})` accepts a caller-owned `*sql.DB` and returns an uncached catalog. `review.Inspect` returns a supported migration snapshot. `review.Build` accepts `Options{Dialect, Schema, DesiredHCL}` and performs read-only planning. `review.Apply` requires `Request{Artifact, Hash, Acknowledgements, LockTimeout}`. None closes the caller's pool or changes its pool settings.
+`inspect.Inspect(ctx, db, driver, Limits{})` accepts a caller-owned `*sql.DB` and returns an uncached catalog. `review.Inspect` returns a supported migration snapshot. `review.Build` accepts `Options{Dialect, Schema, DesiredHCL}` and performs read-only planning; `Selection` limits it to a subset of change IDs and `Baseline` plans from a reviewed snapshot instead of inspecting. `compare.Compare` and `compare.BuildPatch` back the CLI comparison commands. `review.Apply` requires `Request{Artifact, Hash, Acknowledgements, LockTimeout}`. None closes the caller's pool or changes its pool settings.
 
 Run the [SQLite example](../examples/database/main.go) with `go run ./examples/database`. It uses a disposable directory, inspects, plans, applies and repeats an artifact, then removes the directory. The adjacent `schema.hcl` is a PostgreSQL CLI example.
 
