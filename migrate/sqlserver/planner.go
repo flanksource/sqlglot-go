@@ -9,6 +9,7 @@ import (
 	"ariga.io/atlas/sql/schema"
 	"github.com/flanksource/sqlglot-go/migrate"
 	atlas "github.com/flanksource/sqlglot-go/migrate/atlas/sqlserver"
+	"github.com/flanksource/sqlglot-go/migrate/changeset"
 )
 
 // Plan validates both snapshots and returns ordered SQL and typed change metadata.
@@ -18,29 +19,33 @@ func Plan(request migrate.Request) (migrate.Plan, error) {
 	if err != nil {
 		return migrate.Plan{}, err
 	}
-	changes, err := atlas.DefaultDiff.RealmDiff(from, to)
+	diff, err := atlas.DefaultDiff.RealmDiff(from, to)
 	if err != nil {
 		return migrate.Plan{}, err
 	}
-	metadata := make(map[schema.Change]migrate.Change)
-	result := migrate.Plan{Steps: []migrate.Step{}, Changes: []migrate.Change{}}
-	for _, c := range changes {
-		if err := describe(c, nil, metadata, &result.Changes); err != nil {
-			return migrate.Plan{}, err
-		}
+	set, err := changeset.Describe(diff, dialect)
+	if err != nil {
+		return migrate.Plan{}, err
 	}
-	plan, err := atlas.DefaultPlan.PlanChanges(context.Background(), "migration", changes)
+	requireDefinitionDependencies(set, request.Desired)
+	selected, err := set.Select(diff, request.Selection)
+	if err != nil {
+		return migrate.Plan{}, err
+	}
+	result := migrate.Plan{Steps: []migrate.Step{}, Changes: set.Changes}
+	plan, err := atlas.DefaultPlan.PlanChanges(context.Background(), "migration", selected)
 	if err != nil {
 		return migrate.Plan{}, err
 	}
 	for _, step := range plan.Changes {
-		change, ok := metadata[step.Source]
-		if !ok {
-			if err := describe(step.Source, nil, metadata, &result.Changes); err != nil {
-				return migrate.Plan{}, err
-			}
-			change = metadata[step.Source]
+		ids, err := set.Lookup(step.Source)
+		if err != nil {
+			return migrate.Plan{}, err
 		}
+		if len(ids) != 1 {
+			return migrate.Plan{}, fmt.Errorf("sqlserver: planned statement %q implements %d changes", step.Cmd, len(ids))
+		}
+		change, _ := set.Change(ids[0])
 		result.Steps = append(result.Steps, migrate.Step{Change: change, SQL: step.Cmd})
 	}
 	runtime := map[migrate.Name][]migrate.RuntimeDependency{}

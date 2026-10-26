@@ -401,7 +401,25 @@ func (g *generator) binary(e *Expression, op string) string {
 		(this.Class == "Any" || other.Class == "Any") {
 		return g.fail(e.Class + " against ANY, which this dialect rewrites into a call")
 	}
+	if e.Class == "EQ" {
+		op = g.assignmentOperator(e, op)
+	}
 	return g.operand(this) + " " + op + " " + g.operand(other)
+}
+
+// assignmentOperator is the sign an equality is written with: plain unless it
+// is T-SQL's compound assignment, `@x += 1` or `qty += 1`, which only T-SQL
+// writes and only to a variable or a column.
+func (g *generator) assignmentOperator(e *Expression, plain string) string {
+	operator, _ := e.Args["operator"].(string)
+	if operator == "" {
+		return plain
+	}
+	target, _ := e.Args["this"].(*Expression)
+	if g.dialect != "tsql" || target == nil || (target.Class != "Parameter" && target.Class != "Column") {
+		return g.fail(e.Class + " compound assignment " + operator + "=, which only T-SQL writes, to a variable or column")
+	}
+	return operator + "="
 }
 
 // operand writes one side of a binary operator, parenthesising it if this

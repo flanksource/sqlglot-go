@@ -150,8 +150,59 @@ func TestTSQLUpdateStatisticsInRoutineBody(t *testing.T) {
 	}
 }
 
+// T-SQL's compound assignment, `@x += 1`, reads as the reference's assignment
+// equality with the operator kept, and is written back as typed: in SET, in an
+// UPDATE's SET list (column, variable, and `@v = column op= value`), and as a
+// SELECT's variable assignment.
+func TestTSQLCompoundAssignment(t *testing.T) {
+	var cases []struct{ sql, class string }
+	for _, operator := range []string{"+", "-", "*", "/", "%", "&", "^", "|"} {
+		cases = append(cases,
+			struct{ sql, class string }{"SET @failed " + operator + "= 1", "Set"},
+			struct{ sql, class string }{"UPDATE acme.items SET qty " + operator + "= 2", "Update"},
+			struct{ sql, class string }{"SELECT @total " + operator + "= qty FROM acme.items", "Select"},
+		)
+	}
+	cases = append(cases,
+		struct{ sql, class string }{"UPDATE acme.items SET items.qty += 1, name = 'x' WHERE id = 1", "Update"},
+		struct{ sql, class string }{"UPDATE acme.items SET @total += qty", "Update"},
+		struct{ sql, class string }{"UPDATE acme.items SET @total = qty *= 2", "Update"},
+		struct{ sql, class string }{"SELECT @a += 1, @b -= 2", "Select"},
+		struct{ sql, class string }{"MERGE INTO acme.items AS t USING acme.incoming AS s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.qty += s.qty", "Merge"},
+		struct{ sql, class string }{"CREATE PROCEDURE acme.p AS BEGIN DECLARE @total INTEGER = 0; UPDATE acme.items SET qty -= 1, @total += qty WHERE id = 1; SELECT @total *= 2; END", "Create"},
+	)
+	for _, c := range cases {
+		t.Run(c.sql, func(t *testing.T) {
+			tree := assertTSQLFormsRoundTrip(t, c.sql, c.class)
+			if written, err := Generate(tree, "tsql"); err != nil || written != c.sql {
+				t.Fatalf("wrote %q (%v), want %q", written, err, c.sql)
+			}
+			if _, err := Generate(tree, "postgres"); err == nil {
+				t.Fatal("wrote T-SQL compound assignment for postgres")
+			}
+		})
+	}
+	body := "CREATE PROCEDURE acme.p AS BEGIN DECLARE @failed INT = 0; BEGIN TRY SELECT 1; END TRY BEGIN CATCH SET @failed += 1; END CATCH; SELECT @failed; END"
+	assertTSQLFormsRoundTrip(t, body, "Create")
+	compound, err := CanonicalSQL(body, "tsql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := CanonicalSQL(strings.Replace(body, "+=", "=", 1), "tsql")
+	if err != nil || plain == compound {
+		t.Fatalf("canonical form of += matches = (%v): %s", err, compound)
+	}
+}
+
 func TestTSQLFormsRefusals(t *testing.T) {
 	for _, sql := range []string{
+		"SET @failed + = 1",
+		"SET XACT_ABORT += 1",
+		"UPDATE acme.items SET qty + = 1",
+		"UPDATE acme.items SET qty = 1 WHERE qty += 1",
+		"SELECT qty += 1 FROM acme.items",
+		"SELECT * FROM acme.items WHERE qty += 1",
+		"SELECT @total + = 1",
 		"SET @c = CURSOR FOR",
 		"SET @c = CURSOR LOCAL FOR SELECT id FROM acme.items FOR UPDATE OF",
 		"SELECT * FROM @doc.nodes() AS f(n)",

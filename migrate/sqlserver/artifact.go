@@ -23,6 +23,7 @@ func BuildArtifact(input migrate.ArtifactRequest) (migrate.Artifact, error) {
 		return migrate.Artifact{}, err
 	}
 	slices.Sort(artifact.Schemas)
+	slices.Sort(artifact.Request.Selection)
 	orderSnapshot(&artifact.Request.Current)
 	orderSnapshot(&artifact.Request.Desired)
 	artifact.Plan, err = Plan(artifact.Request)
@@ -65,7 +66,7 @@ func CheckArtifact(artifact migrate.Artifact, actual migrate.Schema) (migrate.Ar
 	if err != nil {
 		return "", fmt.Errorf("sqlserver: inspect artifact state: %w", err)
 	}
-	if len(desired.Changes) == 0 && len(desired.Steps) == 0 {
+	if slices.Equal(changeIDs(desired.Changes), unselected(artifact)) {
 		return migrate.ArtifactApplied, nil
 	}
 	baseline, err := Plan(migrate.Request{Current: actual, Desired: artifact.Request.Current})
@@ -76,6 +77,37 @@ func CheckArtifact(artifact migrate.Artifact, actual migrate.Schema) (migrate.Ar
 		return "", &DriftError{Changes: baseline.Changes}
 	}
 	return migrate.ArtifactPending, nil
+}
+
+// Acknowledgements lists the destructive change IDs an artifact plans, which
+// applying it must acknowledge one by one.
+func Acknowledgements(artifact migrate.Artifact) []string {
+	ids := []string{}
+	for _, c := range artifact.Plan.Changes {
+		if c.Destructive && (len(artifact.Request.Selection) == 0 || slices.Contains(artifact.Request.Selection, c.ID)) {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
+}
+
+// unselected lists the planned change IDs a partial artifact leaves for later;
+// once it is applied, they are exactly what still differs from desired.
+func unselected(artifact migrate.Artifact) []string {
+	ids := changeIDs(artifact.Plan.Changes)
+	if len(artifact.Request.Selection) == 0 {
+		return []string{}
+	}
+	return slices.DeleteFunc(ids, func(id string) bool { return slices.Contains(artifact.Request.Selection, id) })
+}
+
+func changeIDs(changes []migrate.Change) []string {
+	ids := make([]string, 0, len(changes))
+	for _, c := range changes {
+		ids = append(ids, c.ID)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 type DriftError struct{ Changes []migrate.Change }

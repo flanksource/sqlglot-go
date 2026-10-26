@@ -6202,9 +6202,15 @@ func (g *generator) writeSetItem(e *Expression) string {
 	// writes `SET XACT_ABORT ON` and `SET @count = 1`, which are two
 	// statements wearing the same word.
 	separator := g.tables.SetItemSeparator
-	if target, _ := item.Args["this"].(*Expression); target != nil &&
-		target.Class == "Parameter" {
+	target, _ := item.Args["this"].(*Expression)
+	if target != nil && target.Class == "Parameter" {
 		separator = g.tables.SetItemVariableSeparator
+	}
+	if operator, _ := item.Args["operator"].(string); operator != "" {
+		if target == nil || target.Class != "Parameter" {
+			return g.fail(e.Class + " compound assignment " + operator + "= to a setting rather than a variable")
+		}
+		separator = " " + g.assignmentOperator(item, "=") + " "
 	}
 	return out + g.child(item, "this") + separator + g.child(item, "expression")
 }

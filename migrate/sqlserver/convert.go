@@ -319,7 +319,7 @@ func definition(r *schema.Realm, input migrate.Definition) error {
 	}
 	routine, err := atlas.ParseRoutine(input.SQL)
 	if err != nil {
-		return err
+		return fmt.Errorf("sqlserver: %s %s.%s: %w", strings.ToLower(input.Kind), input.Name.Schema, input.Name.Name, err)
 	}
 	if routine.Name != input.Name.Name || !strings.EqualFold(routine.Kind, input.Kind) {
 		return fmt.Errorf("sqlserver: definition name or kind does not match %+v (%s)", input.Name, input.Kind)

@@ -122,6 +122,8 @@ type RuntimeDependency struct {
 type Request struct {
 	Current Schema `json:"current"`
 	Desired Schema `json:"desired"`
+	// Selection limits the plan to these change IDs; empty plans every change.
+	Selection []string `json:"selection,omitempty"`
 }
 type Change struct {
 	ID          string `json:"id"`
@@ -133,6 +135,8 @@ type Change struct {
 	Reason      string `json:"reason,omitempty"`
 	// RuntimeDependencies flags a module whose references bind only at runtime.
 	RuntimeDependencies []RuntimeDependency `json:"runtimeDependencies,omitempty"`
+	// Requires lists the change IDs that must be selected with this one.
+	Requires []string `json:"requires,omitempty"`
 }
 type Step struct {
 	Change Change `json:"change"`
