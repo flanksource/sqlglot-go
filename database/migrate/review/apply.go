@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"ariga.io/atlas/sql/schema"
@@ -82,11 +83,12 @@ func execute(ctx context.Context, q schema.ExecQuerier, request Request) (Result
 	if err != nil {
 		return result, err
 	}
-	remaining, err := b.diff(current, desired)
+	unselected := a.unselected()
+	remaining, err := b.remaining(current, desired)
 	if err != nil {
 		return result, err
 	}
-	if len(remaining) == 0 {
+	if slices.Equal(remaining, unselected) {
 		result.Outcome = AlreadyApplied
 		return result, nil
 	}
@@ -97,7 +99,7 @@ func execute(ctx context.Context, q schema.ExecQuerier, request Request) (Result
 	if len(drift) > 0 {
 		return result, fmt.Errorf("schema drift: current schema matches neither reviewed baseline nor desired state")
 	}
-	steps, err := b.plan(ctx, baseline, desired)
+	steps, _, err := b.plan(ctx, baseline, desired, a.Selection)
 	if err != nil {
 		return result, err
 	}
@@ -114,12 +116,12 @@ func execute(ctx context.Context, q schema.ExecQuerier, request Request) (Result
 	if err != nil {
 		return result, err
 	}
-	remaining, err = b.diff(current, desired)
+	remaining, err = b.remaining(current, desired)
 	if err != nil {
 		return result, err
 	}
-	if len(remaining) > 0 {
-		return result, fmt.Errorf("postcondition failed: %d schema differences remain", len(remaining))
+	if !slices.Equal(remaining, unselected) {
+		return result, fmt.Errorf("postcondition failed: remaining schema differences %v, expected only unselected %v", remaining, unselected)
 	}
 	result.Outcome = Applied
 	return result, nil
