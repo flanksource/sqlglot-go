@@ -1,0 +1,155 @@
+{
+  "dialect": "sqlite",
+  "reference": "connection://dev",
+  "target": "connection://dev-0a",
+  "schemas": ["main"],
+  "diffHash": "sha256:5b0c1f6f2e7a49d0a4d3b1c8f1e0a9d27c3e8f5a6b4d1c0e9f8a7b6c5d4e3f2a",
+  "changes": [
+    {
+      "id": "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+      "action": "add",
+      "kind": "column",
+      "object": { "schema": "main", "name": "customers" },
+      "member": "email",
+      "destructive": false
+    },
+    {
+      "id": "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+      "action": "add",
+      "kind": "index",
+      "object": { "schema": "main", "name": "customers" },
+      "member": "idx_customers_email",
+      "destructive": false,
+      "requires": ["[\"add\",\"column\",\"main\",\"customers\",\"email\"]"]
+    },
+    {
+      "id": "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]",
+      "action": "drop",
+      "kind": "column",
+      "object": { "schema": "main", "name": "customers" },
+      "member": "legacy_code",
+      "destructive": true,
+      "reason": "drops column customers.legacy_code and its data"
+    },
+    {
+      "id": "[\"add\",\"table\",\"main\",\"orders\",\"\"]",
+      "action": "add",
+      "kind": "table",
+      "object": { "schema": "main", "name": "orders" },
+      "destructive": false
+    },
+    {
+      "id": "[\"add\",\"foreign_key\",\"main\",\"orders\",\"fk_orders_customer\"]",
+      "action": "add",
+      "kind": "foreign_key",
+      "object": { "schema": "main", "name": "orders" },
+      "member": "fk_orders_customer",
+      "destructive": false,
+      "requires": ["[\"add\",\"table\",\"main\",\"orders\",\"\"]"]
+    },
+    {
+      "id": "[\"drop\",\"table\",\"main\",\"audit_log\",\"\"]",
+      "action": "drop",
+      "kind": "table",
+      "object": { "schema": "main", "name": "audit_log" },
+      "destructive": true,
+      "reason": "drops table audit_log and all of its rows"
+    },
+    {
+      "id": "[\"modify\",\"column\",\"main\",\"products\",\"price\"]",
+      "action": "modify",
+      "kind": "column",
+      "object": { "schema": "main", "name": "products" },
+      "member": "price",
+      "destructive": false,
+      "requires": ["[\"modify\",\"column\",\"main\",\"products\",\"sku\"]"]
+    },
+    {
+      "id": "[\"modify\",\"column\",\"main\",\"products\",\"sku\"]",
+      "action": "modify",
+      "kind": "column",
+      "object": { "schema": "main", "name": "products" },
+      "member": "sku",
+      "destructive": false,
+      "requires": ["[\"modify\",\"column\",\"main\",\"products\",\"price\"]"]
+    }
+  ],
+  "steps": [
+    {
+      "changes": ["[\"add\",\"column\",\"main\",\"customers\",\"email\"]"],
+      "sql": "ALTER TABLE \"customers\" ADD COLUMN \"email\" TEXT;"
+    },
+    {
+      "changes": ["[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]"],
+      "sql": "CREATE UNIQUE INDEX \"idx_customers_email\" ON \"customers\" (\"email\");"
+    },
+    {
+      "changes": ["[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"],
+      "sql": "ALTER TABLE \"customers\" DROP COLUMN \"legacy_code\";"
+    },
+    {
+      "changes": [
+        "[\"add\",\"table\",\"main\",\"orders\",\"\"]",
+        "[\"add\",\"foreign_key\",\"main\",\"orders\",\"fk_orders_customer\"]"
+      ],
+      "sql": "CREATE TABLE \"orders\" (\n  \"id\" INTEGER PRIMARY KEY,\n  \"customer_id\" INTEGER NOT NULL,\n  \"total\" NUMERIC NOT NULL,\n  CONSTRAINT \"fk_orders_customer\" FOREIGN KEY (\"customer_id\") REFERENCES \"customers\" (\"id\")\n);"
+    },
+    {
+      "changes": ["[\"drop\",\"table\",\"main\",\"audit_log\",\"\"]"],
+      "sql": "DROP TABLE \"audit_log\";"
+    },
+    {
+      "changes": [
+        "[\"modify\",\"column\",\"main\",\"products\",\"price\"]",
+        "[\"modify\",\"column\",\"main\",\"products\",\"sku\"]"
+      ],
+      "sql": "CREATE TABLE \"products_new\" (\n  \"id\" INTEGER PRIMARY KEY,\n  \"sku\" TEXT NOT NULL,\n  \"price\" NUMERIC NOT NULL\n);\nINSERT INTO \"products_new\" SELECT \"id\", \"sku\", \"price\" FROM \"products\";\nDROP TABLE \"products\";\nALTER TABLE \"products_new\" RENAME TO \"products\";"
+    }
+  ],
+  "objects": [
+    {
+      "kind": "table",
+      "name": { "schema": "main", "name": "customers" },
+      "status": "changed",
+      "language": "hcl",
+      "before": "table \"customers\" {\n  schema = schema.main\n  column \"id\" {\n    type = integer\n  }\n  column \"name\" {\n    type = text\n  }\n  column \"legacy_code\" {\n    type = text\n    null = true\n  }\n}\n",
+      "after": "table \"customers\" {\n  schema = schema.main\n  column \"id\" {\n    type = integer\n  }\n  column \"name\" {\n    type = text\n  }\n  column \"email\" {\n    type = text\n    null = true\n  }\n  index \"idx_customers_email\" {\n    unique  = true\n    columns = [column.email]\n  }\n}\n",
+      "changes": [
+        "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+        "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+        "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"
+      ]
+    },
+    {
+      "kind": "table",
+      "name": { "schema": "main", "name": "orders" },
+      "status": "added",
+      "language": "hcl",
+      "after": "table \"orders\" {\n  schema = schema.main\n  column \"id\" {\n    type = integer\n  }\n  column \"customer_id\" {\n    type = integer\n  }\n  column \"total\" {\n    type = numeric\n  }\n  foreign_key \"fk_orders_customer\" {\n    columns     = [column.customer_id]\n    ref_columns = [table.customers.column.id]\n  }\n}\n",
+      "changes": [
+        "[\"add\",\"table\",\"main\",\"orders\",\"\"]",
+        "[\"add\",\"foreign_key\",\"main\",\"orders\",\"fk_orders_customer\"]"
+      ]
+    },
+    {
+      "kind": "table",
+      "name": { "schema": "main", "name": "audit_log" },
+      "status": "deleted",
+      "language": "hcl",
+      "before": "table \"audit_log\" {\n  schema = schema.main\n  column \"id\" {\n    type = integer\n  }\n  column \"message\" {\n    type = text\n  }\n}\n",
+      "changes": ["[\"drop\",\"table\",\"main\",\"audit_log\",\"\"]"]
+    },
+    {
+      "kind": "table",
+      "name": { "schema": "main", "name": "products" },
+      "status": "changed",
+      "language": "hcl",
+      "before": "table \"products\" {\n  schema = schema.main\n  column \"id\" {\n    type = integer\n  }\n  column \"sku\" {\n    type = text\n    null = true\n  }\n  column \"price\" {\n    type = integer\n  }\n}\n",
+      "after": "table \"products\" {\n  schema = schema.main\n  column \"id\" {\n    type = integer\n  }\n  column \"sku\" {\n    type = text\n  }\n  column \"price\" {\n    type = numeric\n  }\n}\n",
+      "changes": [
+        "[\"modify\",\"column\",\"main\",\"products\",\"price\"]",
+        "[\"modify\",\"column\",\"main\",\"products\",\"sku\"]"
+      ]
+    }
+  ]
+}
