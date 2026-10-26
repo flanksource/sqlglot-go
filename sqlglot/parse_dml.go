@@ -131,7 +131,10 @@ func (p *parser) parseFromWithJoins() (*Expression, error) {
 func (p *parser) parseAssignments() ([]*Expression, error) {
 	var out []*Expression
 	for {
-		e, err := p.parseExpression()
+		e, err := p.parseUpdateCompoundAssignment()
+		if err == nil && e == nil {
+			e, err = p.parseExpression()
+		}
 		if err != nil {
 			return nil, err
 		}

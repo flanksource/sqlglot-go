@@ -4939,6 +4939,13 @@ func (p *parser) parseSetStatementItem() (*Expression, error) {
 		}
 	}
 
+	if name.Class == "Parameter" {
+		assignment, err := p.parseCompoundAssignmentValue(name)
+		if err != nil || assignment != nil {
+			return New("SetItem", Arg{"this", assignment}), err
+		}
+	}
+
 	// `TO` and `=` are the same thing, and a setting may be written with
 	// neither: `SET XACT_ABORT ON`.
 	if !p.at(TokEQ) && !p.atWords("TO") && (p.dialect != "mysql" || !p.at(TokCOLON_EQ)) {

@@ -1161,6 +1161,9 @@ func (p *parser) parseProjection() (*Expression, error) {
 			return New("Alias", Arg{"this", named}, Arg{"alias", alias}), nil
 		}
 	}
+	if assignment, err := p.parseSelectCompoundAssignment(); err != nil || assignment != nil {
+		return assignment, err
+	}
 	e, err := p.parseExpression()
 	if err != nil {
 		return nil, err

@@ -111,6 +111,12 @@ var _ = Describe("Fill factor, ROWGUIDCOL, QUOTED_IDENTIFIER and sequences", fun
 		Expect(unchanged.Steps).To(BeEmpty())
 	})
 
+	It("names the routine whose definition does not parse", func() {
+		broken := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "acme_broken"}, Kind: "PROCEDURE", SQL: "CREATE PROCEDURE dbo.acme_broken AS SELECT 1 +"}
+		_, err := sqlserver.Plan(migrate.Request{Current: migrate.Schema{Definitions: []migrate.Definition{broken}}})
+		Expect(err).To(MatchError(ContainSubstring("current snapshot: sqlserver: procedure dbo.acme_broken: sqlserver: parse routine")))
+	})
+
 	balance := func(name, expression string) migrate.Table {
 		return migrate.Table{Name: orders, Columns: []migrate.Column{{Name: "balance", Type: "int", Default: &migrate.Default{Name: name, Expression: expression, SystemNamed: true}}}}
 	}
