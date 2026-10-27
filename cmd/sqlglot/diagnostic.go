@@ -7,6 +7,7 @@ import (
 
 	"github.com/flanksource/clicky"
 	"github.com/flanksource/clicky/api"
+	"github.com/flanksource/clicky/entity"
 	"github.com/flanksource/sqlglot-go/sqlglot"
 	"github.com/mattn/go-runewidth"
 )
@@ -27,6 +28,13 @@ type SourceDiagnostic struct {
 type ParseFailure struct {
 	Dialect     string             `json:"dialect"`
 	Diagnostics []SourceDiagnostic `json:"diagnostics"`
+}
+
+func (f *ParseFailure) Unwrap() error {
+	status := entity.NewStatusError(400, "invalid_sql", f.Error())
+	status.Context = map[string]any{"diagnostics": f.Diagnostics}
+	status.Hint = "Correct the highlighted SQL and try again."
+	return status
 }
 
 func (f *ParseFailure) Error() string {

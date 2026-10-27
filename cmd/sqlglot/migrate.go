@@ -1,285 +1,183 @@
 package main
 
 import (
-	"bytes"
-	"database/sql"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/zclconf/go-cty/cty"
-	"io"
+	"net/http"
 	"os"
-	"strings"
-	"time"
 
-	"github.com/flanksource/sqlglot-go/database/inspect/snapshot"
-	bundle "github.com/flanksource/sqlglot-go/database/migrate"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
-	executor "github.com/flanksource/sqlglot-go/database/migrate/sqlserver"
-	native "github.com/flanksource/sqlglot-go/migrate"
-	planner "github.com/flanksource/sqlglot-go/migrate/sqlserver"
+	"github.com/flanksource/clicky"
+	"github.com/flanksource/clicky/api"
+	"github.com/flanksource/clicky/entity"
+	"github.com/flanksource/clicky/rpc"
+	"github.com/flanksource/clicky/task"
+	"github.com/flanksource/sqlglot-go/database/history"
+	"github.com/flanksource/sqlglot-go/database/migrate/workflow"
+	"github.com/flanksource/sqlglot-go/database/operation"
+	dbtarget "github.com/flanksource/sqlglot-go/database/target"
 	"github.com/spf13/cobra"
 )
 
-type migrationFlags struct {
-	databaseFlags
-	bundle      string
-	desired     string
-	output      string
-	artifact    string
-	hash        string
-	allowDrops  bool
-	ack         []string
-	lockTimeout time.Duration
-	routines    string
-	variables   []string
+type TargetOptions struct {
+	DSN            string `json:"dsn" flag:"dsn" help:"Connection string or connection:// reference"`
+	Driver         string `json:"driver,omitempty" flag:"driver" help:"Driver override, matching the connection"`
+	Schema         string `json:"schema,omitempty" flag:"schema" help:"Schema (defaults to main, public or dbo)"`
+	ConnectionsDir string `json:"connections-dir,omitempty" flag:"connections-dir" help:"Directory of named connections"`
+	Run            string `json:"run,omitempty" flag:"run" help:"Unique run ID for history and task progress"`
+	Parent         string `json:"parent,omitempty" flag:"parent" help:"Recorded parent run ID"`
+}
+
+func (o TargetOptions) open(ctx context.Context, readOnly bool) (dbtarget.Connection, error) {
+	dir := o.ConnectionsDir
+	if dir == "" {
+		dir = compareConnectionsDir
+	}
+	return dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: o.DSN, Driver: o.Driver, Schema: o.Schema, ConnectionsDir: dir, ReadOnly: readOnly})
+}
+
+type MigrationOptions struct {
+	TargetOptions
+	Bundle          string          `json:"bundle,omitempty" flag:"bundle" help:"Directory containing HCL and SQL files (CLI only)"`
+	Desired         string          `json:"desired,omitempty" flag:"desired" help:"Desired HCL or snapshot JSON file (CLI only)"`
+	Output          string          `json:"out,omitempty" flag:"out" help:"Save the reviewed artifact to a file (CLI only)"`
+	Artifact        string          `json:"artifact,omitempty" flag:"artifact" help:"Reviewed artifact file (CLI only)"`
+	Hash            string          `json:"hash,omitempty" flag:"hash" help:"Explicitly reviewed artifact hash"`
+	Acks            []string        `json:"ack,omitempty" flag:"ack" split:"false" help:"Acknowledged destructive step IDs"`
+	LockTimeout     string          `json:"lock-timeout,omitempty" flag:"lock-timeout" default:"5s" help:"Maximum migration lock wait"`
+	Variables       []string        `json:"var,omitempty" flag:"var" split:"false" help:"Bundle variable as name=HCL-literal"`
+	Routines        string          `json:"routines,omitempty" flag:"routines" help:"Routine directory within the bundle"`
+	AllowDrops      bool            `json:"allow-drops,omitempty" flag:"allow-drops" help:"Include omitted objects as removals in a bundle"`
+	Source          workflow.Source `json:"source" flag:"-"`
+	ArtifactContent json.RawMessage `json:"artifactContent,omitempty" flag:"-"`
+}
+
+type PlanOutput struct{ workflow.PlanResult }
+
+func (p PlanOutput) Pretty() api.Text {
+	var value any
+	if err := json.Unmarshal(p.Original, &value); err != nil {
+		panic(err)
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return clicky.Text(string(data))
+}
+
+type ApplyOutput struct{ Value any }
+
+func (o ApplyOutput) MarshalJSON() ([]byte, error) { return json.Marshal(o.Value) }
+func (o ApplyOutput) Pretty() api.Text {
+	data, err := json.MarshalIndent(o.Value, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return clicky.Text(string(data))
 }
 
 func newMigrationPlanCommand() *cobra.Command {
-	f := &migrationFlags{}
-	cmd := &cobra.Command{Use: "plan", Short: "Generate a reviewed artifact without changing the database", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) (returnErr error) {
-		if (f.bundle == "") == (f.desired == "") {
-			return fmt.Errorf("select exactly one of --bundle or --desired")
-		}
-		if err := f.validateBundleOptions(); err != nil {
-			return err
-		}
-		db, err := f.open(cmd.Context(), true)
+	parent := &cobra.Command{Use: "migrate"}
+	cmd := clicky.AddNamedCommandWithContext("plan", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (PlanOutput, error) {
+		opts, err := migrationInput(ctx, opts)
 		if err != nil {
-			return err
+			return PlanOutput{}, err
 		}
-		defer func() { returnErr = errors.Join(returnErr, db.Close()) }()
-		result, planErr := f.plan(cmd, db)
-		if result != nil {
-			if err := writeDatabaseJSON(cmd, f.output, result); err != nil {
-				return err
+		payload, err := migrateRun(ctx, opts, "plan")
+		if err != nil {
+			return PlanOutput{}, err
+		}
+		if opts.Output != "" {
+			if err := os.WriteFile(opts.Output, payload.Plan.Original, 0600); err != nil {
+				return PlanOutput{}, err
 			}
 		}
-		return planErr
-	}}
-	f.bind(cmd)
-	cmd.Flags().StringVar(&f.bundle, "bundle", "", "Directory containing HCL and SQL migration files")
-	cmd.Flags().StringVar(&f.desired, "desired", "", "Desired migration snapshot JSON or backend HCL file")
-	cmd.Flags().StringVar(&f.output, "out", "", "Write the artifact JSON to this file")
-	cmd.Flags().BoolVar(&f.allowDrops, "allow-drops", false, "Include omitted tables and columns as removals in a bundle plan")
-	cmd.Flags().StringVar(&f.routines, "routines", "", "SQL Server routine directory within the bundle")
-	cmd.Flags().StringArrayVar(&f.variables, "var", nil, "Bundle variable as name=HCL-literal (repeatable)")
+		return PlanOutput{*payload.Plan}, nil
+	})
+	cmd.Short = "Generate a reviewed artifact without changing the database"
+	jsonCLICommand(cmd)
 	return cmd
-}
-
-func (f *migrationFlags) plan(cmd *cobra.Command, db *sql.DB) (any, error) {
-	if f.bundle != "" {
-		opts := []bundle.Option{}
-		variables, err := parseVariables(f.variables)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, bundle.WithVariables(variables))
-		if f.schema != "main" {
-			opts = append(opts, bundle.WithSchema(f.schema))
-		}
-		if f.allowDrops {
-			opts = append(opts, bundle.WithDrops())
-		}
-		if f.routines != "" {
-			opts = append(opts, bundle.WithRoutines(f.routines))
-		}
-		preview, err := bundle.PreviewBundle(cmd.Context(), db, f.dialect, os.DirFS(f.bundle), opts...)
-		for _, warning := range preview.Warnings {
-			if _, writeErr := fmt.Fprintln(cmd.ErrOrStderr(), "warning:", warning); writeErr != nil {
-				return nil, writeErr
-			}
-		}
-		return preview, err
-	}
-	data, err := os.ReadFile(f.desired)
-	if err != nil {
-		return nil, err
-	}
-	if f.dialect == "sqlserver" {
-		var desired snapshot.Result
-		if err := decodeJSON(data, &desired); err != nil {
-			return nil, fmt.Errorf("SQL Server requires a complete snapshot JSON: %w", err)
-		}
-		current, err := snapshot.Inspect(cmd.Context(), db, snapshot.Options{Schemas: []string{f.schema}})
-		if err != nil {
-			return nil, err
-		}
-		return planner.BuildArtifact(native.ArtifactRequest{Schemas: current.Schemas, Request: native.Request{Current: current.Schema, Desired: desired.Schema}})
-	}
-	text := string(data)
-	if json.Valid(data) {
-		var desired review.Snapshot
-		if err := decodeJSON(data, &desired); err != nil {
-			return nil, err
-		}
-		if desired.Dialect != f.dialect || desired.Schema != f.schema {
-			return nil, fmt.Errorf("desired snapshot dialect or schema does not match target")
-		}
-		text = desired.HCL
-	}
-	return review.Build(cmd.Context(), db, review.Options{Dialect: f.dialect, Schema: f.schema, DesiredHCL: text})
 }
 
 func newMigrationApplyCommand() *cobra.Command {
-	f := &migrationFlags{}
-	cmd := &cobra.Command{Use: "apply", Short: "Apply exact reviewed SQL with hash and destructive acknowledgements", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) (returnErr error) {
-		if f.hash == "" {
-			return fmt.Errorf("reviewed --hash is required")
-		}
-		if (f.artifact == "") == (f.bundle == "") {
-			return fmt.Errorf("select exactly one of --artifact or --bundle")
-		}
-		if err := f.validateBundleOptions(); err != nil {
-			return err
-		}
-		var data []byte
-		var err error
-		if f.artifact != "" {
-			data, err = os.ReadFile(f.artifact)
-			if err != nil {
-				return err
-			}
-			if err := f.validateArtifact(data); err != nil {
-				return err
-			}
-		}
-		db, err := f.open(cmd.Context(), false)
+	parent := &cobra.Command{Use: "migrate"}
+	cmd := clicky.AddNamedCommandWithContext("apply", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (ApplyOutput, error) {
+		opts, err := migrationInput(ctx, opts)
 		if err != nil {
-			return err
+			return ApplyOutput{}, err
 		}
-		defer func() { returnErr = errors.Join(returnErr, db.Close()) }()
-		if f.bundle != "" {
-			planned, err := f.plan(cmd, db)
-			if err != nil {
-				return err
-			}
-			data, err = json.Marshal(planned)
-			if err != nil {
-				return err
-			}
+		if opts.Hash == "" {
+			return ApplyOutput{}, fmt.Errorf("reviewed --hash is required")
 		}
-		result, err := f.apply(cmd, db, data)
-		if result != nil {
-			if outputErr := writeDatabaseJSON(cmd, "", result); outputErr != nil {
-				return outputErr
-			}
-		}
-		return err
-	}}
-	f.bind(cmd)
-	cmd.Flags().StringVar(&f.artifact, "artifact", "", "Saved reviewed artifact or bundle preview JSON")
-	cmd.Flags().StringVar(&f.bundle, "bundle", "", "Replan this bundle and require its hash to match the reviewed hash")
-	cmd.Flags().StringVar(&f.hash, "hash", "", "Explicitly reviewed artifact hash")
-	cmd.Flags().StringSliceVar(&f.ack, "ack", nil, "Acknowledge individual destructive step IDs (repeat or comma separate)")
-	cmd.Flags().BoolVar(&f.allowDrops, "allow-drops", false, "Include omitted objects when replanning a bundle")
-	cmd.Flags().DurationVar(&f.lockTimeout, "lock-timeout", 5*time.Second, "Maximum migration lock wait")
-	cmd.Flags().StringVar(&f.routines, "routines", "", "SQL Server routine directory within the bundle")
-	cmd.Flags().StringArrayVar(&f.variables, "var", nil, "Bundle variable as name=HCL-literal (repeatable)")
+		payload, err := migrateRun(ctx, opts, "apply")
+		return ApplyOutput{Value: payload.Result}, err
+	})
+	cmd.Short = "Apply exact reviewed SQL with hash and destructive acknowledgements"
+	jsonCLICommand(cmd)
 	return cmd
 }
 
-func (f *migrationFlags) apply(cmd *cobra.Command, db *sql.DB, data []byte) (any, error) {
-	var envelope struct {
-		Artifact          json.RawMessage `json:"artifact"`
-		SQLServerArtifact json.RawMessage `json:"sqlServerArtifact"`
-		Version           int             `json:"version"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, err
-	}
-	if envelope.Artifact != nil {
-		data = envelope.Artifact
-	}
-	if envelope.SQLServerArtifact != nil {
-		data = envelope.SQLServerArtifact
-	}
-	if f.dialect == "sqlserver" {
-		var artifact native.Artifact
-		if err := decodeJSON(data, &artifact); err != nil {
-			return nil, err
+func newMigrationReviewCommand() *cobra.Command {
+	parent := &cobra.Command{Use: "migrate"}
+	cmd := clicky.AddNamedCommandWithContext("review", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (PlanOutput, error) {
+		opts, err := migrationInput(ctx, opts)
+		if err != nil {
+			return PlanOutput{}, err
 		}
-		return executor.Apply(cmd.Context(), db, executor.Request{Artifact: artifact, Hash: f.hash, Acknowledgements: f.ack, LockTimeout: f.lockTimeout})
-	}
-	var artifact review.Artifact
-	if err := decodeJSON(data, &artifact); err != nil {
-		return nil, err
-	}
-	if artifact.Baseline.Dialect != f.dialect || artifact.Baseline.Schema != f.schema {
-		return nil, fmt.Errorf("artifact dialect or schema does not match target")
-	}
-	return review.Apply(cmd.Context(), db, review.Request{Artifact: artifact, Hash: f.hash, Acknowledgements: f.ack, LockTimeout: f.lockTimeout})
+		plan, err := workflow.Review(opts.ArtifactContent, opts.Driver, opts.Schema)
+		return PlanOutput{PlanResult: plan}, err
+	})
+	cmd.Short = "Review an uploaded artifact without opening a database"
+	jsonCLICommand(cmd)
+	return cmd
 }
 
-func decodeJSON(data []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
+func migrationInput(ctx context.Context, opts MigrationOptions) (MigrationOptions, error) {
+	if request, ok := rpc.RequestFromContext(ctx); ok {
+		if err := decodeRequest(request, &opts); err != nil {
+			return opts, err
+		}
+		if opts.Bundle != "" || opts.Desired != "" || opts.Artifact != "" || opts.Output != "" || opts.ConnectionsDir != "" {
+			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "HTTP requests require uploaded content, not server paths")
+		}
+		return opts, nil
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return fmt.Errorf("artifact must contain exactly one JSON value")
+	if (opts.Bundle != "" && (opts.Desired != "" || opts.Artifact != "")) || (opts.Desired != "" && opts.Artifact != "") {
+		return opts, fmt.Errorf("select exactly one source")
 	}
-	return nil
+	if opts.Desired != "" {
+		data, err := os.ReadFile(opts.Desired)
+		if err != nil {
+			return opts, err
+		}
+		opts.Source = workflow.Source{Kind: "hcl", Content: string(data)}
+		if json.Valid(data) {
+			opts.Source.Kind = "snapshot"
+		}
+	}
+	if opts.Artifact != "" {
+		data, err := os.ReadFile(opts.Artifact)
+		if err != nil {
+			return opts, err
+		}
+		opts.ArtifactContent = data
+	}
+	return opts, nil
 }
 
-func (f *migrationFlags) validateArtifact(data []byte) error {
-	var envelope struct {
-		Artifact          json.RawMessage `json:"artifact"`
-		SQLServerArtifact json.RawMessage `json:"sqlServerArtifact"`
-		Version           int             `json:"version"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return err
-	}
-	if envelope.Artifact != nil {
-		return f.validateArtifact(envelope.Artifact)
-	}
-	if envelope.SQLServerArtifact != nil {
-		return f.validateArtifact(envelope.SQLServerArtifact)
-	}
-	if envelope.Version == 1 {
-		var a native.Artifact
-		if err := decodeJSON(data, &a); err != nil {
-			return err
-		}
-		return executor.Validate(executor.Request{Artifact: a, Hash: f.hash, Acknowledgements: f.ack, LockTimeout: f.lockTimeout})
-	}
-	var a review.Artifact
-	if err := decodeJSON(data, &a); err != nil {
-		return err
-	}
-	return review.Validate(review.Request{Artifact: a, Hash: f.hash, Acknowledgements: f.ack, LockTimeout: f.lockTimeout})
-}
-
-func parseVariables(values []string) (map[string]cty.Value, error) {
-	result := map[string]cty.Value{}
-	for _, value := range values {
-		name, text, found := strings.Cut(value, "=")
-		if !found || !hclsyntax.ValidIdentifier(name) {
-			return nil, fmt.Errorf("variable must be name=HCL-literal")
-		}
-		if _, exists := result[name]; exists {
-			return nil, fmt.Errorf("duplicate variable %q", name)
-		}
-		expression, diagnostics := hclsyntax.ParseExpression([]byte(text), "variable "+name, hcl.Pos{Line: 1, Column: 1})
-		if diagnostics.HasErrors() {
-			return nil, fmt.Errorf("parse variable %s: %s", name, diagnostics.Error())
-		}
-		parsed, diagnostics := expression.Value(nil)
-		if diagnostics.HasErrors() {
-			return nil, fmt.Errorf("evaluate variable %s: %s", name, diagnostics.Error())
-		}
-		result[name] = parsed
-	}
-	return result, nil
-}
-
-func (f *migrationFlags) validateBundleOptions() error {
-	if f.bundle == "" && (len(f.variables) > 0 || f.routines != "" || f.allowDrops) {
-		return fmt.Errorf("--var, --routines and --allow-drops require --bundle")
-	}
-	return nil
+func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workflow.RunResult, error) {
+	return withHistory(func(store *history.Store) (workflow.RunResult, error) {
+		return operation.Run(ctx, operation.Options{Run: opts.Run, Parent: opts.Parent, Kind: history.KindMigration, Target: opts.DSN, Name: "Migration " + mode, Store: store}, func(ctx context.Context, record *history.Record, t *task.Task) (workflow.RunResult, error) {
+			dir := opts.ConnectionsDir
+			if dir == "" {
+				dir = compareConnectionsDir
+			}
+			plan := workflow.Options{Source: opts.Source, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
+			if opts.Bundle != "" {
+				plan.Bundle = os.DirFS(opts.Bundle)
+			}
+			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ConnectionsDir: dir}, Plan: plan, Hash: opts.Hash, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
+		})
+	})
 }

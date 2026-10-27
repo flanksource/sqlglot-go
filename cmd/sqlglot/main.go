@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,20 +25,40 @@ func newRootCommand(stdin io.Reader) *cobra.Command {
 	}
 	clicky.BindAllFlags(root.PersistentFlags(), "format")
 
-	parse := clicky.AddNamedCommand("parse", root, InputOptions{}, func(opts InputOptions) (ParseResult, error) {
-		return parseSQL(opts, stdin)
+	parse := clicky.AddNamedCommandWithContext("parse", root, InputOptions{}, func(ctx context.Context, opts InputOptions) (ParseResult, error) {
+		input, err := requestSQL(ctx, opts)
+		if err != nil {
+			var zero ParseResult
+			return zero, err
+		}
+		return parseSQL(input, stdin)
 	})
 	parse.Short = "Parse SQL and show formatted SQL; JSON includes the expression tree"
-	validate := clicky.AddNamedCommand("validate", root, InputOptions{}, func(opts InputOptions) (ValidationResult, error) {
-		return validateSQL(opts, stdin)
+	validate := clicky.AddNamedCommandWithContext("validate", root, InputOptions{}, func(ctx context.Context, opts InputOptions) (ValidationResult, error) {
+		input, err := requestSQL(ctx, opts)
+		if err != nil {
+			var zero ValidationResult
+			return zero, err
+		}
+		return validateSQL(input, stdin)
 	})
 	validate.Short = "Check whether SQL parses as one query"
-	format := clicky.AddNamedCommand("format", root, InputOptions{}, func(opts InputOptions) (string, error) {
-		return formatSQL(opts, stdin)
+	format := clicky.AddNamedCommandWithContext("format", root, InputOptions{}, func(ctx context.Context, opts InputOptions) (string, error) {
+		input, err := requestSQL(ctx, opts)
+		if err != nil {
+			var zero string
+			return zero, err
+		}
+		return formatSQL(input, stdin)
 	})
 	format.Short = "Format SQL while preserving its tokens"
-	tokens := clicky.AddNamedCommand("tokens", root, InputOptions{}, func(opts InputOptions) ([]TokenResult, error) {
-		return tokenizeSQL(opts, stdin)
+	tokens := clicky.AddNamedCommandWithContext("tokens", root, InputOptions{}, func(ctx context.Context, opts InputOptions) ([]TokenResult, error) {
+		input, err := requestSQL(ctx, opts)
+		if err != nil {
+			var zero []TokenResult
+			return zero, err
+		}
+		return tokenizeSQL(input, stdin)
 	})
 	tokens.Short = "List lexical tokens and their source positions"
 	for _, command := range []*cobra.Command{parse, validate, format, tokens} {
@@ -52,6 +73,9 @@ func newRootCommand(stdin io.Reader) *cobra.Command {
 	})
 	versionCmd.Short = "Print the CLI version"
 	addDatabaseCommands(root)
+	addHistoryCommands(root)
+	addRenderCommand(root)
+	addUICommand(root)
 	return root
 }
 

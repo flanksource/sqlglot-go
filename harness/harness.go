@@ -208,6 +208,8 @@ type Coverage struct {
 	ByDialect map[string]DialectCoverage `json:"by_dialect"`
 }
 
+func parseFloor(raw []byte, into *map[string]float64) error { return json.Unmarshal(raw, into) }
+
 // DialectCoverage counts one dialect's outcomes.
 type DialectCoverage struct {
 	Total      int `json:"total"`
