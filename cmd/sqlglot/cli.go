@@ -21,7 +21,7 @@ type InputOptions struct {
 type ParseResult struct {
 	Class string          `json:"class"`
 	Tree  json.RawMessage `json:"tree"`
-	SQL   string          `json:"-"`
+	SQL   string          `json:"sql"`
 }
 
 func (r ParseResult) Pretty() api.Text {

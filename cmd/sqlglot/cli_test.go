@@ -16,6 +16,9 @@ func TestCLI(t *testing.T) {
 	RunSpecs(t, "SQL CLI")
 }
 
+// Every spec records its runs to its own history file, never the user's.
+var _ = BeforeEach(func() { historyPath = filepath.Join(GinkgoT().TempDir(), "history.db") })
+
 var _ = Describe("SQL commands", func() {
 	const query = "SELECT a FROM t"
 
