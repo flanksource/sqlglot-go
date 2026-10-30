@@ -8,3 +8,19 @@ cover.out
 # thirteen seconds on every run of the suite.
 sqlglot/testdata/fuzz/
 !sqlglot/parser_gen.go
+!harness/execute.py
+
+# Local workspace overlaying sibling checkouts (e.g. ../clicky).
+go.work
+go.work.sum
+
+# Frontend (www/): installed packages and the Vite build that ui builds embed.
+www/node_modules
+www/dist
+
+# Rspress tooling and generated documentation live outside the docs content root.
+/node_modules/
+/doc_build/
+/.rspress/
+/hack/
+/.new
