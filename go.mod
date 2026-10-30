@@ -6,7 +6,7 @@ require (
 	ariga.io/atlas v0.38.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/flanksource/clicky v1.21.89
+	github.com/flanksource/clicky v1.21.89-0.20261028120101-94d2bf481c97
 	github.com/flanksource/commons v1.63.0
 	github.com/flanksource/commons-db v0.1.67
 	github.com/flanksource/commons-db/cmd/query v0.1.67
