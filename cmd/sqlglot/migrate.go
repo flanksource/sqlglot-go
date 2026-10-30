@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/flanksource/clicky"
 	"github.com/flanksource/clicky/api"
@@ -79,7 +81,7 @@ func (o ApplyOutput) Pretty() api.Text {
 
 func newMigrationPlanCommand() *cobra.Command {
 	parent := &cobra.Command{Use: "migrate"}
-	cmd := clicky.AddNamedCommandWithContext("plan", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (PlanOutput, error) {
+	cmd := clicky.AddNamedCommandWithContext("plan", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (result PlanOutput, returnErr error) {
 		opts, err := migrationInput(ctx, opts)
 		if err != nil {
 			return PlanOutput{}, err
@@ -89,7 +91,12 @@ func newMigrationPlanCommand() *cobra.Command {
 			return PlanOutput{}, err
 		}
 		if opts.Output != "" {
-			if err := os.WriteFile(opts.Output, payload.Plan.Original, 0600); err != nil {
+			root, err := os.OpenRoot(filepath.Dir(opts.Output))
+			if err != nil {
+				return PlanOutput{}, err
+			}
+			defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
+			if err := root.WriteFile(filepath.Base(opts.Output), payload.Plan.Original, 0600); err != nil {
 				return PlanOutput{}, err
 			}
 		}
@@ -168,14 +175,19 @@ func migrationInput(ctx context.Context, opts MigrationOptions) (MigrationOption
 
 func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workflow.RunResult, error) {
 	return withHistory(func(store *history.Store) (workflow.RunResult, error) {
-		return operation.Run(ctx, operation.Options{Run: opts.Run, Parent: opts.Parent, Kind: history.KindMigration, Target: opts.DSN, Name: "Migration " + mode, Store: store}, func(ctx context.Context, record *history.Record, t *task.Task) (workflow.RunResult, error) {
+		return operation.Run(ctx, operation.Options{Run: opts.Run, Parent: opts.Parent, Kind: history.KindMigration, Target: opts.DSN, Name: "Migration " + mode, Store: store}, func(ctx context.Context, record *history.Record, t *task.Task) (result workflow.RunResult, returnErr error) {
 			dir := opts.ConnectionsDir
 			if dir == "" {
 				dir = compareConnectionsDir
 			}
 			plan := workflow.Options{Source: opts.Source, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
 			if opts.Bundle != "" {
-				plan.Bundle = os.DirFS(opts.Bundle)
+				root, err := os.OpenRoot(opts.Bundle)
+				if err != nil {
+					return workflow.RunResult{}, err
+				}
+				defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
+				plan.Bundle = root.FS()
 			}
 			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ConnectionsDir: dir}, Plan: plan, Hash: opts.Hash, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
 		})
