@@ -27,14 +27,15 @@ func decodeRequest(request *http.Request, value any) error {
 func requestSQL(ctx context.Context, opts InputOptions) (InputOptions, error) {
 	if request, ok := rpc.RequestFromContext(ctx); ok {
 		if err := decodeRequest(request, &opts); err != nil {
-			return opts, err
+			return InputOptions{}, err
 		}
 		if opts.File != "" {
-			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "upload SQL content instead of a server file path")
+			return InputOptions{}, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "upload SQL content instead of a server file path")
 		}
 		if opts.SQL == "" {
-			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "SQL content is required")
+			return InputOptions{}, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "SQL content is required")
 		}
+		return InputOptions{SQL: opts.SQL, Dialect: opts.Dialect}, nil
 	}
 	return opts, nil
 }
