@@ -150,6 +150,22 @@ var _ = Describe("Fill factor, ROWGUIDCOL, QUOTED_IDENTIFIER and sequences", fun
 	usesFieldList := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "load_fields"}, Kind: "PROCEDURE",
 		SQL: "CREATE PROCEDURE dbo.load_fields @fields dbo.field_list READONLY AS SELECT name FROM @fields"}
 
+	It("reads back a live procedure taking a mixed-case table type with a sql_variant column", func() {
+		fieldValues := migrate.TableType{Name: migrate.Name{Schema: "dbo", Name: "FieldValueList"},
+			Columns: []migrate.Column{
+				{Name: "Name", Type: "nvarchar(50)"},
+				{Name: "Value", Type: "sql_variant", Nullable: true},
+			}}
+		spawn := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "SpawnForGroup"}, Kind: "PROCEDURE",
+			SQL: "-- Spawns one row per member.\n--   EXEC dbo.SpawnForGroup @GroupGUID=[GroupGUID], @Fields=@f\n" +
+				"CREATE   PROCEDURE dbo.SpawnForGroup\n    @GroupGUID UNIQUEIDENTIFIER,\n    @Fields    dbo.FieldValueList READONLY\n" +
+				"AS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT Name FROM @Fields;\nEND\n"}
+		live := migrate.Schema{TableTypes: []migrate.TableType{fieldValues}, Definitions: []migrate.Definition{spawn}}
+		plan, err := sqlserver.Plan(migrate.Request{Current: live, Desired: live})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(plan.Steps).To(BeEmpty())
+	})
+
 	It("creates a table type before the procedure that takes it", func() {
 		plan, err := sqlserver.Plan(migrate.Request{Desired: migrate.Schema{TableTypes: []migrate.TableType{fieldList}, Definitions: []migrate.Definition{usesFieldList}}})
 		Expect(err).NotTo(HaveOccurred())
