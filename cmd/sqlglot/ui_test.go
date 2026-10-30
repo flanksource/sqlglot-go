@@ -255,6 +255,15 @@ var _ = Describe("ui server", func() {
 			Expect(status).To(Equal(http.StatusBadRequest), response)
 		}
 	})
+	It("rejects every CLI filesystem option on all migration HTTP endpoints", func() {
+		for _, operation := range []string{"plan", "apply", "review"} {
+			for _, field := range []string{"bundle", "desired", "artifact", "out", "connections-dir"} {
+				status, response := request(http.MethodPost, "/api/v1/migrate/"+operation, map[string]any{field: filepath.Join(dir, "server-file")})
+				Expect(status).To(Equal(http.StatusBadRequest), "%s %s: %s", operation, field, response)
+				Expect(response).To(ContainSubstring("HTTP requests require uploaded content"))
+			}
+		}
+	})
 
 	It("publishes schema compare and patch as POST operations taking every flag, embedded ones included", func() {
 		status, body := request(http.MethodGet, "/api/openapi.json", nil)
