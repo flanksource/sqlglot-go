@@ -140,6 +140,7 @@ func init() {
 		"Property":                            (*generator).writeProperty,
 		"Properties":                          (*generator).writePropertyList,
 		"Concat":                              (*generator).writeConcat,
+		"Median":                              (*generator).writeMedian,
 		"List":                                (*generator).writeList,
 		"TsOrDsAdd":                           (*generator).writeTsOrDsAdd,
 		"TsOrDsDiff":                          (*generator).writeTsOrDsDiff,
@@ -5624,6 +5625,25 @@ func (g *generator) writeConcat(e *Expression) string {
 		return g.node(items[0])
 	}
 	return "CONCAT(" + g.list(e) + ")"
+}
+
+// writeMedian writes MEDIAN(x) as the reference does: as itself where the
+// dialect has it, and as the 0.5 PERCENTILE_CONT where it does not -- SQLite,
+// MySQL, Presto and PostgreSQL. The probe recorded no spelling for those,
+// because the reference writes a different call there rather than renaming
+// this one.
+func (g *generator) writeMedian(e *Expression) string {
+	if g.tables.SupportsMedian {
+		return g.spell(e)
+	}
+	this, _ := e.Args["this"].(*Expression)
+	if this == nil {
+		return g.fail("Median without an argument")
+	}
+	half := New("Literal", Arg{"this", "0.5"}, Arg{"is_string", false})
+	// The argument is copied: building the percentile over the node itself
+	// would reparent it, and writing a tree must not change it.
+	return g.node(New("PercentileCont", Arg{"this", this.Copy()}, Arg{"expression", half}))
 }
 
 // writeAlterDistStyle writes Redshift's `ALTER DISTSTYLE <style>` or `ALTER

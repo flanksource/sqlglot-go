@@ -123,6 +123,10 @@ type ParserTables struct {
 	// written as itself; where this is false, the call is written
 	// bare -- `a`, not `CONCAT(a)`.
 	SupportsSingleArgConcat bool
+	// SupportsMedian says MEDIAN(x) is written as itself; where this is
+	// false, it is written as the 0.5 PERCENTILE_CONT, the reference's
+	// SUPPORTS_MEDIAN.
+	SupportsMedian bool
 	// SuppressedWriteClasses names node classes this dialect writes as
 	// nothing at all -- Materialize drops AUTO_INCREMENT, GENERATED AS
 	// IDENTITY, PRIMARY KEY and ON CONFLICT entirely, none of which it
@@ -5107,6 +5111,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -10416,6 +10421,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "FETCH",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  false,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -15698,6 +15704,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           false,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: true,
 		TzToWithTimeZone:         false,
@@ -21190,6 +21197,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "LIMIT",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           true,
 		SuppressedWriteClasses: map[string]struct{}{
 			"AutoIncrementColumnConstraint": {},
 		},
@@ -26849,6 +26857,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "LIMIT",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -32011,6 +32020,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "LIMIT",
 		ConcatAsDPipe:            true,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: true,
 		TzToWithTimeZone:         true,
@@ -37216,6 +37226,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           false,
 		SuppressedWriteClasses: map[string]struct{}{
 			"AutoIncrementColumnConstraint":       {},
 			"GeneratedAsIdentityColumnConstraint": {},
@@ -42236,6 +42247,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           false,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: true,
 		TzToWithTimeZone:         false,
@@ -47380,6 +47392,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "FETCH",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  false,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -52586,6 +52599,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  false,
+		SupportsMedian:           false,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         true,
@@ -57780,6 +57794,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  false,
+		SupportsMedian:           false,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         true,
@@ -62727,6 +62742,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -67771,6 +67787,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "LIMIT",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           false,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -73019,6 +73036,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "LIMIT",
 		ConcatAsDPipe:            true,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           false,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
@@ -78768,6 +78786,7 @@ var parserTables = map[string]*ParserTables{
 		LimitFetch:               "ALL",
 		ConcatAsDPipe:            false,
 		SupportsSingleArgConcat:  true,
+		SupportsMedian:           true,
 		SuppressedWriteClasses:   map[string]struct{}{},
 		RewritesSerialToIdentity: false,
 		TzToWithTimeZone:         false,
