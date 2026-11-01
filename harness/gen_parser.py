@@ -6287,6 +6287,10 @@ def main() -> int:
         "\t// written as itself; where this is false, the call is written\n",
         "\t// bare -- `a`, not `CONCAT(a)`.\n",
         "\tSupportsSingleArgConcat bool\n",
+        "\t// SupportsMedian says MEDIAN(x) is written as itself; where this is\n",
+        "\t// false, it is written as the 0.5 PERCENTILE_CONT, the reference's\n",
+        "\t// SUPPORTS_MEDIAN.\n",
+        "\tSupportsMedian bool\n",
         "\t// SuppressedWriteClasses names node classes this dialect writes as\n",
         "\t// nothing at all -- Materialize drops AUTO_INCREMENT, GENERATED AS\n",
         "\t// IDENTITY, PRIMARY KEY and ON CONFLICT entirely, none of which it\n",
@@ -7737,6 +7741,10 @@ def main() -> int:
         out.append(
             "\t\tSupportsSingleArgConcat: "
             f"{str(bool(Dialect.get_or_raise(name or None).generator_class.SUPPORTS_SINGLE_ARG_CONCAT)).lower()},\n"
+        )
+        out.append(
+            "\t\tSupportsMedian: "
+            f"{str(bool(Dialect.get_or_raise(name or None).generator_class.SUPPORTS_MEDIAN)).lower()},\n"
         )
         out.append(strset("SuppressedWriteClasses", suppressed_write_classes(name)))
         out.append(
