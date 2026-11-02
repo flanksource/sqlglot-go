@@ -1,0 +1,157 @@
+kind: Fixture
+name: postgres proxy behavior
+env:
+  GOWORK: 'off'
+  COMMONS_DB_URL: ''
+  COMMONS_DB_CREATE: 'true'
+defaults:
+  timeout: 2m
+steps:
+  - name: build
+    exec: make
+    args: [build-proxy-fixtures]
+    cwd: '{{.fixture.dir}}/../..'
+  - name: certificates
+    exec: &client '{{.fixture.dir}}/../../.tmp/proxy-fixture-client'
+    args: [--mode, certs, --dir, '{{.tmp}}/certs']
+    export:
+      CERT_DIR: '{{.outputs.json.directory}}'
+  - id: database
+    kind: services
+    services:
+      postgres:
+        dbtest: {}
+        export: {FIXTURE_DSN: '{{.outputs.url}}'}
+  - id: proxies
+    kind: services
+    services:
+      plain:
+        exec: >-
+          exec '{{.fixture.dir}}/../../.tmp/sqlglot' proxy postgres --upstream '{{.steps.database.postgres.host}}:{{.steps.database.postgres.port}}' --listen '127.0.0.1:{{.port}}' --json > '{{.tmp}}/postgres_plain.ndjson'
+        ready: {tcp: '127.0.0.1:{{.port}}'}
+        export:
+          POSTGRES_PLAIN_CAPTURE: '{{.tmp}}/postgres_plain.ndjson'
+      params:
+        exec: >-
+          exec '{{.fixture.dir}}/../../.tmp/sqlglot' proxy postgres --upstream '{{.steps.database.postgres.host}}:{{.steps.database.postgres.port}}' --listen '127.0.0.1:{{.port}}' --json --params > '{{.tmp}}/postgres_params.ndjson'
+        ready: {tcp: '127.0.0.1:{{.port}}'}
+        export:
+          POSTGRES_PARAMS_CAPTURE: '{{.tmp}}/postgres_params.ndjson'
+      tls:
+        exec: >-
+          exec '{{.fixture.dir}}/../../.tmp/sqlglot' proxy postgres --upstream '{{.steps.database.postgres.host}}:{{.steps.database.postgres.port}}' --listen '127.0.0.1:{{.port}}' --json --client-tls require --tls-cert "$CERT_DIR/server.pem" --tls-key "$CERT_DIR/server-key.pem" > '{{.tmp}}/postgres_tls.ndjson'
+        ready: {tcp: '127.0.0.1:{{.port}}'}
+      upstreamTLS:
+        exec: >-
+          exec '{{.fixture.dir}}/../../.tmp/sqlglot' proxy postgres --upstream '{{.steps.database.postgres.host}}:{{.steps.database.postgres.port}}' --listen '127.0.0.1:{{.port}}' --json --upstream-tls require > '{{.tmp}}/upstream.ndjson'
+        ready: {tcp: '127.0.0.1:{{.port}}'}
+        export: {POSTGRES_UPSTREAM_CAPTURE: '{{.tmp}}/upstream.ndjson'}
+  - id: direct
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT CAST(7 AS INT)"]
+    cel: >-
+      json.rows == [[7]]
+  - name: forward
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT CAST(7 AS INT) /* postgres-basic */", "--address", "127.0.0.1:{{.steps.proxies.plain.port}}"]
+    cel: >-
+      json.rows == steps.direct.json.rows
+  - name: captured
+    exec: *client
+    args: ["--mode", "capture", "--capture", "$POSTGRES_PLAIN_CAPTURE", "--marker", "postgres-basic"]
+    wait: &captureWait {until: 'size(json.records) > 0', timeout: 10s, interval: 50ms}
+    cel: >-
+      size(json.records) == 1 && json.records[0].driver == 'postgres' && json.records[0].rows == 1 && !('error' in json.records[0])
+  - name: plain args
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT $1::text /* postgres-plain-args */", "--address", "127.0.0.1:{{.steps.proxies.plain.port}}", "--args", "[\"fixture-value\"]"]
+    cel: >-
+      json.rows == [['fixture-value']]
+  - name: plain args captured
+    exec: *client
+    args: ["--mode", "capture", "--capture", "$POSTGRES_PLAIN_CAPTURE", "--marker", "postgres-plain-args"]
+    wait: *captureWait
+    cel: >-
+      !('args' in json.records[0])
+  - name: params args
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT $1::text /* postgres-params-args */", "--address", "127.0.0.1:{{.steps.proxies.params.port}}", "--args", "[\"fixture-value\"]"]
+    cel: >-
+      json.rows == [['fixture-value']]
+  - name: params args captured
+    exec: *client
+    args: ["--mode", "capture", "--capture", "$POSTGRES_PARAMS_CAPTURE", "--marker", "postgres-params-args"]
+    wait: *captureWait
+    cel: >-
+      json.records[0].args.exists(a, a == 'fixture-value')
+  - name: error
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT * FROM fixture_missing_table /* postgres-error */", "--address", "127.0.0.1:{{.steps.proxies.plain.port}}"]
+    exitCode: 1
+    cel: >-
+      size(json.error) > 0
+  - name: error captured
+    exec: *client
+    args: ["--mode", "capture", "--capture", "$POSTGRES_PLAIN_CAPTURE", "--marker", "postgres-error"]
+    wait: *captureWait
+    cel: >-
+      size(json.records[0].error) > 0
+  - name: tls
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT CAST(7 AS INT) /* postgres-tls */", "--address", "127.0.0.1:{{.steps.proxies.tls.port}}", "--ca", "$CERT_DIR/ca.pem"]
+    cel: >-
+      json.rows == [[7]]
+  - name: plain rejected
+    exec: *client
+    args: ["--driver", "postgres", "--sql", "SELECT CAST(7 AS INT)", "--address", "127.0.0.1:{{.steps.proxies.tls.port}}"]
+    exitCode: 1
+    cel: >-
+      size(json.error) > 0
+  - name: fragmented
+    exec: *client
+    args: [--driver, postgres, --sql, 'SELECT CAST(7 AS INT) /* postgres-fragmented */', --padding, '1000', --address, '127.0.0.1:{{.steps.proxies.plain.port}}']
+    cel: json.rows == [[7]]
+  - name: fragment captured
+    exec: *client
+    args: [--mode, capture, --capture, '$POSTGRES_PLAIN_CAPTURE', --marker, 'postgres-fragmented']
+    wait: *captureWait
+    cel: "size(json.records) == 1 && json.records[0].sql.contains('שלום') && json.records[0].rows == 1"
+  - name: bad ca
+    exec: *client
+    args: [--driver, postgres, --sql, 'SELECT CAST(7 AS INT)', --address, '127.0.0.1:{{.steps.proxies.tls.port}}', --ca, '$CERT_DIR/untrusted.pem']
+    exitCode: 1
+    cel: size(json.error) > 0
+  - name: upstream TLS rejected
+    exec: *client
+    args: [--driver, postgres, --sql, 'SELECT CAST(7 AS INT)', --address, '127.0.0.1:{{.steps.proxies.upstreamTLS.port}}']
+    exitCode: 1
+    cel: size(json.error) > 0
+  - name: upstream TLS captured
+    exec: *client
+    args: [--mode, capture, --capture, '$POSTGRES_UPSTREAM_CAPTURE']
+    wait: *captureWait
+    cel: "json.records.exists(r, 'error' in r && r.error.contains('TLS'))"
+  - id: active
+    kind: services
+    services:
+      query:
+        exec: >-
+          exec '{{.fixture.dir}}/../../.tmp/proxy-fixture-client' --mode active --driver postgres --address '127.0.0.1:{{.steps.proxies.plain.port}}' --capture '{{.tmp}}/active.ready' > '{{.tmp}}/active.json'
+        ready: {exec: "test -s '{{.tmp}}/active.ready'"}
+        export: {POSTGRES_ACTIVE_RESULT: '{{.tmp}}/active.json'}
+  - name: stop
+    exec: *client
+    args: ["--mode", "stop", "--pid", "{{.steps.proxies.plain.pid}}"]
+    cel: >-
+      json.signalled
+  - name: closed
+    exec: *client
+    args: ["--mode", "closed", "--address", "127.0.0.1:{{.steps.proxies.plain.port}}"]
+    wait: {until: json.closed, timeout: 10s, interval: 50ms}
+    cel: >-
+      json.closed
+  - name: disconnected
+    exec: *client
+    args: [--mode, result, --capture, '$POSTGRES_ACTIVE_RESULT']
+    wait: {until: 'json.disconnected', timeout: 10s, interval: 50ms}
+    cel: json.disconnected
