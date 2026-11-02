@@ -73,6 +73,7 @@ func newRootCommand(stdin io.Reader) *cobra.Command {
 	})
 	versionCmd.Short = "Print the CLI version"
 	addDatabaseCommands(root)
+	addProxyCommands(root)
 	addHistoryCommands(root)
 	addRenderCommand(root)
 	addUICommand(root)
