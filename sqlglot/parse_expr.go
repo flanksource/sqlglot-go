@@ -1383,7 +1383,7 @@ func (p *parser) parsePrimary() (*Expression, error) {
 			return p.parseFunction()
 		}
 		p.advance()
-		return New(class), nil
+		return p.rememberBuiltin(New(class), c.Text), nil
 	}
 
 	switch c.Type {
@@ -3010,11 +3010,14 @@ func (p *parser) parseFunction() (*Expression, error) {
 				return nil, p.unsupported(c + " argument to " + name)
 			}
 		}
-		built := p.buildFunction(upper, spec, args)
+		built := p.rememberBuiltin(p.buildFunction(upper, spec, args), name)
 		// The reference's PRESERVE_ORIGINAL_NAMES: the builder's node
 		// remembers the name it was called by, which ClickHouse writes back.
 		if len(p.tables.KeepsOriginalName) > 0 && built != nil {
-			built.Meta = map[string]any{"name": name}
+			if built.Meta == nil {
+				built.Meta = map[string]any{}
+			}
+			built.Meta["name"] = name
 		}
 		if inner != "" {
 			return New(inner, Arg{"this", built}), nil
