@@ -59,20 +59,19 @@ type Config struct {
 	trie *trieNode
 }
 
+func init() {
+	for dialect, config := range dialectConfigs {
+		config.trie = config.buildTrie()
+		config.Tables = parserTables[dialect]
+	}
+}
+
 // ConfigFor returns the tokenizer configuration for a dialect. The empty name
 // is the dialect-neutral default, matching the reference's `read=None`.
+// The returned configuration is shared and must not be modified.
 func ConfigFor(dialect string) (*Config, bool) {
 	c, ok := dialectConfigs[dialect]
-	if !ok {
-		return nil, false
-	}
-	if c.trie == nil {
-		c.trie = c.buildTrie()
-	}
-	if c.Tables == nil {
-		c.Tables = parserTables[dialect]
-	}
-	return c, true
+	return c, ok
 }
 
 // Dialects lists the dialects the port configures, neutral first, the rest
