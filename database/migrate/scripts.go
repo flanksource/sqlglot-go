@@ -16,6 +16,7 @@ import (
 
 	"github.com/flanksource/commons/logger"
 	"github.com/lib/pq"
+	mssql "github.com/microsoft/go-mssqldb"
 )
 
 const (
@@ -47,6 +48,8 @@ type script struct {
 	always        bool
 	transactional bool
 	hash          []byte
+	// batches is the script split at GO, set for SQL Server scripts only.
+	batches []string
 }
 
 // loadScripts reads the hash-gated SQL scripts under dir, skipping the
@@ -386,6 +389,11 @@ func applyTransactionalScript(ctx context.Context, db *sql.DB, scope string, s *
 // retry can clear: a detected deadlock, a lock_timeout, or a serialization
 // failure. A wrapped *pq.Error carries the SQLSTATE that classifies it.
 func isRetryableMigrationErr(err error) bool {
+	var mssqlErr mssql.Error
+	if errors.As(err, &mssqlErr) {
+		return mssqlErr.Number == 1205 || // deadlock victim
+			mssqlErr.Number == 1222 // LOCK_TIMEOUT exceeded
+	}
 	var pqErr *pq.Error
 	if !errors.As(err, &pqErr) {
 		return false

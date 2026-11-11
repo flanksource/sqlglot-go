@@ -313,6 +313,10 @@ Types: `bit`, `tinyint`, `smallint`, `int`, `bigint`, `decimal(p,s)`, `numeric(p
 
 An OIPA-sized database holds thousands of objects, so migrate inspects only the tables and routines the bundle names. Undeclared objects are never read, and so never changed. Inside declared tables, columns, keys, foreign keys and checks are reconciled to the declaration, but indexes the bundle does not declare are kept, so tuning indexes added by a DBA survive. An apply that finds nothing to change runs no DDL. Every apply holds a session `sp_getapplock` named after `WithName` (one-minute wait), so concurrent applies of one bundle serialize.
 
+### Scripts are sqlcmd files
+
+Every other `.sql` file under `WithDir` (outside the routine directory) is a hash-gated script with the same `-- phase:`, `-- dependsOn:`, `-- runs: always` and `-- transaction:` headers as on PostgreSQL. It is plain T-SQL that runs unchanged with `sqlcmd -i` or in SSMS: migrate splits it at `GO` on its own line (never inside a string or comment) and sends each batch in turn. sqlcmd commands (`:setvar`, `:r`, `:on error`, `!!`) and `$(var)` scripting variables, which sqlcmd substitutes even inside strings, are refused, so a file never means something different here than in sqlcmd. `pre` scripts run before the table and routine reconcile, `post` scripts after, all under the bundle's `sp_getapplock`. A transactional script runs every batch and records its SHA-256 in `dbo.sqlglot_migrations` (created on first use) in one transaction under `SET LOCK_TIMEOUT 15000`; deadlocks (1205) and lock timeouts (1222) are retried. `PendingSQLServer` reports what an Apply would do without executing anything: the reconcile statements, and each script it would run with why (`new`, `changed`, `dependency` or `always`).
+
 ### Compatibility level 100
 
 Generated DDL and the catalog queries avoid syntax newer than compatibility level 100 (no `STRING_AGG`, `OPENJSON` or `DROP ... IF EXISTS`). `CREATE OR ALTER` depends on the engine version (2016 SP1+), not the database's compatibility level.
@@ -321,7 +325,7 @@ Generated DDL and the catalog queries avoid syntax newer than compatibility leve
 
 These fail with an error instead of being ignored:
 
-- hash-gated pre/post `.sql` scripts outside the routine directory;
+- sqlcmd commands in scripts (see above);
 - `WithSchema` other than `dbo` and `WithDrops`;
 - `role` and `permission` blocks;
 - `view`, `trigger`, `sequence`, `function` and `procedure` HCL blocks, computed columns, user-defined and alias types (including `sysname`), and any unknown column, index or table attribute;

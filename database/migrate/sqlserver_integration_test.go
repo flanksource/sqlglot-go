@@ -133,6 +133,41 @@ var _ = Describe("SQL Server migrations", Ordered, Label("integration"), func() 
 		Entry("through WithDB on the caller's handle, which stays open", 0, viaHandle),
 	)
 
+	It("runs a post script once, re-running it only when it changes", func(ctx SpecContext) {
+		_, db := sqlServerDatabase(ctx, adminURL, 100)
+		bundle := integrationBundle()
+		bundle["db/post/seed_orders.sql"] = file("IF NOT EXISTS (SELECT 1 FROM dbo.acme_orders)\n    INSERT INTO dbo.acme_orders (status, total) VALUES ('open', 1);\nGO\nUPDATE dbo.acme_orders SET total = total + 1;\n")
+		opts := append([]Option{WithDB(db)}, integrationOptions...)
+		orders := func() (count int, total float64) {
+			Expect(db.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(total), 0) FROM dbo.acme_orders").Scan(&count, &total)).To(Succeed())
+			return count, total
+		}
+
+		pending, err := PendingSQLServer(ctx, db, bundle, opts...)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pending.Statements).ToNot(BeEmpty())
+		Expect(pending.Scripts).To(Equal([]PendingScript{{Path: "post/seed_orders.sql", Phase: "post", Reason: "new"}}))
+
+		Expect(Apply(ctx, "", bundle, opts...)).To(Succeed())
+		count, total := orders()
+		Expect(count).To(Equal(1))
+		Expect(total).To(Equal(2.0), "seeded, then the UPDATE batch ran once")
+		Expect(Apply(ctx, "", bundle, opts...)).To(Succeed())
+		_, total = orders()
+		Expect(total).To(Equal(2.0), "an unchanged script does not run again")
+		pending, err = PendingSQLServer(ctx, db, bundle, opts...)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pending.Changed()).To(BeFalse())
+
+		bundle["db/post/seed_orders.sql"] = file("UPDATE dbo.acme_orders SET total = total + 10;\n")
+		pending, err = PendingSQLServer(ctx, db, bundle, opts...)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pending.Scripts).To(Equal([]PendingScript{{Path: "post/seed_orders.sql", Phase: "post", Reason: "changed"}}))
+		Expect(Apply(ctx, "", bundle, opts...)).To(Succeed())
+		_, total = orders()
+		Expect(total).To(Equal(12.0))
+	})
+
 	It("reads the migrated database through the catalog inspector", func(ctx SpecContext) {
 		dsn, db := sqlServerDatabase(ctx, adminURL, 0)
 		Expect(Apply(ctx, dsn, integrationBundle(), integrationOptions...)).To(Succeed())
@@ -439,10 +474,10 @@ var _ = Describe("SQL Server migration bundle", func() {
 			err := Apply(GinkgoT().Context(), sqlServerDSN, filesystem, opts...)
 			Expect(err).To(MatchError(ContainSubstring(message)))
 		},
-		Entry("an empty bundle", fstest.MapFS{}, nil, `declares no tables or routines`),
-		Entry("a SQL script outside the routine directory",
-			fstest.MapFS{"db/routines/acme_purge_orders.sql": file(purgeRoutine), "db/001_seed.sql": file("SELECT 1")},
-			[]Option{WithDir("db"), WithRoutines("db/routines")}, "do not support SQL migration scripts, found 001_seed.sql"),
+		Entry("an empty bundle", fstest.MapFS{}, nil, `declares no tables, routines or scripts`),
+		Entry("a script using a sqlcmd command",
+			fstest.MapFS{"db/routines/acme_purge_orders.sql": file(purgeRoutine), "db/001_seed.sql": file("SELECT 1\n:r other.sql\n")},
+			[]Option{WithDir("db"), WithRoutines("db/routines")}, `SQL script 001_seed.sql line 2: sqlcmd command ":r other.sql" is not supported`),
 		Entry("another schema", fstest.MapFS{"db/schema.hcl": file(ordersHCLFile)},
 			[]Option{WithDir("db"), WithSchema("tenant_x")}, `support only schema "dbo", got "tenant_x"`),
 		Entry("drops", fstest.MapFS{"db/schema.hcl": file(ordersHCLFile)},
