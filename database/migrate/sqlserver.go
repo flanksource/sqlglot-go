@@ -25,13 +25,14 @@ const (
 	sqlServerLockWait = time.Minute
 )
 
-// applySQLServer reconciles the bundle's HCL tables and WithRoutines routines
-// against the dbo schema. It inspects only the objects the bundle names, never
-// drops a routine or an index the bundle does not declare, and runs no DDL
-// when the database already matches.
+// applySQLServer runs the bundle's pre scripts, reconciles its HCL tables and
+// WithRoutines routines against the dbo schema, then runs its post scripts.
+// It inspects only the objects the bundle names, never drops a routine or an
+// index the bundle does not declare, and runs no DDL when the database
+// already matches. Scripts are hash-gated in dbo.sqlglot_migrations.
 // The caller owns db: closing the Atlas client would close it.
 func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) (returnErr error) {
-	desired, err := sqlServerDesired(schemaFS, cfg)
+	bundle, err := loadSQLServerBundle(schemaFS, cfg)
 	if err != nil {
 		return err
 	}
@@ -44,7 +45,25 @@ func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options
 		return fmt.Errorf("lock SQL Server migration %q: %w", cfg.name, err)
 	}
 	defer func() { returnErr = errors.Join(returnErr, unlock()) }()
-	return reconcileSQLServer(ctx, client, desired, cfg.exclude)
+	scope := migrationScope(sqlServerSchema, cfg.name)
+	var ordered []*script
+	if len(bundle.scripts) > 0 {
+		if err := ensureSQLServerMigrationsTable(ctx, db); err != nil {
+			return err
+		}
+		if ordered, err = orderedSQLServerScripts(ctx, db, scope, bundle.scripts); err != nil {
+			return err
+		}
+	}
+	if err := runSQLServerScripts(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePre}); err != nil {
+		return err
+	}
+	if bundle.declaresObjects() {
+		if err := reconcileSQLServer(ctx, client, bundle.realm, cfg.exclude); err != nil {
+			return err
+		}
+	}
+	return runSQLServerScripts(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePost})
 }
 
 // sqlServerChanges inspects the declared objects and returns the changes that
@@ -137,7 +156,8 @@ func withoutSQLServerDrops(changes []schema.Change) []schema.Change {
 }
 
 // sqlServerDesired builds the desired dbo schema from the HCL tables and the
-// routine files, refusing what SQL Server migrations do not support.
+// routine files, refusing what SQL Server migrations do not support. The
+// bundle's scripts are loaded by loadSQLServerBundle.
 func sqlServerDesired(schemaFS fs.FS, cfg options) (*schema.Realm, error) {
 	if schemaFS == nil {
 		return nil, errors.New("schema filesystem is nil")
@@ -145,25 +165,14 @@ func sqlServerDesired(schemaFS fs.FS, cfg options) (*schema.Realm, error) {
 	if err := refuseSQLServerOptions(cfg); err != nil {
 		return nil, err
 	}
-	scripts, err := loadScripts(schemaFS, cfg.dir, cfg.routines)
-	if err != nil {
-		return nil, err
-	}
-	if len(scripts) > 0 {
-		return nil, fmt.Errorf("SQL Server migrations do not support SQL migration scripts, found %s; declare routines with WithRoutines", strings.Join(scriptPaths(scripts), ", "))
-	}
 	realm, err := sqlServerTables(schemaFS, cfg)
 	if err != nil {
 		return nil, err
 	}
-	target := realm.Schemas[0]
 	if cfg.routines != "" {
-		if err := addRoutines(schemaFS, cfg.routines, target); err != nil {
+		if err := addRoutines(schemaFS, cfg.routines, realm.Schemas[0]); err != nil {
 			return nil, err
 		}
-	}
-	if len(target.Tables)+len(target.Procs)+len(target.Funcs) == 0 {
-		return nil, fmt.Errorf("SQL Server migration bundle %q declares no tables or routines", cfg.name)
 	}
 	return realm, nil
 }
