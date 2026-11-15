@@ -94,7 +94,7 @@ func apply(ctx context.Context, db *sql.DB, request Request, inspect inspectFunc
 var errPostcondition = errors.New("database does not match the complete desired snapshot")
 
 // Nested batches keep module DDL first in its batch and contain SET options.
-const executeBatch = `EXEC sys.sp_executesql N'SET XACT_ABORT ON; SET ANSI_NULLS ON; SET ANSI_PADDING ON; SET ANSI_WARNINGS ON; SET ARITHABORT ON; SET CONCAT_NULL_YIELDS_NULL ON; SET QUOTED_IDENTIFIER ON; SET NUMERIC_ROUNDABORT OFF; EXEC sys.sp_executesql @ddl;', N'@ddl nvarchar(max)', @ddl=@p1`
+const executeBatch = `EXEC sys.sp_executesql N'` + planner.SessionOptions + ` EXEC sys.sp_executesql @ddl;', N'@ddl nvarchar(max)', @ddl=@p1`
 
 func inspectState(ctx context.Context, tx *sql.Tx, artifact migrate.Artifact, inspect inspectFunc) (migrate.ArtifactState, error) {
 	actual, err := inspect(ctx, tx, snapshot.Options{Schemas: artifact.Schemas})
