@@ -20,20 +20,7 @@ func validate(request Request) error {
 	if request.LockTimeout < 0 || request.LockTimeout > math.MaxInt32*time.Millisecond {
 		return fmt.Errorf("migration lock timeout must be between zero and %s", math.MaxInt32*time.Millisecond)
 	}
-	required := map[string]bool{}
-	for _, id := range planner.Acknowledgements(request.Artifact) {
-		required[id] = true
-	}
-	for _, id := range request.Acknowledgements {
-		if !required[id] {
-			return fmt.Errorf("unknown or duplicate destructive acknowledgement %q", id)
-		}
-		delete(required, id)
-	}
-	if len(required) > 0 {
-		return fmt.Errorf("migration requires acknowledgements for %d destructive changes", len(required))
-	}
-	return nil
+	return planner.ValidateAcknowledgements(request.Artifact, request.Acknowledgements)
 }
 
 // Validate checks reviewed inputs without opening a database or starting a transaction.
@@ -42,7 +29,7 @@ func Validate(request Request) error { return validate(request) }
 func lock(ctx context.Context, tx *sql.Tx, timeout time.Duration) error {
 	var status int
 	if err := tx.QueryRowContext(ctx, `DECLARE @status int;
-		EXEC @status = sys.sp_getapplock @Resource=N'commons-db/migrate/schema',
+		EXEC @status = sys.sp_getapplock @Resource=N'`+planner.LockResource+`',
 		@LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=@p1;
 		SELECT @status`, timeout.Milliseconds()).Scan(&status); err != nil {
 		return fmt.Errorf("lock migration transaction: %w", err)

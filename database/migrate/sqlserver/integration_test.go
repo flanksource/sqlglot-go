@@ -121,6 +121,90 @@ var _ = Describe("Isolated SQL Server artifacts", func() {
 		Expect(result).To(Equal(Result{Hash: request.Hash, Outcome: AlreadyApplied}))
 	})
 
+	render := func(request Request) string {
+		script, err := planner.RenderScript(request.Artifact, planner.ScriptOptions{Acknowledgements: request.Acknowledgements})
+		Expect(err).NotTo(HaveOccurred())
+		return script
+	}
+
+	expectApplied := func(ctx SpecContext, request Request) {
+		actual, err := snapshot.Inspect(ctx, db, snapshot.Options{Schemas: []string{"dbo"}})
+		Expect(err).NotTo(HaveOccurred())
+		state, err := planner.CheckArtifact(request.Artifact, actual.Schema)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(state).To(Equal(migrate.ArtifactApplied))
+	}
+
+	It("runs a rendered post-deployment script twice, leaves the artifact applied and restores the session options", func(ctx SpecContext) {
+		desired := copyBaseline()
+		desired.Tables[0].Columns[1].Type = "nvarchar(100)"
+		desired.Tables[0].Columns = append(desired.Tables[0].Columns, migrate.Column{Name: "note", Type: "nvarchar(40)", Nullable: true})
+		// Desired expressions are catalog text, as an inspected reference database holds them.
+		desired.Tables[0].Indexes = append(desired.Tables[0].Indexes, migrate.Index{Name: "IX_orders_label", Columns: []migrate.IndexColumn{{Name: "label"}}, Filter: "([label] IS NOT NULL)"})
+		for i := range desired.Definitions {
+			if desired.Definitions[i].Kind == "TRIGGER" {
+				desired.Definitions[i].Disabled = false
+			}
+		}
+		request := compile(desired)
+		script := render(request)
+		conn, err := db.Conn(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(conn.Close)
+		_, err = conn.ExecContext(ctx, "SET XACT_ABORT OFF")
+		Expect(err).NotTo(HaveOccurred())
+		for range 2 {
+			_, err = conn.ExecContext(ctx, script)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		var xactAbort int
+		Expect(conn.QueryRowContext(ctx, "SELECT @@OPTIONS & 16384").Scan(&xactAbort)).To(Succeed())
+		Expect(xactAbort).To(Equal(0))
+		expectApplied(ctx, request)
+	})
+
+	It("drops a column default whose name differs on the target and adds the desired one", func(ctx SpecContext) {
+		desired := copyBaseline()
+		desired.Tables[0].Columns[1].Type = "nvarchar(100)"
+		request := compile(desired)
+		_, err := db.ExecContext(ctx, "EXEC sp_rename N'dbo.DF_orders_label', N'DF_orders_label_elsewhere', N'OBJECT'")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.ExecContext(ctx, render(request))
+		Expect(err).NotTo(HaveOccurred())
+		expectApplied(ctx, request)
+	})
+
+	It("throws drift naming an added column that exists in another shape", func(ctx SpecContext) {
+		desired := copyBaseline()
+		desired.Tables[0].Columns = append(desired.Tables[0].Columns, migrate.Column{Name: "note", Type: "nvarchar(40)", Nullable: true})
+		request := compile(desired)
+		_, err := db.ExecContext(ctx, "ALTER TABLE dbo.orders ADD note nvarchar(10) NULL")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.ExecContext(ctx, render(request))
+		Expect(err).To(MatchError(ContainSubstring(`change ["add","column","dbo","orders","note"] matches neither its baseline nor its desired state`)))
+	})
+
+	It("throws before any step when an index rebuilt around a column change is already desired but the column is not", func(ctx SpecContext) {
+		_, err := db.ExecContext(ctx, "CREATE INDEX IX_orders_label ON dbo.orders(label)")
+		Expect(err).NotTo(HaveOccurred())
+		inspected, err := snapshot.Inspect(ctx, db, snapshot.Options{Schemas: []string{"dbo"}})
+		Expect(err).NotTo(HaveOccurred())
+		baseline = inspected.Schema
+		desired := copyBaseline()
+		desired.Tables[0].Columns[1].Type = "nvarchar(100)"
+		i := slices.IndexFunc(desired.Tables[0].Indexes, func(index migrate.Index) bool { return index.Name == "IX_orders_label" })
+		Expect(i).To(BeNumerically(">=", 0))
+		desired.Tables[0].Indexes[i].Unique = true
+		request := compile(desired)
+		_, err = db.ExecContext(ctx, "DROP INDEX IX_orders_label ON dbo.orders; CREATE UNIQUE INDEX IX_orders_label ON dbo.orders(label)")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.ExecContext(ctx, render(request))
+		Expect(err).To(MatchError(ContainSubstring("depend on each other and only some of them are in their desired state")))
+		var maxLength int
+		Expect(db.QueryRowContext(ctx, "SELECT max_length FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.orders') AND name = N'label'").Scan(&maxLength)).To(Succeed())
+		Expect(maxLength).To(Equal(40))
+	})
+
 	It("restores dropped defaults and indexes when a later conversion fails", func(ctx SpecContext) {
 		desired := copyBaseline()
 		desired.Tables[0].Columns[1].Type = "int"
