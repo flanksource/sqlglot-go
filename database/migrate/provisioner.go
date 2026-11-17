@@ -48,6 +48,9 @@ func (p *SchemaProvisioner) Fingerprint(ctx context.Context) (string, error) {
 	if err := refuseRoutines(p.config, "PostgreSQL provisioner"); err != nil {
 		return "", err
 	}
+	if err := refuseScriptPolicy(p.config, "PostgreSQL provisioner"); err != nil {
+		return "", err
+	}
 	if _, err := loadScripts(p.schemaFS, p.config.dir); err != nil {
 		return "", err
 	}
@@ -91,6 +94,9 @@ func (p *SchemaProvisioner) PrepareInstance(ctx context.Context, connection stri
 		return errors.New("schema filesystem is nil")
 	}
 	if err := refuseRoutines(p.config, "PostgreSQL provisioner"); err != nil {
+		return err
+	}
+	if err := refuseScriptPolicy(p.config, "PostgreSQL provisioner"); err != nil {
 		return err
 	}
 	scripts, err := loadScripts(p.schemaFS, p.config.dir)

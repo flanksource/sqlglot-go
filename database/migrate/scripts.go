@@ -1,20 +1,16 @@
 package migrate
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
-	"path"
-	"slices"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/flanksource/commons/logger"
+	sharedscripts "github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	"github.com/lib/pq"
 	mssql "github.com/microsoft/go-mssqldb"
 )
@@ -48,171 +44,49 @@ type script struct {
 	always        bool
 	transactional bool
 	hash          []byte
-	// batches is the script split at GO, set for SQL Server scripts only.
-	batches []string
 }
 
 // loadScripts reads the hash-gated SQL scripts under dir, skipping the
 // directories in skip (the WithRoutines directory).
 func loadScripts(schemaFS fs.FS, dir string, skip ...string) (map[string]*script, error) {
-	scripts := map[string]*script{}
-	err := fs.WalkDir(schemaFS, dir, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() && slices.Contains(skip, name) {
-			return fs.SkipDir
-		}
-		if entry.IsDir() || strings.ToLower(path.Ext(name)) != ".sql" {
-			return nil
-		}
-		data, err := fs.ReadFile(schemaFS, name)
-		if err != nil {
-			return fmt.Errorf("read SQL %s: %w", name, err)
-		}
-		rel := strings.TrimPrefix(strings.TrimPrefix(name, dir), "/")
-		if rel == "" {
-			return fmt.Errorf("invalid SQL script path %q", name)
-		}
-		s, err := parseScript(rel, string(data))
-		if err != nil {
-			return err
-		}
-		if _, exists := scripts[s.path]; exists {
-			return fmt.Errorf("duplicate SQL script path %q", s.path)
-		}
-		scripts[s.path] = s
-		return nil
-	})
+	loaded, err := sharedscripts.Load(sharedscripts.LoadOptions{FS: schemaFS, Dir: dir, Skip: skip})
 	if err != nil {
-		return nil, fmt.Errorf("load SQL migrations: %w", err)
-	}
-	if err := validateScriptGraph(scripts); err != nil {
 		return nil, err
 	}
-	return scripts, nil
+	result := map[string]*script{}
+	for _, item := range loaded {
+		result[item.ID] = projectScript(item)
+	}
+	return result, nil
 }
 
 func parseScript(name, content string) (*script, error) {
-	s := &script{path: path.Clean(name), content: content, phase: phasePost, transactional: true}
-	sum := sha256.Sum256([]byte(content))
+	parsed, err := sharedscripts.Parse(name, content)
+	if err != nil {
+		return nil, err
+	}
+	return projectScript(parsed), nil
+}
+
+func projectScript(parsed sharedscripts.Script) *script {
+	s := &script{path: parsed.Path, content: parsed.SQL, phase: scriptPhase(parsed.Phase), transactional: !parsed.NonTransactional, dependsOn: parsed.DependsOn, always: parsed.Always}
+	sum := sha256.Sum256([]byte(parsed.SQL))
 	s.hash = sum[:]
-
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "--") {
-			break
-		}
-		switch {
-		case strings.HasPrefix(line, "-- phase:"):
-			value := strings.TrimSpace(strings.TrimPrefix(line, "-- phase:"))
-			switch scriptPhase(value) {
-			case phasePre, phasePost:
-				s.phase = scriptPhase(value)
-			default:
-				return nil, fmt.Errorf("SQL script %q has invalid phase %q", name, value)
-			}
-		case strings.HasPrefix(line, "-- dependsOn:"):
-			for _, dep := range strings.Split(strings.TrimSpace(strings.TrimPrefix(line, "-- dependsOn:")), ",") {
-				dep = path.Clean(strings.TrimSpace(dep))
-				if dep != "." && dep != "" {
-					s.dependsOn = append(s.dependsOn, dep)
-				}
-			}
-		case line == "-- runs: always":
-			s.always = true
-		case strings.HasPrefix(line, "-- transaction:"):
-			value := strings.TrimSpace(strings.TrimPrefix(line, "-- transaction:"))
-			switch value {
-			case "true":
-				s.transactional = true
-			case "false":
-				s.transactional = false
-			default:
-				return nil, fmt.Errorf("SQL script %q has invalid transaction value %q", name, value)
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan SQL script %q: %w", name, err)
-	}
-	return s, nil
+	return s
 }
 
-func validateScriptGraph(scripts map[string]*script) error {
-	for _, s := range scripts {
-		seen := map[string]bool{}
-		for _, dep := range s.dependsOn {
-			if seen[dep] {
-				return fmt.Errorf("SQL script %q declares dependency %q more than once", s.path, dep)
-			}
-			seen[dep] = true
-			d, ok := scripts[dep]
-			if !ok {
-				return fmt.Errorf("SQL script %q depends on missing script %q", s.path, dep)
-			}
-			if s.phase == phasePre && d.phase == phasePost {
-				return fmt.Errorf("pre SQL script %q cannot depend on post script %q", s.path, dep)
-			}
+func topologicalScripts(items map[string]*script, selected map[string]bool) ([]*script, error) {
+	ordered, err := sharedscripts.Ordered(scriptBundle(items))
+	if err != nil {
+		return nil, err
+	}
+	result := []*script{}
+	for _, item := range ordered {
+		if selected == nil || selected[item.ID] {
+			result = append(result, items[item.ID])
 		}
 	}
-	_, err := topologicalScripts(scripts, nil)
-	return err
-}
-
-func topologicalScripts(scripts map[string]*script, selected map[string]bool) ([]*script, error) {
-	indegree := map[string]int{}
-	dependents := map[string][]string{}
-	for name, s := range scripts {
-		if selected != nil && !selected[name] {
-			continue
-		}
-		for _, dep := range s.dependsOn {
-			if selected != nil && !selected[dep] {
-				continue
-			}
-			indegree[name]++
-			dependents[dep] = append(dependents[dep], name)
-		}
-		if _, ok := indegree[name]; !ok {
-			indegree[name] = 0
-		}
-	}
-	ready := make([]string, 0)
-	for name, degree := range indegree {
-		if degree == 0 {
-			ready = append(ready, name)
-		}
-	}
-	sort.Strings(ready)
-	ordered := make([]*script, 0, len(indegree))
-	for len(ready) > 0 {
-		name := ready[0]
-		ready = ready[1:]
-		ordered = append(ordered, scripts[name])
-		for _, dependent := range dependents[name] {
-			indegree[dependent]--
-			if indegree[dependent] == 0 {
-				ready = append(ready, dependent)
-				sort.Strings(ready)
-			}
-		}
-	}
-	if len(ordered) != len(indegree) {
-		var cyclic []string
-		for name, degree := range indegree {
-			if degree > 0 {
-				cyclic = append(cyclic, name)
-			}
-		}
-		sort.Strings(cyclic)
-		return nil, fmt.Errorf("SQL migration dependency cycle: %s", strings.Join(cyclic, ", "))
-	}
-	return ordered, nil
+	return result, nil
 }
 
 func ensureMetadataTables(ctx context.Context, db *sql.DB) error {

@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -8,7 +9,7 @@ import (
 var _ = Describe("SQL Server script batches", func() {
 	DescribeTable("split at GO the way sqlcmd does",
 		func(content string, want []string) {
-			Expect(sqlcmdBatches("seed.sql", content)).To(Equal(want))
+			Expect(backend.Batches("seed.sql", content)).To(Equal(want))
 		},
 		Entry("one batch", "INSERT INTO dbo.acme VALUES (1);\n", []string{"INSERT INTO dbo.acme VALUES (1);"}),
 		Entry("GO separators, a trailing GO dropped",
@@ -21,7 +22,7 @@ var _ = Describe("SQL Server script batches", func() {
 
 	DescribeTable("refuse what sqlcmd and SSMS would read differently",
 		func(content, message string) {
-			_, err := sqlcmdBatches("seed.sql", content)
+			_, err := backend.Batches("seed.sql", content)
 			Expect(err).To(MatchError(ContainSubstring(message)))
 		},
 		Entry(":setvar", ":setvar Country ZW\nSELECT 1", `line 1: sqlcmd command ":setvar Country ZW" is not supported`),

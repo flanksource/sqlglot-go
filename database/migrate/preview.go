@@ -11,16 +11,18 @@ import (
 	"ariga.io/atlas/sql/schema"
 	"ariga.io/atlas/sql/sqlite"
 	"github.com/flanksource/sqlglot-go/database/migrate/review"
+	scriptserver "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 	native "github.com/flanksource/sqlglot-go/migrate"
 )
 
 type Preview struct {
-	Artifact          *review.Artifact `json:"artifact,omitempty"`
-	SQLServerArtifact *native.Artifact `json:"sqlServerArtifact,omitempty"`
-	SQLServerPlan     *native.Plan     `json:"sqlServerPlan,omitempty"`
-	Scripts           []ScriptAnalysis `json:"scripts,omitempty"`
-	Warnings          []string         `json:"warnings,omitempty"`
-	Error             string           `json:"error,omitempty"`
+	Artifact          *review.Artifact      `json:"artifact,omitempty"`
+	SQLServerArtifact *native.Artifact      `json:"sqlServerArtifact,omitempty"`
+	SQLServerPlan     *native.Plan          `json:"sqlServerPlan,omitempty"`
+	Scripts           []ScriptAnalysis      `json:"scripts,omitempty"`
+	ScriptPlan        *scriptserver.Preview `json:"scriptPlan,omitempty"`
+	Warnings          []string              `json:"warnings,omitempty"`
+	Error             string                `json:"error,omitempty"`
 }
 
 // PreviewBundle inspects and plans without executing scripts or creating metadata.
@@ -35,9 +37,17 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 		return result, fmt.Errorf("schema filesystem is nil")
 	}
 	cfg := resolveOptions(opts)
+	if dialect != "sqlserver" {
+		if err := refuseScriptPolicy(cfg, dialect); err != nil {
+			return result, err
+		}
+	}
 	scripts, err := loadScripts(files, cfg.dir, cfg.routines)
 	if err != nil {
 		return result, err
+	}
+	if dialect == "sqlite" && len(scripts) != 0 {
+		return result, fmt.Errorf("SQLite migrations do not support SQL migration files")
 	}
 	for _, name := range scriptPaths(scripts) {
 		s := scripts[name]
@@ -60,6 +70,17 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 		advisory = append(advisory, "security changes require phased reviewed artifacts")
 	}
 	if dialect == "sqlserver" {
+		if len(scripts) > 0 || cfg.scriptPolicy != nil {
+			options, err := scriptOptions(db, sqlServerBundle{scripts: scripts}, cfg)
+			if err != nil {
+				return result, err
+			}
+			plan, err := scriptserver.Inspect(ctx, options, "")
+			if err != nil {
+				return result, err
+			}
+			result.ScriptPlan = &plan
+		}
 		return previewSQLServer(ctx, db, files, cfg, result, advisory)
 	}
 	if cfg.routines != "" || len(cfg.exclude) > 0 {
