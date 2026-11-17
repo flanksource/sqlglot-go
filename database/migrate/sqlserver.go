@@ -9,20 +9,18 @@ import (
 	"path"
 	"slices"
 	"strings"
-	"time"
 
 	"ariga.io/atlas/sql/schema"
 	"ariga.io/atlas/sql/sqlclient"
 	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sqlglot-go/database/atlas/sqlserver"
+	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 )
 
 const (
 	// sqlServerSchema is the only schema SQL Server migrations manage.
 	sqlServerSchema = "dbo"
-	// sqlServerLockWait bounds how long a migration waits for another
-	// migration of the same bundle to release its sp_getapplock.
-	sqlServerLockWait = time.Minute
 )
 
 // applySQLServer runs the bundle's pre scripts, reconciles its HCL tables and
@@ -36,34 +34,40 @@ func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options
 	if err != nil {
 		return err
 	}
-	client, err := sqlserver.OpenClient(ctx, db)
+	options, err := scriptOptions(db, bundle, cfg)
 	if err != nil {
-		return fmt.Errorf("open SQL Server migration database: %w", err)
-	}
-	unlock, err := client.Lock(ctx, "commons-db/migrate:"+cfg.name, sqlServerLockWait)
-	if err != nil {
-		return fmt.Errorf("lock SQL Server migration %q: %w", cfg.name, err)
-	}
-	defer func() { returnErr = errors.Join(returnErr, unlock()) }()
-	scope := migrationScope(sqlServerSchema, cfg.name)
-	var ordered []*script
-	if len(bundle.scripts) > 0 {
-		if err := ensureSQLServerMigrationsTable(ctx, db); err != nil {
-			return err
-		}
-		if ordered, err = orderedSQLServerScripts(ctx, db, scope, bundle.scripts); err != nil {
-			return err
-		}
-	}
-	if err := runSQLServerScripts(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePre}); err != nil {
 		return err
 	}
-	if bundle.declaresObjects() {
-		if err := reconcileSQLServer(ctx, client, bundle.realm, cfg.exclude); err != nil {
+	session, err := backend.Open(ctx, options)
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, session.Close()) }()
+	for _, phase := range []scripts.Phase{scripts.Pre, scripts.Post} {
+		if phase == scripts.Post && bundle.declaresObjects() {
+			if err := session.Barrier(ctx, func(ctx context.Context, q backend.Connection) error {
+				driver, err := sqlserver.Open(q)
+				if err != nil {
+					return err
+				}
+				return reconcileSQLServer(ctx, &sqlclient.Client{Name: sqlserver.DriverName, Driver: driver}, bundle.realm, cfg.exclude)
+			}); err != nil {
+				return err
+			}
+		}
+		preview, err := session.Inspect(ctx, phase)
+		if err != nil {
 			return err
 		}
+		result, err := session.Apply(ctx, backend.ApplyOptions{Preview: preview, AcknowledgeNonTransactional: cfg.scriptPolicy != nil && cfg.scriptPolicy.AcknowledgeNonTransactional})
+		if err != nil {
+			return err
+		}
+		if result.Continuation != nil {
+			return &backend.ContinuationError{Preview: *result.Continuation}
+		}
 	}
-	return runSQLServerScripts(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePost})
+	return nil
 }
 
 // sqlServerChanges inspects the declared objects and returns the changes that

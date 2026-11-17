@@ -1,0 +1,53 @@
+package migrate
+
+import (
+	"database/sql"
+	"fmt"
+	"slices"
+
+	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
+)
+
+type ScriptPolicy struct {
+	Functions                   []backend.Function
+	Dependencies                map[string][]scripts.Dependency
+	ExplicitDependencies        []string
+	AcknowledgeNonTransactional bool
+}
+
+// WithScriptPolicy enables SQL Server dependency tracking for named script paths.
+func WithScriptPolicy(policy ScriptPolicy) Option {
+	return func(o *options) { o.scriptPolicy = &policy }
+}
+
+func refuseScriptPolicy(cfg options, dialect string) error {
+	if cfg.scriptPolicy != nil {
+		return fmt.Errorf("%s migrations do not support script dependency policies; only SQL Server does", dialect)
+	}
+	return nil
+}
+
+func scriptOptions(db *sql.DB, bundle sqlServerBundle, cfg options) (backend.Options, error) {
+	items := scriptBundle(bundle.scripts)
+	opts := backend.Options{DB: db, Scope: migrationScope(sqlServerSchema, cfg.name), Scripts: items}
+	if cfg.scriptPolicy == nil {
+		return opts, nil
+	}
+	opts.Functions = cfg.scriptPolicy.Functions
+	for id := range cfg.scriptPolicy.Dependencies {
+		if _, ok := bundle.scripts[id]; !ok {
+			return opts, fmt.Errorf("script policy references missing script %s", id)
+		}
+	}
+	for _, id := range cfg.scriptPolicy.ExplicitDependencies {
+		if _, ok := bundle.scripts[id]; !ok {
+			return opts, fmt.Errorf("explicit policy references missing script %s", id)
+		}
+	}
+	for i := range items {
+		items[i].Dependencies = cfg.scriptPolicy.Dependencies[items[i].ID]
+		items[i].ExplicitDependencies = slices.Contains(cfg.scriptPolicy.ExplicitDependencies, items[i].ID)
+	}
+	return opts, nil
+}

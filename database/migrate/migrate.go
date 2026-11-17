@@ -37,6 +37,7 @@ type options struct {
 	allowRebuilds bool
 	input         map[string]cty.Value
 	db            *sql.DB
+	scriptPolicy  *ScriptPolicy
 }
 
 // Option configures an HCL migration.
@@ -187,6 +188,9 @@ func cloneVariables(input map[string]cty.Value) map[string]cty.Value {
 }
 
 func validatePostgresApply(connection string, schemaFS fs.FS, cfg options) error {
+	if err := refuseScriptPolicy(cfg, "PostgreSQL"); err != nil {
+		return err
+	}
 	if strings.TrimSpace(connection) == "" {
 		return errors.New("connection string is empty")
 	}
