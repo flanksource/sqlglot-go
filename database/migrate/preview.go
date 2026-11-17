@@ -46,9 +46,6 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 	if err != nil {
 		return result, err
 	}
-	if dialect == "sqlite" && len(scripts) != 0 {
-		return result, fmt.Errorf("SQLite migrations do not support SQL migration files")
-	}
 	for _, name := range scriptPaths(scripts) {
 		s := scripts[name]
 		a := AnalyzeScript(s.content, dialect)
