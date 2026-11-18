@@ -272,6 +272,59 @@ The record store uses this lower-level API to add newly declared columns to tabl
 
 ## SQL Server
 
+### Reviewed CSV data
+
+Plan against a saved SQL Server connection. Review the counts and selected files in `review.json`, then pass the artifact hash, source root, and filters to apply. This example uses `jq` to read the hash and assumes the review lists zero deletes.
+
+```sh
+sqlglot migrate plan --csv-root ./data --dsn connection://example \
+  --country=none,BW --env='!dev' --out ./review.json
+reviewed_hash="$(jq -er .hash ./review.json)"
+sqlglot migrate apply --csv-root ./data --dsn connection://example \
+  --country=none,BW --env='!dev' --artifact ./review.json --hash "$reviewed_hash"
+```
+
+For a plan with deletes, review the count for each table and pass each exact acknowledgement reported by the preview using repeatable `--ack` flags. The artifact contains source digests, selected files, filters, and operation counts. Source CSVs stay in the import root. The HTTP workflow accepts uploaded files with `source.kind: csv` and a `layerFilters` map. Apply takes both the artifact and the uploaded files.
+
+#### Select files and layers
+
+Place this `AS.csv.yaml` at the import root to map an example `AsCode.csv` and its country and environment overlays.
+
+```yaml
+version: 1
+defaults:
+  schema: dbo
+  tablePattern: '^(.*/)?(?P<table>AsCode)(_[A-Z]{2})?\.csv$'
+  delimiter: "~"
+layers:
+  country:
+    values: [BW, KE]
+    match: ["**/*_${value}.csv"]
+    valuePattern: "[A-Z]{2}"
+  env:
+    values: [dev, qa, prod]
+    match: ["overrides/${value}/**/*.csv"]
+tables:
+  dbo.AsCode:
+    key: [CODENAME, CODEVALUE]
+```
+
+Use `tables.<schema.table>.sources` for exact paths or globs with different names. Use a sidecar such as `lookup.csv.yaml` with `version: 1` and `table: dbo.Lookup` to route a single file. Settings inherit in order from defaults, the table, and the sidecar. Configure `phase: post-rules` for datasets loaded after rule deployment.
+
+Layer filters are independent. `none` selects untagged files, `*` selects every value, and `!value` excludes a value. Within a layer, a comma-separated filter includes the union of positive terms and subtracts exclusions. Files pass every layer. Use `--layer name=filter` for additional layers. An overlay row supersedes a less specific row when its tags include every tag of that row. Incomparable records for the same key require a more specific record or a narrower filter.
+
+Unquoted `\N` defaults to SQL NULL. Quoting preserves it as text. An unquoted blank follows `values.blank` (`empty-string`, `sql-null`, or `error`). A quoted empty field always means an empty string. Configure alternatives through `values.nullTokens`, `values.nullTokenCase`, and per-column settings under `values.columns`.
+
+The optional `$delete` column deletes the exact key on `true`. Missing, blank, and `false` mean upsert. Under the default `delete: explicit`, unmatched database rows remain. A table using `delete: snapshot` must list every untagged source in `snapshotFiles` and retain a nonempty effective dataset after filtering.
+
+#### Bulk staging and replay
+
+Plan and apply use SQL Server bulk copy to stream input into transaction-local staging tables. SQL Server converts the staged values to the destination column types before comparing rows. Apply revalidates the reviewed inputs and target state under its migration lock. If the source or target state changed, generate and review a fresh plan. After a successful apply, a fresh plan shows zero writes when the data matches.
+
+In a three-table SQL Server clone with 17,900 selected CSV rows, median native apply time across three runs fell from 6.07 to 1.97 seconds when rows already matched, and from 12.73 to 2.62 seconds for 487 inserts and 475 updates. The final row hashes matched across both staging implementations. These timings cover apply with an existing reviewed artifact.
+
+### Schema bundles
+
 `sqlserver://` targets reconcile through the Atlas SQL Server driver in `atlas/sqlserver`, which commons-db ships because Atlas OSS has none. A bundle declares tables in SQL Server-shaped HCL and stored procedures and functions as plain `.sql` files:
 
 The driver delegates its differ, SQL Server types and migration planner to `github.com/flanksource/sqlglot-go/migrate/atlas/sqlserver`. Commons-db owns catalog inspection, HCL loading, connections, locks, transactions and applying the resulting SQL. Consumers that need a database-independent typed plan can use sqlglot's `migrate/sqlserver` package directly; this does not expand the HCL or inspection support described below.

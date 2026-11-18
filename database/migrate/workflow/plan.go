@@ -15,6 +15,9 @@ import (
 )
 
 func Plan(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
+	if opts.Source.Kind == "csv" || opts.CSV.Files != nil {
+		return planCSV(ctx, db, opts)
+	}
 	if opts.Source.Kind == "bundle" && opts.Source.Content != "" {
 		return PlanResult{}, fmt.Errorf("bundle sources require files, not content")
 	}

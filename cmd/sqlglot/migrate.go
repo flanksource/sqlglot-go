@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/flanksource/clicky"
 	"github.com/flanksource/clicky/api"
@@ -15,6 +16,7 @@ import (
 	"github.com/flanksource/clicky/rpc"
 	"github.com/flanksource/clicky/task"
 	"github.com/flanksource/sqlglot-go/database/history"
+	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
 	"github.com/flanksource/sqlglot-go/database/migrate/workflow"
 	"github.com/flanksource/sqlglot-go/database/operation"
 	dbtarget "github.com/flanksource/sqlglot-go/database/target"
@@ -40,18 +42,24 @@ func (o TargetOptions) open(ctx context.Context, readOnly bool) (dbtarget.Connec
 
 type MigrationOptions struct {
 	TargetOptions
-	Bundle          string          `json:"bundle,omitempty" flag:"bundle" help:"Directory containing HCL and SQL files (CLI only)"`
-	Desired         string          `json:"desired,omitempty" flag:"desired" help:"Desired HCL or snapshot JSON file (CLI only)"`
-	Output          string          `json:"out,omitempty" flag:"out" help:"Save the reviewed artifact to a file (CLI only)"`
-	Artifact        string          `json:"artifact,omitempty" flag:"artifact" help:"Reviewed artifact file (CLI only)"`
-	Hash            string          `json:"hash,omitempty" flag:"hash" help:"Explicitly reviewed artifact hash"`
-	Acks            []string        `json:"ack,omitempty" flag:"ack" split:"false" help:"Acknowledged destructive step IDs"`
-	LockTimeout     string          `json:"lock-timeout,omitempty" flag:"lock-timeout" default:"5s" help:"Maximum migration lock wait"`
-	Variables       []string        `json:"var,omitempty" flag:"var" split:"false" help:"Bundle variable as name=HCL-literal"`
-	Routines        string          `json:"routines,omitempty" flag:"routines" help:"Routine directory within the bundle"`
-	AllowDrops      bool            `json:"allow-drops,omitempty" flag:"allow-drops" help:"Include omitted objects as removals in a bundle"`
-	Source          workflow.Source `json:"source" flag:"-"`
-	ArtifactContent json.RawMessage `json:"artifactContent,omitempty" flag:"-"`
+	Bundle          string            `json:"bundle,omitempty" flag:"bundle" help:"Directory containing HCL and SQL files (CLI only)"`
+	CSVRoot         string            `json:"csv-root,omitempty" flag:"csv-root" help:"Directory containing CSV migration sources (CLI only)"`
+	Country         []string          `json:"country,omitempty" flag:"country" split:"false" help:"CSV country layer filter"`
+	Environment     []string          `json:"env,omitempty" flag:"env" split:"false" help:"CSV environment layer filter"`
+	Layer           []string          `json:"layer,omitempty" flag:"layer" split:"false" help:"CSV layer filter as name=values"`
+	LayerFilters    map[string]string `json:"layerFilters,omitempty" flag:"-"`
+	CSVPhase        string            `json:"csvPhase,omitempty" flag:"csv-phase" help:"Select the pre-rules or post-rules CSV phase"`
+	Desired         string            `json:"desired,omitempty" flag:"desired" help:"Desired HCL or snapshot JSON file (CLI only)"`
+	Output          string            `json:"out,omitempty" flag:"out" help:"Save the reviewed artifact to a file (CLI only)"`
+	Artifact        string            `json:"artifact,omitempty" flag:"artifact" help:"Reviewed artifact file (CLI only)"`
+	Hash            string            `json:"hash,omitempty" flag:"hash" help:"Explicitly reviewed artifact hash"`
+	Acks            []string          `json:"ack,omitempty" flag:"ack" split:"false" help:"Acknowledged destructive step IDs"`
+	LockTimeout     string            `json:"lock-timeout,omitempty" flag:"lock-timeout" default:"5s" help:"Maximum migration lock wait"`
+	Variables       []string          `json:"var,omitempty" flag:"var" split:"false" help:"Bundle variable as name=HCL-literal"`
+	Routines        string            `json:"routines,omitempty" flag:"routines" help:"Routine directory within the bundle"`
+	AllowDrops      bool              `json:"allow-drops,omitempty" flag:"allow-drops" help:"Include omitted objects as removals in a bundle"`
+	Source          workflow.Source   `json:"source" flag:"-"`
+	ArtifactContent json.RawMessage   `json:"artifactContent,omitempty" flag:"-"`
 }
 
 type PlanOutput struct{ workflow.PlanResult }
@@ -145,10 +153,13 @@ func migrationInput(ctx context.Context, opts MigrationOptions) (MigrationOption
 		if err := decodeRequest(request, &opts); err != nil {
 			return opts, err
 		}
-		if opts.Bundle != "" || opts.Desired != "" || opts.Artifact != "" || opts.Output != "" || opts.ConnectionsDir != "" {
+		if opts.Bundle != "" || opts.CSVRoot != "" || opts.Desired != "" || opts.Artifact != "" || opts.Output != "" || opts.ConnectionsDir != "" {
 			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "HTTP requests require uploaded content, not server paths")
 		}
 		return opts, nil
+	}
+	if opts.CSVRoot != "" && (opts.Bundle != "" || opts.Desired != "") {
+		return opts, fmt.Errorf("select exactly one migration source")
 	}
 	if (opts.Bundle != "" && (opts.Desired != "" || opts.Artifact != "")) || (opts.Desired != "" && opts.Artifact != "") {
 		return opts, fmt.Errorf("select exactly one source")
@@ -181,6 +192,21 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 				dir = compareConnectionsDir
 			}
 			plan := workflow.Options{Source: opts.Source, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
+			filters, err := migrationLayerFilters(opts)
+			if err != nil {
+				return workflow.RunResult{}, err
+			}
+			plan.CSV = csvdata.Options{Filters: filters, Phase: opts.CSVPhase}
+			if opts.CSVRoot != "" {
+				root, err := os.OpenRoot(opts.CSVRoot)
+				if err != nil {
+					return workflow.RunResult{}, err
+				}
+				defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
+				plan.CSV.Files = root.FS()
+			} else if opts.Source.Kind != "csv" && (len(filters) != 0 || opts.CSVPhase != "") {
+				return workflow.RunResult{}, fmt.Errorf("layer filters and phase require a CSV migration source")
+			}
 			if opts.Bundle != "" {
 				root, err := os.OpenRoot(opts.Bundle)
 				if err != nil {
@@ -192,4 +218,29 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ConnectionsDir: dir}, Plan: plan, Hash: opts.Hash, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
 		})
 	})
+}
+
+func migrationLayerFilters(opts MigrationOptions) (map[string]string, error) {
+	result := make(map[string]string, len(opts.LayerFilters))
+	for name, expression := range opts.LayerFilters {
+		result[name] = expression
+	}
+	inputs := append([]string{}, opts.Layer...)
+	for _, expression := range opts.Country {
+		inputs = append(inputs, "country="+expression)
+	}
+	for _, expression := range opts.Environment {
+		inputs = append(inputs, "env="+expression)
+	}
+	for _, input := range inputs {
+		name, expression, ok := strings.Cut(input, "=")
+		if !ok || name == "" || expression == "" {
+			return nil, fmt.Errorf("CSV layer filters require name=values")
+		}
+		if _, exists := result[name]; exists {
+			return nil, fmt.Errorf("duplicate CSV layer filter %q", name)
+		}
+		result[name] = expression
+	}
+	return result, nil
 }

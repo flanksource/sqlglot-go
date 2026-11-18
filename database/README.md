@@ -11,6 +11,7 @@ These packages own the database implementation previously provided by commons-db
 | `database/migrate` | Existing HCL, scripts, security and provisioner API; read-only bundle preview |
 | `database/migrate/review` | Reviewed PostgreSQL and SQLite schema artifacts and transactional execution |
 | `database/migrate/sqlserver` | Existing SQL Server v1 artifact execution |
+| `database/migrate/csvdata` | [Reviewed SQL Server CSV migrations](migrate/README.md#reviewed-csv-data) |
 | `database/migrate/sqlite` | Programmatic SQLite table reconciliation |
 | `database/migrate/viewdeps` | PostgreSQL dependent view capture, invalidation and restoration |
 
@@ -65,7 +66,7 @@ spec:
 .tmp/sqlglot schema inspect --dsn connection://tenant-x --snapshot --schema dbo
 ```
 
-`migrate plan` requires exactly one of `--desired` or `--bundle`. Desired input is backend HCL or a saved snapshot JSON; SQL Server uses its typed snapshot JSON. `--out` stores the JSON with owner-only permissions. Bundle directories use the existing portable HCL conventions and default to retaining omitted columns, tables and types. `--allow-drops` includes their removal in the reviewed plan. SQL Server routine files can be selected with `--routines` relative to the bundle directory.
+`migrate plan` accepts a desired schema with `--desired`, a schema bundle with `--bundle`, or a [SQL Server CSV folder](migrate/README.md#reviewed-csv-data) with `--csv-root`. Desired input is backend HCL or a saved snapshot JSON. SQL Server uses its typed snapshot JSON. `--out` stores the reviewed JSON with owner-only permissions. Bundle directories use the portable HCL conventions and retain omitted columns, tables, and types by default. `--allow-drops` includes their removal in the reviewed plan. Use `--routines` to select SQL Server routine files relative to the bundle directory.
 
 Supply bundle variables with repeatable `--var 'name=HCL-literal'`, for example `--var 'prefix="app"'` or `--var 'limit=10'`. Variables, routines and the drop option require a bundle input. SQLite apply opens an existing file with `mode=rw`; the reviewed executor owns its temporary connection pragmas.
 
