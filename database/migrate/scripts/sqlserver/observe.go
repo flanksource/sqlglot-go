@@ -12,18 +12,31 @@ import (
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 )
 
-type observer struct {
-	q        queryer
-	names    map[string]catalog.Module
-	visited  map[string]bool
-	inputs   map[string]scripts.Observation
-	modules  map[string]moduleSnapshot
-	explicit bool
+type observationEpoch struct {
+	q           queryer
+	names       map[string]catalog.Module
+	definitions map[string]moduleSnapshot
+	results     map[string]scripts.Observation
 }
 
-func observe(ctx context.Context, q queryer, s scripts.Script, registry []Function) map[string]scripts.Observation {
-	o := observer{q: q, names: map[string]catalog.Module{}, visited: map[string]bool{}, inputs: map[string]scripts.Observation{}, modules: map[string]moduleSnapshot{}, explicit: s.ExplicitDependencies}
-	a := scripts.Analyze(scripts.AnalysisOptions{SQL: s.SQL})
+func newObservationEpoch(q queryer) *observationEpoch {
+	return &observationEpoch{q: q, names: map[string]catalog.Module{}, definitions: map[string]moduleSnapshot{}, results: map[string]scripts.Observation{}}
+}
+
+type observer struct {
+	*observationEpoch
+	visited          map[string]bool
+	inputs           map[string]scripts.Observation
+	modules          map[string]moduleSnapshot
+	explicit         bool
+	nonTransactional bool
+}
+
+func (opts Options) observe(ctx context.Context, epoch *observationEpoch, s scripts.Script) map[string]scripts.Observation {
+	o := observer{observationEpoch: epoch, visited: map[string]bool{}, inputs: map[string]scripts.Observation{},
+		modules: map[string]moduleSnapshot{}, explicit: s.ExplicitDependencies, nonTransactional: s.NonTransactional}
+	a := opts.analysis[s.ID]
+	registry := opts.Functions
 	if a.TransactionControl && !s.NonTransactional {
 		o.fail("transaction", fmt.Errorf("script controls its own transaction; mark it nontransactional and review the acknowledgement"))
 	}
@@ -82,12 +95,18 @@ func observe(ctx context.Context, q queryer, s scripts.Script, registry []Functi
 			o.fail(key, err)
 			continue
 		}
+		if observed, ok := epoch.results[key]; ok {
+			o.inputs["result:"+key] = observed
+			continue
+		}
 		quoted, err := scripts.QuoteName(key)
 		if err == nil {
 			err = o.probe(ctx, quoted, key, o.modules[key].Metadata, f)
 		}
 		if err != nil {
 			o.fail(key, err)
+		} else {
+			epoch.results[key] = o.inputs["result:"+key]
 		}
 	}
 	return o.inputs

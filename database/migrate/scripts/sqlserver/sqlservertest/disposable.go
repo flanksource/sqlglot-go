@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package sqlservertest provisions private, temporary SQL Server fixtures for Ginkgo suites.
 package sqlservertest
 

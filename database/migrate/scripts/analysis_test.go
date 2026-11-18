@@ -56,5 +56,6 @@ var _ = Describe("Script dependency analysis", func() {
 		}
 		_, err := (scripts.Scalar{Type: "sql_variant"}).Fingerprint("dbo.country")
 		Expect(err).To(HaveOccurred())
+		AddReportEntry("scalar-encoding", map[string]int{"distinctValues": len(seen)})
 	})
 })

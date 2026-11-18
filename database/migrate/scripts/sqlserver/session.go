@@ -34,10 +34,10 @@ func Open(ctx context.Context, opts Options) (*Session, error) {
 	var code int
 	err = conn.QueryRowContext(ctx, `DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource=@p1,@LockMode='Exclusive',@LockOwner='Session',@LockTimeout=60000; SELECT @r`, lockName).Scan(&code)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("acquire migration lock: %w", err), conn.Close())
+		return nil, errors.Join(fmt.Errorf("acquire migration lock: %w", err), discardConnection(conn))
 	}
 	if code < 0 {
-		return nil, errors.Join(fmt.Errorf("acquire migration lock: SQL Server returned code %d", code), conn.Close())
+		return nil, errors.Join(fmt.Errorf("acquire migration lock: SQL Server returned code %d", code), discardConnection(conn))
 	}
 	return &Session{conn: conn, opts: opts, bundleHash: hash, lockName: lockName}, nil
 }
@@ -51,15 +51,19 @@ func (s *Session) Close() error {
 	defer cancel()
 	_, err := s.conn.ExecContext(ctx, `EXEC sys.sp_releaseapplock @Resource=@p1,@LockOwner='Session'`, s.lockName)
 	// Arbitrary script SET options must never reach another pooled borrower.
-	discardErr := s.conn.Raw(func(any) error { return driver.ErrBadConn })
+	return errors.Join(err, discardConnection(s.conn))
+}
+
+func discardConnection(conn *sql.Conn) error {
+	discardErr := conn.Raw(func(any) error { return driver.ErrBadConn })
 	if errors.Is(discardErr, driver.ErrBadConn) || errors.Is(discardErr, sql.ErrConnDone) {
 		discardErr = nil
 	}
-	closeErr := s.conn.Close()
+	closeErr := conn.Close()
 	if errors.Is(closeErr, sql.ErrConnDone) {
 		closeErr = nil
 	}
-	return errors.Join(err, discardErr, closeErr)
+	return errors.Join(discardErr, closeErr)
 }
 
 func (s *Session) Inspect(ctx context.Context, phase scripts.Phase) (Preview, error) {
@@ -81,13 +85,14 @@ type Result struct {
 }
 
 func (s *Session) Apply(ctx context.Context, opts ApplyOptions) (Result, error) {
-	result := Result{Outcome: "already-applied", Applied: []string{}}
+	result := Result{Outcome: "failed", Applied: []string{}}
 	current, err := s.Inspect(ctx, opts.Preview.Plan.Phase)
 	if err != nil {
 		return result, err
 	}
 	if current.Plan.Hash != opts.Preview.Plan.Hash || current.BundleHash != opts.Preview.BundleHash {
 		if alreadyApplied(opts.Preview, current) {
+			result.Outcome = "already-applied"
 			return result, nil
 		}
 		result.Outcome, result.Continuation = "continuation-required", &current
@@ -102,6 +107,7 @@ func (s *Session) Apply(ctx context.Context, opts ApplyOptions) (Result, error) 
 	for _, item := range current.Plan.Scripts {
 		selected = selected || item.Selected
 	}
+	result.Outcome = "already-applied"
 	if selected {
 		if err := ensureStore(ctx, s.conn); err != nil {
 			return result, err

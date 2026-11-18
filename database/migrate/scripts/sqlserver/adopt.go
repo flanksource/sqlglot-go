@@ -158,7 +158,7 @@ func (s *Session) Adopt(ctx context.Context, opts AdoptionOptions) (err error) {
 		if extra || !value.Valid || value.String != e.Expected {
 			return fmt.Errorf("adoption postcondition mismatch for %s", e.ID)
 		}
-		if err = validateInputs(*item, observe(ctx, tx, item.Script, s.opts.Functions)); err != nil {
+		if err = validateInputs(*item, s.opts.observe(ctx, newObservationEpoch(tx), item.Script)); err != nil {
 			return err
 		}
 		state := item.State

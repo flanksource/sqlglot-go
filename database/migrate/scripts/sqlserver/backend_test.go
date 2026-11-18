@@ -44,4 +44,30 @@ var _ = Describe("Dependency observation contracts", func() {
 		Expect(preview.Plan.Scripts[0].Selected).To(BeTrue())
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
+	It("samples a shared function once per preview and resamples on the next preview", func(ctx SpecContext) {
+		db, mock, err := sqlmock.New()
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { mock.ExpectClose(); Expect(db.Close()).To(Succeed()) })
+		opts := Options{DB: db, Scope: "epoch", Functions: []Function{{Name: "dbo.country", Type: "nvarchar"}}, Scripts: []scripts.Script{
+			{ID: "one", SQL: "SELECT dbo.country()", Phase: scripts.Post},
+			{ID: "two", SQL: "SELECT dbo.country()", Phase: scripts.Post},
+		}}
+		var hashes []string
+		for _, country := range []string{"Zimbabwe", "Malawi"} {
+			mock.ExpectQuery("SELECT CONVERT").WillReturnRows(sqlmock.NewRows([]string{"server", "database"}).AddRow("example", "disposable"))
+			mock.ExpectQuery("SELECT CASE").WillReturnRows(sqlmock.NewRows([]string{"exists", "extended"}).AddRow(0, 0))
+			mock.ExpectQuery("SELECT SCHEMA_NAME").WithArgs("[dbo].[country]").WillReturnRows(sqlmock.NewRows([]string{
+				"schema", "name", "kind", "definition", "ansi", "quoted", "type", "length", "precision", "scale", "parameters",
+			}).AddRow("dbo", "country", "FN", "CREATE FUNCTION dbo.country() RETURNS nvarchar(40) AS BEGIN RETURN N'country' END", true, true, "nvarchar", 80, 0, 0, 0))
+			mock.ExpectQuery("SELECT COALESCE").WithArgs("[dbo].[country]").WillReturnRows(sqlmock.NewRows([]string{"server", "db", "schema", "name", "kind", "bound"}))
+			mock.ExpectQuery(`SELECT \[dbo\]\.\[country\]\(\)`).WillReturnRows(sqlmock.NewRows([]string{"country"}).AddRow(country))
+			preview, err := Inspect(ctx, opts, scripts.Post)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(preview.Plan.Scripts[0].State.Inputs).To(HaveKey("result:dbo.country"))
+			Expect(preview.Plan.Scripts[0].State.Inputs).To(Equal(preview.Plan.Scripts[1].State.Inputs))
+			hashes = append(hashes, preview.Plan.Scripts[0].State.Inputs["result:dbo.country"])
+		}
+		Expect(hashes[0]).NotTo(Equal(hashes[1]))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
 })

@@ -16,6 +16,7 @@ type moduleSnapshot struct {
 	Metadata   catalog.Module
 	Analysis   scripts.Analysis
 	References []string
+	Hash       string
 }
 
 func validateProbe(f Function, modules map[string]moduleSnapshot) error {
@@ -86,46 +87,17 @@ func (o *observer) module(ctx context.Context, name string) error {
 		return nil
 	}
 	o.visited[key] = true
-	quoted, err := scripts.QuoteName(key)
+	snapshot, err := o.moduleDefinition(ctx, key, m)
 	if err != nil {
 		return err
 	}
-	canonical, err := sqlglot.CanonicalSQL(m.Definition, "tsql")
-	if err != nil {
-		return fmt.Errorf("module %s: %w", name, err)
+	if !o.explicit && len(snapshot.Analysis.Blocked) > 0 {
+		return fmt.Errorf("module %s requires explicit runtime dependencies: %v", name, snapshot.Analysis.Blocked)
 	}
-	a := scripts.Analyze(scripts.AnalysisOptions{SQL: m.Definition, InvokedModule: true})
-	if !o.explicit && len(a.Blocked) > 0 {
-		return fmt.Errorf("module %s requires explicit runtime dependencies: %v", name, a.Blocked)
+	if !o.nonTransactional && snapshot.Analysis.TransactionControl {
+		return fmt.Errorf("module %s controls its own transaction; review this script as nontransactional", key)
 	}
-	o.inputs["definition:"+key] = scripts.Observation{Kind: "function-definition", Hash: scripts.Digest(canonical, strconv.FormatBool(m.ANSI), strconv.FormatBool(m.Quoted))}
-	refs, err := catalog.ModuleReferences(ctx, catalog.FromDB(o.q), quoted)
-	if err != nil {
-		return err
-	}
-	snapshot := moduleSnapshot{Metadata: m, Analysis: a}
-	for _, ref := range refs {
-		if ref.Database != "" || ref.Server != "" || !ref.Bound {
-			return fmt.Errorf("module %s: unresolved or external dependency %s.%s", name, ref.Schema, ref.Name)
-		}
-		switch ref.Kind {
-		case "FN", "P", "IF", "TF":
-			snapshot.References = append(snapshot.References, ref.Schema+"."+ref.Name)
-		case "U", "V":
-		default:
-			return fmt.Errorf("module %s has unsupported dependency %s.%s (%s)", name, ref.Schema, ref.Name, ref.Kind)
-		}
-	}
-	for _, call := range a.Calls {
-		called, err := o.readModule(ctx, call)
-		if err != nil {
-			return err
-		}
-		reference := called.Schema + "." + called.Name
-		if !slices.Contains(snapshot.References, reference) {
-			snapshot.References = append(snapshot.References, reference)
-		}
-	}
+	o.inputs["definition:"+key] = scripts.Observation{Kind: "function-definition", Hash: snapshot.Hash}
 	o.modules[key] = snapshot
 	for _, ref := range snapshot.References {
 		if err := o.module(ctx, ref); err != nil {
@@ -133,4 +105,48 @@ func (o *observer) module(ctx context.Context, name string) error {
 		}
 	}
 	return nil
+}
+
+func (o *observer) moduleDefinition(ctx context.Context, key string, m catalog.Module) (moduleSnapshot, error) {
+	if definition, exists := o.definitions[key]; exists {
+		return definition, nil
+	}
+	quoted, err := scripts.QuoteName(key)
+	if err != nil {
+		return moduleSnapshot{}, err
+	}
+	canonical, err := sqlglot.CanonicalSQL(m.Definition, "tsql")
+	if err != nil {
+		return moduleSnapshot{}, fmt.Errorf("module %s: %w", key, err)
+	}
+	a := scripts.Analyze(scripts.AnalysisOptions{SQL: m.Definition, InvokedModule: true})
+	refs, err := catalog.ModuleReferences(ctx, catalog.FromDB(o.q), quoted)
+	if err != nil {
+		return moduleSnapshot{}, err
+	}
+	snapshot := moduleSnapshot{Metadata: m, Analysis: a, Hash: scripts.Digest(canonical, strconv.FormatBool(m.ANSI), strconv.FormatBool(m.Quoted))}
+	for _, ref := range refs {
+		if ref.Database != "" || ref.Server != "" || !ref.Bound {
+			return moduleSnapshot{}, fmt.Errorf("module %s: unresolved or external dependency %s.%s", key, ref.Schema, ref.Name)
+		}
+		switch ref.Kind {
+		case "FN", "P", "IF", "TF":
+			snapshot.References = append(snapshot.References, ref.Schema+"."+ref.Name)
+		case "U", "V":
+		default:
+			return moduleSnapshot{}, fmt.Errorf("module %s has unsupported dependency %s.%s (%s)", key, ref.Schema, ref.Name, ref.Kind)
+		}
+	}
+	for _, call := range a.Calls {
+		called, err := o.readModule(ctx, call)
+		if err != nil {
+			return moduleSnapshot{}, err
+		}
+		reference := called.Schema + "." + called.Name
+		if !slices.Contains(snapshot.References, reference) {
+			snapshot.References = append(snapshot.References, reference)
+		}
+	}
+	o.definitions[key] = snapshot
+	return snapshot, nil
 }
