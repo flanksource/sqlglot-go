@@ -103,6 +103,16 @@ func FuzzGeneratedSQLCanBeReadBack(f *testing.F) {
 	})
 }
 
+func TestGenerateRejectsIfWithoutTrueBranch(t *testing.T) {
+	tree, err := ParseOne("NUL%IF(0)", "tsql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := Generate(tree, "tsql"); err == nil {
+		t.Fatalf("generated SQL for IF with no true branch: %q", out)
+	}
+}
+
 var seeds = []string{
 	// Bound parameters and `@x`, in every spelling the port WRITES. The
 	// generator fuzzer found the first of these: the port wrote `ARRAY(:Wa)`
