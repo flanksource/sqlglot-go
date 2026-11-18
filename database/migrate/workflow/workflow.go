@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"time"
 
+	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
 	native "github.com/flanksource/sqlglot-go/migrate"
 )
 
@@ -27,6 +28,7 @@ type Options struct {
 	Variables  []string
 	Routines   string
 	AllowDrops bool
+	CSV        csvdata.Options
 }
 
 type Step struct {
@@ -36,17 +38,18 @@ type Step struct {
 }
 
 type PlanResult struct {
-	Dialect    string          `json:"dialect"`
-	Schema     string          `json:"schema"`
-	Artifact   json.RawMessage `json:"artifact"`
-	Hash       string          `json:"hash"`
-	Acks       []string        `json:"acks"`
-	Steps      []Step          `json:"steps"`
-	Changes    []native.Change `json:"changes"`
-	Warnings   []string        `json:"warnings"`
-	Applicable bool            `json:"applicable"`
-	SQL        string          `json:"sql"`
-	Original   json.RawMessage `json:"-"`
+	Dialect    string            `json:"dialect"`
+	Schema     string            `json:"schema"`
+	Artifact   json.RawMessage   `json:"artifact"`
+	Hash       string            `json:"hash"`
+	Acks       []string          `json:"acks"`
+	Steps      []Step            `json:"steps"`
+	Changes    []native.Change   `json:"changes"`
+	Warnings   []string          `json:"warnings"`
+	Applicable bool              `json:"applicable"`
+	SQL        string            `json:"sql"`
+	CSVPlan    *csvdata.Artifact `json:"csvPlan,omitempty"`
+	Original   json.RawMessage   `json:"-"`
 }
 
 type ApplyOptions struct {
@@ -56,4 +59,5 @@ type ApplyOptions struct {
 	Hash        string
 	Acks        []string
 	LockTimeout time.Duration
+	CSV         csvdata.Options
 }

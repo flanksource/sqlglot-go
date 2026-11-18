@@ -79,6 +79,7 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 	record.Dialect, record.Schemas = conn.Dialect, []string{conn.Schema}
 	planOpts := Options{Dialect: conn.Dialect, Schema: conn.Schema, Source: opts.Plan.Source, Variables: opts.Plan.Variables, Routines: opts.Plan.Routines, AllowDrops: opts.Plan.AllowDrops}
 	planOpts.Bundle = opts.Plan.Bundle
+	planOpts.CSV = opts.Plan.CSV
 	t.SetDescription("Reviewing migration")
 	var plan PlanResult
 	if len(apply.Artifact) > 0 {
@@ -95,6 +96,14 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 	}
 	t.SetDescription("Applying reviewed SQL")
 	apply.Dialect, apply.Schema, apply.Artifact = conn.Dialect, conn.Schema, plan.Artifact
+	if plan.CSVPlan != nil {
+		apply.CSV, err = resolveCSV(planOpts)
+		if err != nil {
+			return payload, err
+		}
+	} else if planOpts.CSV.Files != nil || planOpts.Source.Kind == "csv" {
+		return payload, fmt.Errorf("CSV sources require a reviewed CSV artifact")
+	}
 	payload.Result, err = Apply(ctx, conn.DB, apply)
 	return payload, err
 }

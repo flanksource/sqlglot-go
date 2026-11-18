@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	bundle "github.com/flanksource/sqlglot-go/database/migrate"
+	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
 	"github.com/flanksource/sqlglot-go/database/migrate/review"
 	executor "github.com/flanksource/sqlglot-go/database/migrate/sqlserver"
 	native "github.com/flanksource/sqlglot-go/migrate"
@@ -56,12 +57,16 @@ func Review(data []byte, dialect, schema string) (PlanResult, error) {
 		return PlanResult{}, err
 	}
 	var scope struct {
+		Kind     string          `json:"kind"`
 		Version  int             `json:"version"`
 		Schemas  []string        `json:"schemas"`
 		Baseline review.Snapshot `json:"baseline"`
 	}
 	if err := json.Unmarshal(artifact, &scope); err != nil {
 		return PlanResult{}, err
+	}
+	if scope.Kind == csvdata.ArtifactKind {
+		return reviewCSV(artifact, dialect, schema)
 	}
 	if dialect == "" {
 		if scope.Version == 1 {
@@ -146,10 +151,18 @@ func Validate(opts ApplyOptions) error {
 		return err
 	}
 	var envelope struct {
-		Version int `json:"version"`
+		Kind    string `json:"kind"`
+		Version int    `json:"version"`
 	}
 	if err = json.Unmarshal(data, &envelope); err != nil {
 		return err
+	}
+	if envelope.Kind == csvdata.ArtifactKind {
+		var artifact csvdata.Artifact
+		if err := Decode(data, &artifact); err != nil {
+			return err
+		}
+		return artifact.Validate(opts.Hash, opts.Acks)
 	}
 	if envelope.Version == 1 {
 		var artifact native.Artifact
@@ -172,6 +185,22 @@ func Apply(ctx context.Context, db *sql.DB, opts ApplyOptions) (any, error) {
 	data, _, err := Unwrap(opts.Artifact)
 	if err != nil {
 		return nil, err
+	}
+	var envelope struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Kind == csvdata.ArtifactKind {
+		if opts.Dialect != "sqlserver" {
+			return nil, fmt.Errorf("CSV migrations require SQL Server")
+		}
+		var artifact csvdata.Artifact
+		if err := Decode(data, &artifact); err != nil {
+			return nil, err
+		}
+		return csvdata.Apply(ctx, db, csvdata.ApplyOptions{Options: opts.CSV, Artifact: artifact, Hash: opts.Hash, Acks: opts.Acks, LockTimeout: opts.LockTimeout})
 	}
 	if opts.Dialect == "sqlserver" {
 		var artifact native.Artifact
