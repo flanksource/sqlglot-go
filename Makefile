@@ -1,8 +1,9 @@
 # sqlglot-go — a Go port of sqlglot, verified against the Python reference.
 #
 #   make doctor     # toolchain
-#   make build      # build the CLI
-#   make install    # install the CLI using Go's GOBIN
+#   make build      # build the CLI with the web UI embedded (node + pnpm)
+#   make ui         # rebuild the web UI into www/dist
+#   make install    # install the CLI, with the web UI, using Go's GOBIN
 #   make test       # unit tests + the differential run against the reference
 #   make oracle     # regenerate testdata/expected from the pinned sqlglot commit
 #   make coverage   # print per-dialect coverage against the reference
@@ -30,10 +31,23 @@ EXEC_PAIRS ?= $(shell echo $${TMPDIR:-/tmp})/sqlglot-go-exec-pairs.jsonl
 # other stacks is the normal case, and a wedged bind is not worth debugging.
 PGPORT ?= 55433
 
-.PHONY: help doctor build install test oracle oracle-exec postgres postgres-stop service coverage cover gaps lint clean
+.PHONY: help doctor build ui install test oracle oracle-exec postgres postgres-stop service coverage cover gaps lint clean
+.PHONY: docs-dev docs-check docs-build docs-preview
 
 help: ## Show the available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
+
+docs-dev: ## Start the Rspress documentation site (install docs dependencies first)
+	pnpm docs:dev
+
+docs-check: ## Type-check the documentation configuration
+	pnpm docs:check
+
+docs-build: ## Build the static documentation site into doc_build
+	pnpm docs:build
+
+docs-preview: ## Preview the built documentation site
+	pnpm docs:preview
 
 doctor: ## Check the toolchain
 	@go version
@@ -41,9 +55,25 @@ doctor: ## Check the toolchain
 	@test -d $(SQLGLOT) && echo "reference: $(SQLGLOT) @ $$(git -C $(SQLGLOT) rev-parse --short HEAD)" || echo "reference NOT found at $(SQLGLOT) (only needed for make oracle)"
 	@$(PYTHON) -c 'import duckdb; print("duckdb:", duckdb.__version__)' 2>/dev/null || echo "duckdb NOT found (only needed for make oracle-exec)"
 
-build: ## Build the sqlglot CLI into .tmp/
+# The CLI embeds www/dist behind the ui build tag, so plain `go build` and
+# `go test ./...` never need node; these targets always embed it.
+UI_SOURCES := $(shell find www/src www/mock -type f) $(wildcard www/index.html www/package.json www/pnpm-lock.yaml www/vite.config.ts www/vite.clicky-ui.ts www/tsconfig*.json)
+
+build: www/dist/index.html ## Build the sqlglot CLI, with the web UI, into .tmp/
 	@mkdir -p .tmp
-	go build -o $(BINARY) ./cmd/sqlglot
+	go build -tags ui -o $(BINARY) ./cmd/sqlglot
+
+www/dist/index.html: $(UI_SOURCES)
+	pnpm -C www install --frozen-lockfile
+	pnpm -C www build
+
+ui: ## Rebuild the web UI into www/dist (needs node and pnpm)
+	@rm -f www/dist/index.html
+	@$(MAKE) www/dist/index.html
+
+.PHONY: build-proxy-fixtures
+build-proxy-fixtures: build ## Build the proxy fixture client
+	go build -o .tmp/proxy-fixture-client ./proxy/testdata/client
 
 build-database-tests: ## Build the disposable database integration suite
 	@mkdir -p .tmp
@@ -51,8 +81,8 @@ build-database-tests: ## Build the disposable database integration suite
 	go test -c -tags integration -o .tmp/database-sqlserver.test ./database/migrate/sqlserver
 	go test -c -o .tmp/database-bundle.test ./database/migrate
 
-install: ## Install the sqlglot CLI to GOBIN (or GOPATH/bin)
-	go install ./cmd/sqlglot
+install: www/dist/index.html ## Install the sqlglot CLI, with the web UI, to GOBIN (or GOPATH/bin)
+	go install -tags ui ./cmd/sqlglot
 
 test: ## Unit tests and the differential run against the reference
 	go test ./...
