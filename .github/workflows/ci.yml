@@ -31,6 +31,7 @@ jobs:
             os: ubuntu-24.04-arm
           - name: macos/arm64
             os: macos-latest
+            timeout: 20
           - name: windows/amd64
             os: windows-latest
             timeout: 20
