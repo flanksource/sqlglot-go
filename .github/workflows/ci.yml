@@ -102,13 +102,9 @@ jobs:
   oracle-is-pinned:
     name: Expectations match the pinned reference
     runs-on: ubuntu-latest
-    # Each landed dialect adds a fixed ~30-50s to gen_parser.py's own probing,
-    # independent of its corpus size -- confirmed by timing every probe
-    # function directly when this job first timed out landing the 10th
-    # dialect (Presto) at a 9-dialect baseline of 8m10s. The bound grows with
-    # dialect count, not with anything this session changed, so headroom is
-    # widened here rather than chasing a one-off.
-    timeout-minutes: 20
+    # Parser regeneration adds about 30–50s of probing per dialect. The
+    # combined reference checks reached 20 minutes during regeneration.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
