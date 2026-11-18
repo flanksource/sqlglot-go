@@ -20,6 +20,7 @@ type Options struct {
 	Scope     string
 	Scripts   []scripts.Script
 	Functions []Function
+	analysis  map[string]scripts.Analysis
 }
 
 type queryer interface {

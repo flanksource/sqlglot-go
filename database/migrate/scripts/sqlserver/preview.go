@@ -47,13 +47,19 @@ func prepare(opts Options) (Options, string, error) {
 		}
 		registered[strings.ToLower(f.Name)] = true
 	}
+	opts.analysis = make(map[string]scripts.Analysis, len(opts.Scripts))
 	for i := range opts.Scripts {
 		s := &opts.Scripts[i]
 		s.ContextPolicy = scripts.SourceHash(string(registryJSON))
 		if len(s.ID) > 512 {
 			return Options{}, "", fmt.Errorf("script ID exceeds 512 characters")
 		}
-		calls := scripts.Analyze(scripts.AnalysisOptions{SQL: s.SQL}).Calls
+		if _, err := Batches(s.ID, s.SQL); err != nil {
+			return Options{}, "", err
+		}
+		analysis := scripts.Analyze(scripts.AnalysisOptions{SQL: s.SQL})
+		opts.analysis[s.ID] = analysis
+		calls := slices.Clone(analysis.Calls)
 		for _, d := range s.Dependencies {
 			if d.Kind == "function-result" {
 				calls = append(calls, d.Name)
@@ -124,8 +130,9 @@ func inspect(ctx context.Context, q queryer, opts Options, phase scripts.Phase, 
 		return Preview{}, err
 	}
 	observations := map[string]map[string]scripts.Observation{}
+	epoch := newObservationEpoch(q)
 	for _, s := range opts.Scripts {
-		observations[s.ID] = observe(ctx, q, s, opts.Functions)
+		observations[s.ID] = opts.observe(ctx, epoch, s)
 	}
 	plan, err := scripts.Build(scripts.PlanOptions{Target: server + "/" + database + "/" + opts.Scope, Phase: phase, Scripts: opts.Scripts, Recorded: states, Observations: observations})
 	if err != nil {

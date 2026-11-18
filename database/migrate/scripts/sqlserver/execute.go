@@ -32,21 +32,27 @@ func (s *Session) execute(ctx context.Context, item scripts.Pending, planHash st
 		}
 		var outcome *ExecutionError
 		if errors.As(err, &outcome) {
-			return errors.Join(err, s.attempt(context.WithoutCancel(ctx), item.Script.ID, planHash, outcome.Outcome, err.Error()))
-		}
-		if !retryable(err) || attempt == 5 {
-			failed := item.State
-			failed.Outcome = "failed"
-			failed.LastSuccess = uncertain.LastSuccess
 			after, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			return errors.Join(err, recordState(after, s.conn, s.opts.Scope, item.Script.ID, failed), s.attempt(after, item.Script.ID, planHash, "failed", err.Error()))
+			return errors.Join(err, s.attempt(after, item.Script.ID, planHash, outcome.Outcome, err.Error()))
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		if retryable(err) && attempt < 5 {
+			select {
+			case <-ctx.Done():
+				err = errors.Join(err, context.Cause(ctx))
+			case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+				continue
+			}
 		}
+		failed := item.State
+		failed.Outcome = "failed"
+		failed.LastSuccess = uncertain.LastSuccess
+		after, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if recordErr := recordState(after, s.conn, s.opts.Scope, item.Script.ID, failed); recordErr != nil {
+			return &ExecutionError{Outcome: "commit-unknown", Err: errors.Join(err, fmt.Errorf("record rollback for %s: %w", item.Script.ID, recordErr))}
+		}
+		return errors.Join(err, s.attempt(after, item.Script.ID, planHash, "failed", err.Error()))
 	}
 	return fmt.Errorf("migration retries exhausted")
 }
@@ -87,7 +93,7 @@ func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err er
 	if _, err = tx.ExecContext(ctx, "SET LOCK_TIMEOUT 15000"); err != nil {
 		return err
 	}
-	inputs := observe(ctx, tx, item.Script, s.opts.Functions)
+	inputs := s.opts.observe(ctx, newObservationEpoch(tx), item.Script)
 	if err = validateInputs(item, inputs); err != nil {
 		return err
 	}
@@ -103,7 +109,7 @@ func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err er
 	}); err != nil {
 		return err
 	}
-	if err = validateInputs(item, observe(ctx, tx, item.Script, s.opts.Functions)); err != nil {
+	if err = validateInputs(item, s.opts.observe(ctx, newObservationEpoch(tx), item.Script)); err != nil {
 		return err
 	}
 	committed := item.State
@@ -155,7 +161,7 @@ func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(
 }
 
 func (s *Session) nonTransactional(ctx context.Context, item scripts.Pending, planHash string) error {
-	if err := validateInputs(item, observe(ctx, s.conn, item.Script, s.opts.Functions)); err != nil {
+	if err := validateInputs(item, s.opts.observe(ctx, newObservationEpoch(s.conn), item.Script)); err != nil {
 		return err
 	}
 	state, err := s.inProgressState(ctx, item, "partial")
@@ -168,7 +174,7 @@ func (s *Session) nonTransactional(ctx context.Context, item scripts.Pending, pl
 	if err := runBatches(ctx, s.conn, item.Script, nil); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: errors.Join(err, s.attempt(context.WithoutCancel(ctx), item.Script.ID, planHash, "partial", err.Error()))}
 	}
-	if err := validateInputs(item, observe(ctx, s.conn, item.Script, s.opts.Functions)); err != nil {
+	if err := validateInputs(item, s.opts.observe(ctx, newObservationEpoch(s.conn), item.Script)); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: err}
 	}
 	state.Outcome = "applied"

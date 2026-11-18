@@ -43,13 +43,22 @@ var _ = Describe("Consumed migration dependencies", func() {
 		opts.Scripts[0].SQL = "SELECT 10"
 		changed := Must(scripts.Build(opts))
 		Expect(selected(changed)).To(Equal([]string{"a", "b", "c"}))
+		AddReportEntry("C02", map[string]any{"edited": "a", "selected": selected(changed), "unrelated": "d"})
 		opts.Recorded["a"] = changed.Scripts[0].State
 		Expect(selected(Must(scripts.Build(opts)))).To(Equal([]string{"b", "c"}))
 	})
 	It("does not cascade an always execution without changed inputs", func() {
 		opts.Scripts[0].Always = true
 		opts.Recorded = recorded(Must(scripts.Build(opts)))
-		Expect(selected(Must(scripts.Build(opts)))).To(Equal([]string{"a"}))
+		unchanged := selected(Must(scripts.Build(opts)))
+		Expect(unchanged).To(Equal([]string{"a"}))
+		opts.Scripts[0].SQL = "SELECT 10"
+		changed := Must(scripts.Build(opts))
+		Expect(selected(changed)).To(Equal([]string{"a", "b", "c"}))
+		opts.Recorded = recorded(changed)
+		converged := selected(Must(scripts.Build(opts)))
+		Expect(converged).To(Equal([]string{"a"}))
+		AddReportEntry("C03", map[string]any{"unchanged": unchanged, "changed": selected(changed), "converged": converged})
 	})
 	It("preserves a legacy content-only bundle until a prerequisite actually changes", func() {
 		opts.Recorded = map[string]scripts.State{}

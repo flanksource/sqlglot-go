@@ -71,7 +71,7 @@ func ensureStore(ctx context.Context, db sessionDB) error {
 	_, err := db.ExecContext(ctx, `IF OBJECT_ID(N'dbo.sqlglot_migrations',N'U') IS NULL
 CREATE TABLE dbo.sqlglot_migrations(scope nvarchar(256) NOT NULL,path nvarchar(512) NOT NULL,hash varbinary(32) NOT NULL,
 updated_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME(),state nvarchar(max) NULL,
-CONSTRAINT PK_sqlglot_migrations PRIMARY KEY(scope,path));
+CONSTRAINT PK_sqlglot_migrations PRIMARY KEY NONCLUSTERED(scope,path));
 IF COL_LENGTH('dbo.sqlglot_migrations','state') IS NULL ALTER TABLE dbo.sqlglot_migrations ADD state nvarchar(max) NULL;
 IF OBJECT_ID(N'dbo.sqlglot_migration_attempts',N'U') IS NULL
 CREATE TABLE dbo.sqlglot_migration_attempts(id uniqueidentifier NOT NULL DEFAULT NEWID() PRIMARY KEY,scope nvarchar(256) NOT NULL,

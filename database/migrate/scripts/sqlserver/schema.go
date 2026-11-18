@@ -98,6 +98,14 @@ func (o *observer) schema(ctx context.Context, name string) error {
 		return fmt.Errorf("schema dependency requires schema.table[.column]: %s", name)
 	}
 	q := catalog.FromDB(o.q)
+	if len(parts) == 3 {
+		column, err := catalog.ResolveColumn(ctx, q, catalog.ColumnName{Schema: parts[0], Table: parts[1], Column: parts[2]})
+		if err != nil {
+			return err
+		}
+		parts = []string{column.Schema, column.Table, column.Column}
+		name = strings.Join(parts, ".")
+	}
 	scope := catalog.Scope{Schema: parts[0], Names: []string{parts[1]}}
 	var snapshot schemaSnapshot
 	var err error
