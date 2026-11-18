@@ -127,6 +127,7 @@ Run the [SQLite example](../examples/database/main.go) with `go run ./examples/d
 
 ```sh
 GOWORK=off go test ./database/... ./cmd/sqlglot ./migrate/...
+GOWORK=off go test -tags integration -count=1 ./database/migrate/scripts/sqlserver/integration ./database/migrate/csvdata/integration
 GOWORK=off make build
 GOWORK=off make lint
 GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make build-database-tests
