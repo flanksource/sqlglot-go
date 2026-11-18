@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/flanksource/clicky/task"
 	"github.com/flanksource/sqlglot-go/database/compare"
 	"github.com/flanksource/sqlglot-go/database/connections"
 	"github.com/flanksource/sqlglot-go/database/history"
@@ -37,6 +38,7 @@ var _ = Describe("ui server", func() {
 		spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, spaBody) })
 		handler, err := newUIHandler(uiHandlerOptions{Root: newRootCommand(strings.NewReader("")), ConnectionsDir: dir, UI: spa})
 		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(handler.Close)
 		server = httptest.NewServer(handler)
 		DeferCleanup(server.Close)
 	})
@@ -321,6 +323,20 @@ var _ = Describe("ui server", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		Expect(filepath.Join(dir, "evil.yaml")).NotTo(BeAnExistingFile())
 	})
+})
+
+var _ = It("releases history and detaches the task store when the UI closes", func(ctx SpecContext) {
+	handler, err := newUIHandler(uiHandlerOptions{
+		Root: newRootCommand(strings.NewReader("")), ConnectionsDir: GinkgoT().TempDir(), UI: http.NotFoundHandler(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(handler.Close)
+	store := task.CurrentStore()
+	Expect(store).To(Equal(handler.runs))
+	Expect(handler.Close()).To(Succeed())
+	Expect(task.CurrentStore()).To(BeNil())
+	_, err = store.Runs(ctx, task.RunFilter{})
+	Expect(err).To(MatchError(ContainSubstring("database is closed")))
 })
 
 var _ = DescribeTable("ui API origin guard",

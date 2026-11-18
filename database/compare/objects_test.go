@@ -12,6 +12,8 @@ var _ = DescribeTable("Labelling a side in task output without credentials",
 	Entry("named connection", "connection://acme/prod", "acme/prod"),
 	Entry("URL DSN drops user, password and query", "sqlserver://sa:s3cret@db.example:1433/main?database=payroll", "db.example:1433/main"),
 	Entry("SQLite file", "sqlite:///var/data/side.db", "side.db"),
+	Entry("Windows SQLite file", `sqlite://C:\data\side.db?mode=rw`, "side.db"),
+	Entry("encoded SQLite file URI", "sqlite://file:///C:/data/side%20one.db", "side one.db"),
 	Entry("keyword DSN has no safe label", "server=db.example;user id=sa;password=s3cret", ""),
 )
 

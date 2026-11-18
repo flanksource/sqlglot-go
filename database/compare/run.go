@@ -146,12 +146,24 @@ func label(dsn string) string {
 	if name, ok := strings.CutPrefix(dsn, connections.Prefix); ok {
 		return name
 	}
+	if strings.HasPrefix(strings.ToLower(dsn), "sqlite://") {
+		target, err := dbtarget.Parse(dsn)
+		if err != nil {
+			return ""
+		}
+		u, err := url.Parse(target.DSN)
+		if err != nil {
+			return ""
+		}
+		filename := u.Path
+		if filename == "" {
+			filename = u.Opaque
+		}
+		return path.Base(strings.ReplaceAll(filename, `\`, "/"))
+	}
 	u, err := url.Parse(dsn)
-	switch {
-	case err != nil || u.Scheme == "" || u.Opaque != "":
+	if err != nil || u.Scheme == "" || u.Opaque != "" {
 		return ""
-	case u.Scheme == "sqlite":
-		return path.Base(u.Host + u.Path)
 	}
 	return u.Host + u.Path
 }
