@@ -1651,6 +1651,9 @@ func (g *generator) writeCase(e *Expression) string {
 // wrote `IIF(cond <> 0 <> 0, …)`. So where the template carries it and the
 // condition is already a condition, this refuses rather than doubling it.
 func (g *generator) writeIf(e *Expression) string {
+	if childOf(e, "true") == nil {
+		return g.fail("IF without a true branch")
+	}
 	for _, candidate := range g.tables.SyntaxSQL[e.Class] {
 		if !strings.Contains(candidate.Template, "<> 0") {
 			continue
