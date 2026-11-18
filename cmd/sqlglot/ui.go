@@ -123,7 +123,7 @@ func addUICommand(root *cobra.Command) {
 	root.AddCommand(cmd)
 }
 
-func serveUI(cmd *cobra.Command, root *cobra.Command, opts uiOptions) error {
+func serveUI(cmd *cobra.Command, root *cobra.Command, opts uiOptions) (returnErr error) {
 	if err := checkUIAddr(opts.addr, opts.listenAny); err != nil {
 		return err
 	}
@@ -156,6 +156,7 @@ func serveUI(cmd *cobra.Command, root *cobra.Command, opts uiOptions) error {
 	if err != nil {
 		return err
 	}
+	defer func() { returnErr = errors.Join(returnErr, handler.Close()) }()
 	listener, err := net.Listen("tcp", opts.addr)
 	if err != nil {
 		return err
@@ -244,7 +245,19 @@ type uiHandlerOptions struct {
 	AllowedOrigins []string
 }
 
-func newUIHandler(opts uiHandlerOptions) (http.Handler, error) {
+type uiHandler struct {
+	http.Handler
+	runs *history.Store
+}
+
+func (h *uiHandler) Close() error {
+	if task.CurrentStore() == h.runs {
+		task.SetStore(context.Background(), nil)
+	}
+	return h.runs.Close()
+}
+
+func newUIHandler(opts uiHandlerOptions) (*uiHandler, error) {
 	if opts.UI == nil {
 		return nil, errors.New("ui handler is required")
 	}
@@ -263,14 +276,13 @@ func newUIHandler(opts uiHandlerOptions) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	task.SetStore(context.Background(), runs)
 	server := rpc.NewSwaggerServer(&rpc.ServeConfig{
 		Title: "sqlglot", Version: version, StructuredErrorResponses: true,
 		Executor: &rpc.ExecutorConfig{Enabled: true, SkipPreRun: true, PathPrefix: apiPrefix},
 	}, opts.Root, &rpc.OpenAPIConfig{Title: "sqlglot", Version: version,
 		Extensions: []func(*rpc.OpenAPISpec){queryconnections.AddConnectionsOpenAPI, addContentOpenAPI}})
 	if server.Executor() == nil {
-		return nil, errors.New("register sqlglot clicky operations: executor is unavailable")
+		return nil, errors.Join(errors.New("register sqlglot clicky operations: executor is unavailable"), runs.Close())
 	}
 	mux := http.NewServeMux()
 	router := route.NewRouter(mux)
@@ -283,7 +295,8 @@ func newUIHandler(opts uiHandlerOptions) (http.Handler, error) {
 		}
 		opts.UI.ServeHTTP(w, r)
 	}))
-	return guardUIRequests(service.Handler(apiPrefix, mux), opts), nil
+	task.SetStore(context.Background(), runs)
+	return &uiHandler{Handler: guardUIRequests(service.Handler(apiPrefix, mux), opts), runs: runs}, nil
 }
 
 // guardUIRequests refuses API requests from other origins, so a page in the
