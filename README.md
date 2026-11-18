@@ -20,6 +20,17 @@ order is a measured gap, not the library's table of contents.
 [data-agent-service](https://github.com/calvinchengx/data-agent-service),
 whose Go executor is the first consumer, is stale.
 
+## Documentation
+
+The [documentation site](docs/guide/getting-started.md) covers the CLI, Go API, schema inspection, and migrations. To run it locally with Node.js 22.12+ and pnpm 12.15.0:
+
+```sh
+pnpm install --frozen-lockfile
+make docs-dev
+```
+
+`make docs-check docs-build` checks the configuration and builds the static site into `doc_build/`; `make docs-preview` serves that build locally. See [Contributing](docs/guide/contributing.md) for authoring and hosting instructions.
+
 ## Command line app
 
 Build the CLI with `make build` and run `.tmp/sqlglot`, install the current checkout with `make install` into Go's `GOBIN` (or `GOPATH/bin`), or install a tagged release with `go install github.com/flanksource/sqlglot-go/cmd/sqlglot@latest`. Releases attach Linux, macOS, and Windows archives for amd64 and arm64 to the GitHub release.
