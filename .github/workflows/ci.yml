@@ -15,7 +15,7 @@ jobs:
   differential:
     name: Against the reference (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: ${{ matrix.timeout || 10 }}
     # The port has no dependencies and no native library, so it runs wherever
     # Go does -- but "should work on Windows" is a claim, and developers work
     # on Windows machines of both architectures. The differential run is the
@@ -33,8 +33,10 @@ jobs:
             os: macos-latest
           - name: windows/amd64
             os: windows-latest
+            timeout: 20
           - name: windows/arm64
             os: windows-11-arm
+            timeout: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,10 +46,22 @@ jobs:
       - name: differential run
         run: go test ./... -v
 
+  sqlserver-integration:
+    name: SQL Server migration integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run reviewed script and CSV migrations against disposable SQL Server
+        run: go test -tags integration -count=1 ./database/migrate/scripts/sqlserver/integration ./database/migrate/csvdata/integration
+
   coverage-and-lint:
     name: Coverage floor and lint
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
