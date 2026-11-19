@@ -120,9 +120,9 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - name: Install golangci-lint
-        uses: flanksource/deps@f04324f706a671af0fd0b1d7f9a708c9ec1643f4 # v1.0.28
+        uses: flanksource/deps@92d640aba10afe1f8c384f42b0a356a0502cd7ce # v1.0.51
         with:
-          version: v1.0.28
+          version: v1.0.51
           tools: golangci-lint@v2.13.1
           GITHUB_TOKEN: ${{ github.token }}
       - name: Run Go lint
