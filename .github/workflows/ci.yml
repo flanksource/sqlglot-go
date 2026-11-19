@@ -1,6 +1,4 @@
-# The port is measured against the Python reference on every push. The
-# expectations are committed, so no job needs Python or sqlglot: a Go toolchain
-# alone reproduces the differential run.
+# The differential suite uses committed expectations from the Python reference.
 name: CI
 
 on:
@@ -12,70 +10,82 @@ permissions:
   contents: read
 
 jobs:
-  differential:
-    name: Against the reference (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout || 10 }}
-    # The port has no dependencies and no native library, so it runs wherever
-    # Go does -- but "should work on Windows" is a claim, and developers work
-    # on Windows machines of both architectures. The differential run is the
-    # same on every platform because the expectations are committed, so proving
-    # it costs one job per target and nothing else.
+  database-integration:
+    name: Database integration (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux/amd64
-            os: ubuntu-latest
-          - name: linux/arm64
-            os: ubuntu-24.04-arm
-          - name: macos/arm64
-            os: macos-latest
-            timeout: 20
-          - name: windows/amd64
-            os: windows-latest
-            timeout: 20
-          - name: windows/arm64
-            os: windows-11-arm
-            timeout: 25
+          - database: postgres
+            args: --extra-args=-count=1,-ginkgo.focus=PostgreSQL ./database/migrate/review
+          - database: sqlserver
+            args: --extra-args=-count=1 ./database/migrate/scripts/sqlserver/integration ./database/migrate/csvdata/integration
+    services:
+      postgres:
+        image: ${{ matrix.database == 'postgres' && 'mirror.gcr.io/library/postgres:latest' || '' }}
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go vet ./...
-      - name: differential run
-        run: go test ./... -v
-
-  sqlserver-integration:
-    name: SQL Server migration integration
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Run database integration tests
+        uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83
+        env:
+          SQLGLOT_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
         with:
-          go-version-file: go.mod
-      - name: Run reviewed script and CSV migrations against disposable SQL Server
-        run: go test -tags integration -count=1 ./database/migrate/scripts/sqlserver/integration ./database/migrate/csvdata/integration
+          version: v0.0.83
+          args: test --framework ginkgo --tags integration --timeout 12m ${{ matrix.args }}
+          artifact-name: gavel-integration-${{ matrix.database }}
+          comment-header: gavel-integration-${{ matrix.database }}
+          comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
 
-  coverage-and-lint:
-    name: Coverage floor and lint
+  coverage:
+    name: Coverage and differential tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Run the Go and differential suites
+        uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83
+        with:
+          version: v0.0.83
+          args: test --framework go,ginkgo --timeout 15m --extra-args=-coverpkg=./sqlglot/,-coverprofile=cover.out
+          artifact-name: gavel-coverage
+          comment-header: gavel-coverage
+          comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
       - name: test coverage floor
         run: |
-          go test ./... -coverpkg=./sqlglot/ -coverprofile=cover.out >/dev/null
           pct=$(go tool cover -func=cover.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
           echo "coverage: $pct%"
           awk -v p="$pct" 'BEGIN { if (p+0 < 95) { print "below the 95% floor"; exit 1 } }'
       # The README's tables are the coverage files, or they are a second copy
-      # that drifts. `go test` above rewrites testdata/**/coverage.json from
+      # that drifts. The differential suite rewrites testdata/**/coverage.json from
       # the run it just did, so this compares the README against measurements
       # taken seconds ago rather than against whatever was committed.
       - name: the README's numbers are what was measured
@@ -92,10 +102,37 @@ jobs:
       # -timeout leaves room for the last execution to finish and report.
       - name: a short fuzz for parser panics
         run: go test ./sqlglot/ -run=XXX -fuzz=FuzzParseOneNeverPanics -fuzztime=45s -timeout=10m
-      - uses: golangci/golangci-lint-action@v7
+
+  lint:
+    name: Go lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
         with:
-          version: v2.13.1
-          working-directory: .
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - name: Install golangci-lint
+        uses: flanksource/deps@f04324f706a671af0fd0b1d7f9a708c9ec1643f4 # v1.0.28
+        with:
+          version: v1.0.28
+          tools: golangci-lint@v2.13.1
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Run Go lint
+        uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83
+        with:
+          version: v0.0.83
+          args: lint golangci-lint --timeout 10m
+          artifact-name: gavel-lint
+          comment-header: gavel-lint
+          comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
 
   # The committed expectations must be exactly what the pinned reference
   # produces. Regenerate and diff; a difference means someone edited an
@@ -186,10 +223,7 @@ jobs:
   # compares trees or text against sqlglot, which proves the port agrees with
   # the reference and never that either is right.
   #
-  # It is a separate job because it needs an engine. DuckDB in Go means cgo,
-  # and the differential job above proves the port on five platforms with a
-  # Go toolchain alone -- including Windows on arm64, where no such library
-  # exists. So the engine stays on the Python side, as the reference does.
+  # The Go suite emits the pairs and Python runs them against DuckDB and PostgreSQL.
   execution-oracle:
     name: The port's SQL means what it was given
     runs-on: ubuntu-latest
@@ -200,7 +234,7 @@ jobs:
     # earn the infrastructure.
     services:
       postgres:
-        image: mirror.gcr.io/library/postgres:17-alpine
+        image: mirror.gcr.io/library/postgres:latest
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
