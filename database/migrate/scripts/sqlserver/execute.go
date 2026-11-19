@@ -79,15 +79,17 @@ func (e *ExecutionError) Error() string { return "script " + e.Outcome + ": " + 
 func (e *ExecutionError) Unwrap() error { return e.Err }
 
 func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err error) {
-	tx, err := s.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	// Finish rollback synchronously before writing the outcome on this connection.
+	tx, err := s.conn.BeginTx(context.WithoutCancel(ctx), &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err != nil {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-				err = &ExecutionError{Outcome: "commit-unknown", Err: errors.Join(err, rollbackErr)}
-			}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = &ExecutionError{Outcome: "commit-unknown", Err: errors.Join(err, rollbackErr)}
 		}
 	}()
 	if _, err = tx.ExecContext(ctx, "SET LOCK_TIMEOUT 15000"); err != nil {
@@ -115,6 +117,9 @@ func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err er
 	committed := item.State
 	committed.Outcome = "applied"
 	if err = recordState(ctx, tx, s.opts.Scope, item.Script.ID, committed); err != nil {
+		return err
+	}
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
