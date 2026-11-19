@@ -419,6 +419,9 @@ func (p *parser) parseStatementBody() (*Expression, error) {
 	if p.dialect == "tsql" && p.atWords("PRINT") {
 		return p.parseTSQLPrint()
 	}
+	if p.dialect == "tsql" && p.nativeTSQLModules && p.atWords("RAISERROR") {
+		return p.parseTSQLRaiserror()
+	}
 	if p.atEventSession() {
 		return p.parseEventSession()
 	}

@@ -58,7 +58,7 @@ func (p *parser) parseCreate() (*Expression, error) {
 	// UNIQUE is a flag on the node rather than a property, and only an INDEX
 	// takes it.
 	unique := false
-	if p.atWords("UNIQUE") && p.next() != nil && strings.EqualFold(p.next().Text, "INDEX") {
+	if p.atWords("UNIQUE") && p.next() != nil && p.next().Type == TokINDEX {
 		p.advance()
 		unique = true
 	}
@@ -1172,7 +1172,8 @@ func (p *parser) parseDrop() (*Expression, error) {
 		exists = true
 	}
 
-	// A TABLE or a VIEW may name several at once; everything else names one.
+	routine := kind == "FUNCTION" || kind == "PROCEDURE" || kind == "PROC"
+	multipleNames := kind == "TABLE" || kind == "VIEW" || (p.dialect == "tsql" && p.nativeTSQLModules && routine)
 	var tables []*Expression
 	for {
 		table, err := p.parseDroppedName(written)
@@ -1180,10 +1181,7 @@ func (p *parser) parseDrop() (*Expression, error) {
 			return nil, err
 		}
 		tables = append(tables, table)
-		if kind != "TABLE" && kind != "VIEW" {
-			break
-		}
-		if !p.match(TokCOMMA) {
+		if !multipleNames || !p.match(TokCOMMA) {
 			break
 		}
 	}
@@ -1191,7 +1189,7 @@ func (p *parser) parseDrop() (*Expression, error) {
 	// A FUNCTION or a PROCEDURE may be named with its SIGNATURE, because a
 	// name alone need not say which of them is meant.
 	var signature []*Expression
-	if p.at(TokL_PAREN) && (kind == "FUNCTION" || kind == "PROCEDURE") {
+	if p.at(TokL_PAREN) && len(tables) == 1 && (kind == "FUNCTION" || kind == "PROCEDURE") {
 		p.advance()
 		for !p.at(TokR_PAREN) {
 			dt, err := p.parseDataType()

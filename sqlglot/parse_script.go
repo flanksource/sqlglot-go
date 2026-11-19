@@ -7,12 +7,13 @@ import (
 )
 
 type ParseDiagnostic struct {
-	Kind           string `json:"kind"`
-	Label          string `json:"label"`
-	StatementKind  string `json:"statement_kind"`
-	Start          int    `json:"start"`
-	End            int    `json:"end"`
-	StatementStart int    `json:"statement_start"`
+	Kind          string `json:"kind"`
+	Label         string `json:"label"`
+	StatementKind string `json:"statement_kind"`
+	// Start, End, and StatementStart are rune offsets in the source.
+	Start          int `json:"start"`
+	End            int `json:"end"`
+	StatementStart int `json:"statement_start"`
 }
 
 type ScriptResult struct {

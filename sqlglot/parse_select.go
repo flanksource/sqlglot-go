@@ -894,7 +894,14 @@ func (p *parser) parseTop() (*Expression, error) {
 	if !p.match(TokTOP) {
 		return nil, nil
 	}
-	var count *Expression
+	count, err := p.parseTopCount()
+	if err != nil {
+		return nil, err
+	}
+	return newTopLimit(count, p.parseLimitOptions()), nil
+}
+
+func (p *parser) parseTopCount() (*Expression, error) {
 	switch {
 	// `TOP (expr)` is how T-SQL spells a count that is not a plain number, and
 	// the reference stores the expression UNWRAPPED -- `SELECT TOP (A) 0` and
@@ -917,25 +924,24 @@ func (p *parser) parseTop() (*Expression, error) {
 		if !p.match(TokR_PAREN) {
 			return nil, p.unsupported("unclosed TOP count")
 		}
-		count = inner
+		return inner, nil
 	case p.curr() != nil && p.curr().Type == TokNUMBER:
-		count = New("Literal", Arg{"this", p.curr().Text}, Arg{"is_string", false})
+		count := New("Literal", Arg{"this", p.curr().Text}, Arg{"is_string", false})
 		p.advance()
+		return count, nil
 	default:
 		return nil, p.unsupported("TOP without a count")
 	}
-	limit := New("Limit",
+}
+
+func newTopLimit(count, options *Expression) *Expression {
+	return New("Limit",
 		Arg{"this", nil},
 		Arg{"expression", count},
 		Arg{"offset", nil},
-		Arg{"limit_options", nil},
+		Arg{"limit_options", options},
 		Arg{"expressions", nil},
 	)
-	// The same words a LIMIT takes after its count, in the same order.
-	if options := p.parseLimitOptions(); options != nil {
-		limit.Set("limit_options", options)
-	}
-	return limit, nil
 }
 
 func (p *parser) parseProjections() ([]*Expression, error) {
