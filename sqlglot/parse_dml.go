@@ -233,6 +233,13 @@ func (p *parser) parseDelete() (*Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+	var top *Expression
+	if p.dialect == "tsql" && p.nativeTSQLModules && p.match(TokTOP) {
+		top, err = p.parseDeleteTop()
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// MySQL's Multiple-Table DELETE names, before the FROM, which of the
 	// tables joined there actually lose rows: `DELETE x, y FROM x JOIN y
@@ -354,6 +361,9 @@ func (p *parser) parseDelete() (*Expression, error) {
 		node.Set("order", New("Order", Arg{"expressions", ordered}))
 	}
 	if p.at(TokLIMIT) {
+		if top != nil {
+			return nil, p.unsupported("DELETE with both TOP and LIMIT")
+		}
 		p.advance()
 		count, err := p.parseLimitCount()
 		if err != nil {
@@ -362,10 +372,32 @@ func (p *parser) parseDelete() (*Expression, error) {
 		node.Set("limit", New("Limit", Arg{"this", nil}, Arg{"expression", count},
 			Arg{"limit_options", p.parseLimitOptions()}, Arg{"expressions", nil}))
 	}
+	if top != nil {
+		node.Set("limit", top)
+		node.Set("top", true)
+	}
 	if !p.atStatementEnd() {
 		return nil, p.unsupported("DELETE with more than this port reads")
 	}
 	return node, nil
+}
+
+func (p *parser) parseDeleteTop() (*Expression, error) {
+	if !p.at(TokL_PAREN) {
+		return nil, p.unsupported("DELETE TOP without a parenthesized count")
+	}
+	count, err := p.parseTopCount()
+	if err != nil {
+		return nil, err
+	}
+	var options *Expression
+	if p.match(TokPERCENT) {
+		options = New("LimitOptions", Arg{"percent", true}, Arg{"rows", false}, Arg{"with_ties", false})
+	}
+	if p.atWords("WITH", "TIES") {
+		return nil, p.unsupported("DELETE TOP WITH TIES")
+	}
+	return newTopLimit(count, options), nil
 }
 
 // parseMerge reads `MERGE [INTO] <target> USING <source> ON <cond> WHEN ...`.

@@ -39,7 +39,7 @@ The expression model exposes SQL constructs as nodes and named arguments. For th
 
 `sqlglot.ParseScript(source, "tsql")` scans scripts and provides statement trees and diagnostics. Check the returned error, require `Complete`, and reject diagnostics or missing trees before relying on an analysis. `Complete` describes scan completion alone.
 
-Native script analysis supports structured SQL Server routines and triggers. `ParseOne` retains the upstream reference's single-statement contract, which can represent some commands opaquely. Choose the entrypoint to match the analysis you need.
+Native script analysis returns structured trees for SQL Server routines, triggers, and deployment syntax such as `CREATE TYPE ... AS TABLE` and `DELETE TOP`. Diagnostic offsets count Unicode code points in the source. `ParseOne` retains the upstream reference's single-statement contract, which can represent some commands opaquely.
 
 ## Formatting
 

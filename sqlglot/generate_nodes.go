@@ -1227,8 +1227,9 @@ func (g *generator) writeLimitWord(e *Expression, word string) string {
 	// A NEGATIVE count is parenthesised here and is not by the reference,
 	// which writes `SELECT TOP -1 x` and then cannot read it back. That is the
 	// one place this writer does not follow it; see docs/upstream-issues.md.
+	deleteTop := e.Parent != nil && e.Parent.Class == "Delete"
 	if inner, _ := e.Args["expression"].(*Expression); inner != nil &&
-		word == "TOP " && !isPlainNumber(inner) {
+		word == "TOP " && (deleteTop || !isPlainNumber(inner)) {
 		count = "(" + count + ")"
 	}
 	out := word + count
@@ -5796,10 +5797,18 @@ func (g *generator) writeDelete(e *Expression) string {
 		}
 	}
 	order := g.child(e, "order")
-	limit := g.child(e, "limit")
 	verb := g.withPrefix(e, "DELETE")
 	if hint := g.child(e, "hint"); hint != "" {
 		verb += " " + hint
+	}
+	limit := ""
+	if top, _ := e.Args["limit"].(*Expression); e.Args["top"] == true && top != nil {
+		if g.dialect != "tsql" {
+			return g.fail("DELETE TOP outside T-SQL")
+		}
+		verb += " " + g.writeLimitWord(top, "TOP ")
+	} else {
+		limit = g.child(e, "limit")
 	}
 	verb += tablesWord
 	if g.tables.ReturningEnd {
