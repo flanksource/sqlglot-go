@@ -1,3 +1,4 @@
 commit:
   allow:
   - sqlglot/parser_gen.go
+  - harness/execute.py
