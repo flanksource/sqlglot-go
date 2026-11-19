@@ -46,7 +46,7 @@ func OpenDisposable(ctx context.Context) *sql.DB {
 	// #nosec G204 -- the generated name and validated IP are individual arguments.
 	command := exec.CommandContext(ctx, "docker", "run", "-d", "--rm", "--name", name,
 		"-e", "ACCEPT_EULA=Y", "-e", "MSSQL_PID=Developer", "-e", "MSSQL_SA_PASSWORD",
-		"-p", host+"::1433", "mcr.microsoft.com/mssql/server:2022-latest")
+		"-p", host+"::1433", "mcr.microsoft.com/mssql/server:2025-latest")
 	command.Env = append(os.Environ(), "MSSQL_SA_PASSWORD="+password)
 	output, err := command.CombinedOutput()
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "start a fresh SQL Server container: %s", output)

@@ -279,10 +279,7 @@ The rest change a result's *type* (`DATE_PART` is `double precision`,
 `EXTRACT` is `numeric`; `date_add` is `timestamptz`, `+` is `timestamp`) or
 produce SQL that does not run at all.
 
-The engines live on the Python side because DuckDB in Go means cgo, and the
-differential above proves the port on five platforms with a Go toolchain and
-nothing else — including Windows on arm64, where no such library exists. The
-Go side emits the pairs; Python runs them.
+The Go harness emits SQL pairs. Python runs them against DuckDB and PostgreSQL, so the Go differential suite requires only the Go toolchain and module dependencies.
 
 A divergence fails the build. A coverage regression below `testdata/floor.json`
 fails the build. An unexplained execution divergence, or a drop below the
@@ -369,10 +366,7 @@ ddl, err := sqlglot.Generate(session, "tsql")
 
 ## Working on Windows
 
-The parser is pure Go; the database packages use pure Go drivers. The tests need the Go
-toolchain and module dependencies -- the expectations are committed, so there is no Python or native library to install. CI runs the full differential on **Linux,
-macOS and Windows, amd64 and arm64**, and it invokes `go` directly rather than
-`make`, so all five platforms are proven by the same commands you would type:
+The parser and database drivers are pure Go. The committed expectations let you run the same differential suite that CI runs on Ubuntu using the Go toolchain and module dependencies.
 
 ```powershell
 go test ./...

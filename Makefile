@@ -12,11 +12,9 @@
 # These targets are convenience, and they assume GNU make and a POSIX shell:
 # Linux, macOS, or WSL / Git Bash on Windows. They are NOT the build.
 #
-# The build and the tests are the Go toolchain alone and run natively on
-# Linux, macOS and Windows, on both amd64 and arm64 -- CI proves it on five
-# platforms, and it invokes `go` directly rather than make for exactly that
-# reason. A Windows developer needs `go test ./...` and nothing else; see
-# "Working on Windows" in the README.
+# The differential tests use committed expectations and run with the Go
+# toolchain. CI runs them with Gavel on Ubuntu. See "Working on Windows"
+# in the README for the native Go commands.
 SQLGLOT ?= $(HOME)/opensource/sqlglot
 SERVICE ?= $(HOME)/calvinchengx/emulators/data-agent-service
 GOLANGCI ?= golangci-lint
