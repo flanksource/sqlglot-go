@@ -209,8 +209,11 @@ var _ = Describe("ui server", func() {
 		status, body = request(http.MethodPost, "/api/v1/migrate/plan", map[string]any{"source": map[string]any{"kind": "artifact", "content": string(plan.Artifact)}})
 		Expect(status).To(Equal(http.StatusOK), body)
 		Expect(body).To(ContainSubstring(plan.Hash))
+		status, body = request(http.MethodPost, "/api/v1/migrate/apply", map[string]any{"dsn": "connection://orders", "run": uuid.NewString(), "artifactContent": plan.Artifact, "hash": plan.Hash, "ack": []string{}})
+		Expect(status).To(Equal(http.StatusBadRequest), body)
+		Expect(body).To(ContainSubstring(`unknown field \"hash\"`))
 		applied := uuid.NewString()
-		status, body = request(http.MethodPost, "/api/v1/migrate/apply", map[string]any{"dsn": "connection://orders", "run": applied, "parent": planned, "artifactContent": plan.Artifact, "hash": plan.Hash, "ack": []string{}})
+		status, body = request(http.MethodPost, "/api/v1/migrate/apply", map[string]any{"dsn": "connection://orders", "run": applied, "parent": planned, "artifactContent": plan.Artifact, "ack": []string{}})
 		Expect(status).To(Equal(http.StatusOK), body)
 		Expect(body).To(ContainSubstring("applied"))
 		status, body = request(http.MethodGet, "/api/v1/history/"+applied, nil)
@@ -259,8 +262,11 @@ var _ = Describe("ui server", func() {
 	})
 	It("rejects every CLI filesystem option on all migration HTTP endpoints", func() {
 		for _, operation := range []string{"plan", "apply", "review"} {
-			for _, field := range []string{"bundle", "desired", "artifact", "out", "connections-dir"} {
-				status, response := request(http.MethodPost, "/api/v1/migrate/"+operation, map[string]any{field: filepath.Join(dir, "server-file")})
+			for field, value := range map[string]any{
+				"bundle": filepath.Join(dir, "server-file"), "desired": filepath.Join(dir, "server-file"), "out": filepath.Join(dir, "server-file"),
+				"connections-dir": filepath.Join(dir, "server-file"), "paths": []string{filepath.Join(dir, "server-file")},
+			} {
+				status, response := request(http.MethodPost, "/api/v1/migrate/"+operation, map[string]any{field: value})
 				Expect(status).To(Equal(http.StatusBadRequest), "%s %s: %s", operation, field, response)
 				Expect(response).To(ContainSubstring("HTTP requests require uploaded content"))
 			}
@@ -301,7 +307,7 @@ var _ = Describe("ui server", func() {
 		Expect(inputs("/api/v1/schema/compare")).To(ContainElements(compareFlags))
 		Expect(inputs("/api/v1/schema/patch")).To(ContainElements(append(compareFlags, "select", "diff-hash")))
 		Expect(inputs("/api/v1/migrate/plan")).To(ContainElements("source", "artifactContent"))
-		Expect(inputs("/api/v1/migrate/apply")).To(ContainElements("artifactContent", "hash", "ack"))
+		Expect(inputs("/api/v1/migrate/apply")).To(ContainElements("artifactContent", "ack"))
 	})
 
 	It("serves the SPA outside /api and 404s unknown API paths", func() {

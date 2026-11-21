@@ -8,6 +8,7 @@ import {
   useConfirm,
 } from "@flanksource/clicky-ui/components";
 import { Badge, Callout, CodeBlock } from "@flanksource/clicky-ui/data";
+import { PLAN_FILE } from "../compare/model";
 import { downloadText } from "../download";
 import type { ReviewedPlan, ApplyInput } from "./types";
 
@@ -58,7 +59,7 @@ export function MigrationReview({
     const hash = plan.hash;
     const accepted = await confirm({
       title: "Apply reviewed migration?",
-      message: `Target: ${targetLabel(target)}\nSchema: ${plan.schema}\nReviewed hash: ${hash}\n${plan.steps.length} SQL steps will run.`,
+      message: `Target: ${targetLabel(target)}\nSchema: ${plan.schema}\n${plan.steps.length} SQL steps will run. Apply refuses the plan if the target changed since it was planned.`,
       confirmLabel: "Apply reviewed migration",
       variant: plan.acks.length ? "destructive" : "default",
     });
@@ -67,7 +68,7 @@ export function MigrationReview({
       setError("The target or plan changed. Review it again before applying.");
       return;
     }
-    onApply({ hash, ack: acknowledged, "lock-timeout": timeout });
+    onApply({ ack: acknowledged, "lock-timeout": timeout });
   }
   return (
     <div className="space-y-4">
@@ -80,13 +81,13 @@ export function MigrationReview({
               variant="outline"
               onClick={() =>
                 downloadText({
-                  filename: "artifact.json",
+                  filename: PLAN_FILE,
                   content: JSON.stringify(plan.artifact, null, 2),
                   type: "application/json",
                 })
               }
             >
-              Download artifact
+              Download plan file
             </Button>
             <Button
               size="sm"
@@ -109,10 +110,10 @@ export function MigrationReview({
           <dd>
             {plan.dialect} / {plan.schema}
           </dd>
-          <dt>Reviewed hash</dt>
+          <dt>Plan hash</dt>
           <dd className="flex min-w-0 items-center gap-2">
             <code className="break-all text-xs">{plan.hash}</code>
-            <CopyButton value={plan.hash} label="Copy reviewed hash" />
+            <CopyButton value={plan.hash} label="Copy plan hash" />
           </dd>
         </dl>
       </Panel>

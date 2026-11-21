@@ -5,6 +5,8 @@ import (
 	"encoding/csv"
 	"fmt"
 
+	"github.com/flanksource/clicky"
+	"github.com/flanksource/clicky/api"
 	"github.com/flanksource/clicky/entity"
 	"github.com/flanksource/clicky/task"
 	"github.com/spf13/cobra"
@@ -28,17 +30,14 @@ func jsonCLICommand(cmd *cobra.Command) {
 				flags[flag.Name] = flag.Value.String()
 			}
 		})
-		if cmd.Name() == "apply" && flags["hash"] == "" {
-			return fmt.Errorf("reviewed --hash is required")
-		}
 		value, err := entity.GetContextDataFunc(cmd)(cmd.Context(), flags, args)
 		if err != nil {
 			return err
 		}
 		switch result := value.(type) {
 		case PlanOutput:
-			if flags["out"] != "" {
-				return nil
+			if err := writeSummary(cmd, result.Pretty()); err != nil {
+				return err
 			}
 			return writeDatabaseJSON(cmd, "", result.Original)
 		case ApplyOutput:
@@ -49,4 +48,20 @@ func jsonCLICommand(cmd *cobra.Command) {
 			return fmt.Errorf("unexpected command result %T", value)
 		}
 	}
+}
+
+// writeSummary prints a human summary to stderr, in color unless disabled.
+func writeSummary(cmd *cobra.Command, text api.Text) error {
+	noColor, err := cmd.Root().PersistentFlags().GetBool("no-color")
+	if err != nil {
+		return err
+	}
+	options := clicky.FormatOptions{NoColor: noColor}
+	options.ResolveNoColor()
+	rendered := text.ANSI()
+	if options.NoColor {
+		rendered = text.String()
+	}
+	_, err = fmt.Fprintln(cmd.ErrOrStderr(), rendered)
+	return err
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,15 +45,14 @@ type MigrationOptions struct {
 	TargetOptions
 	Bundle          string            `json:"bundle,omitempty" flag:"bundle" help:"Directory containing HCL and SQL files (CLI only)"`
 	CSVRoot         string            `json:"csv-root,omitempty" flag:"csv-root" help:"Directory containing CSV migration sources (CLI only)"`
-	Country         []string          `json:"country,omitempty" flag:"country" split:"false" help:"CSV country layer filter"`
-	Environment     []string          `json:"env,omitempty" flag:"env" split:"false" help:"CSV environment layer filter"`
-	Layer           []string          `json:"layer,omitempty" flag:"layer" split:"false" help:"CSV layer filter as name=values"`
+	Country         []string          `json:"country,omitempty" flag:"-" help:"CSV country layer filter"`
+	Environment     []string          `json:"env,omitempty" flag:"-" help:"CSV environment layer filter"`
+	Layer           []string          `json:"layer,omitempty" flag:"layer" split:"false" help:"Filter a CSV layer as NAME=FILTER (repeatable)"`
 	LayerFilters    map[string]string `json:"layerFilters,omitempty" flag:"-"`
-	CSVPhase        string            `json:"csvPhase,omitempty" flag:"csv-phase" help:"Select the pre-rules or post-rules CSV phase"`
+	CSVPhase        string            `json:"csvPhase,omitempty" flag:"csv-phase" help:"Select pre-rules or post-rules CSV tables (both by default)"`
 	Desired         string            `json:"desired,omitempty" flag:"desired" help:"Desired HCL or snapshot JSON file (CLI only)"`
-	Output          string            `json:"out,omitempty" flag:"out" help:"Save the reviewed artifact to a file (CLI only)"`
-	Artifact        string            `json:"artifact,omitempty" flag:"artifact" help:"Reviewed artifact file (CLI only)"`
-	Hash            string            `json:"hash,omitempty" flag:"hash" help:"Explicitly reviewed artifact hash"`
+	Output          string            `json:"out,omitempty" flag:"out" help:"Plan file to write (CLI only, default .sqlglot-go/plan.json)"`
+	Paths           []string          `json:"paths,omitempty" args:"true" split:"false" help:"Plan sources: SQL or HCL files and directories, each file detected by its content (plan); the plan file (apply, review). CLI only"`
 	Acks            []string          `json:"ack,omitempty" flag:"ack" split:"false" help:"Acknowledged destructive step IDs"`
 	LockTimeout     string            `json:"lock-timeout,omitempty" flag:"lock-timeout" default:"5s" help:"Maximum migration lock wait"`
 	Variables       []string          `json:"var,omitempty" flag:"var" split:"false" help:"Bundle variable as name=HCL-literal"`
@@ -62,18 +62,34 @@ type MigrationOptions struct {
 	ArtifactContent json.RawMessage   `json:"artifactContent,omitempty" flag:"-"`
 }
 
+// defaultPlanPath is where migrate plan writes its plan file without --out.
+const defaultPlanPath = ".sqlglot-go/plan.json"
+
 type PlanOutput struct{ workflow.PlanResult }
 
+// Pretty summarises what applying the plan does: a script plan as its plan
+// file renders it, any other artifact as its steps.
 func (p PlanOutput) Pretty() api.Text {
-	var value any
-	if err := json.Unmarshal(p.Original, &value); err != nil {
-		panic(err)
+	if p.ScriptPlan != nil {
+		return p.ScriptPlan.Pretty()
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		panic(err)
+	out := clicky.Text("Plan for "+p.Dialect+" schema "+p.Schema, "font-bold")
+	destructive := 0
+	for _, step := range p.Steps {
+		marker, style := "  + ", "text-green-600"
+		if step.Destructive {
+			destructive++
+			marker, style = "  ! destructive ", "text-red-600"
+		}
+		out = out.NewLine().Append(marker, style).Append(strings.TrimSpace(step.SQL))
 	}
-	return clicky.Text(string(data))
+	for _, warning := range p.Warnings {
+		out = out.NewLine().Append("  ! ", "text-yellow-600").Append(warning)
+	}
+	if !p.Applicable {
+		out = out.NewLine().Append("This plan is advisory and cannot be applied.", "text-yellow-600")
+	}
+	return out.NewLine().Append(fmt.Sprintf("Plan: %d steps (%d destructive).", len(p.Steps), destructive), "font-bold")
 }
 
 type ApplyOutput struct{ Value any }
@@ -89,8 +105,8 @@ func (o ApplyOutput) Pretty() api.Text {
 
 func newMigrationPlanCommand() *cobra.Command {
 	parent := &cobra.Command{Use: "migrate"}
-	cmd := clicky.AddNamedCommandWithContext("plan", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (result PlanOutput, returnErr error) {
-		opts, err := migrationInput(ctx, opts)
+	cmd := clicky.AddNamedCommandWithContext("plan", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (PlanOutput, error) {
+		opts, err := migrationInput(ctx, opts, pathsAreSources)
 		if err != nil {
 			return PlanOutput{}, err
 		}
@@ -98,19 +114,15 @@ func newMigrationPlanCommand() *cobra.Command {
 		if err != nil {
 			return PlanOutput{}, err
 		}
-		if opts.Output != "" {
-			root, err := os.OpenRoot(filepath.Dir(opts.Output))
-			if err != nil {
-				return PlanOutput{}, err
-			}
-			defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
-			if err := root.WriteFile(filepath.Base(opts.Output), payload.Plan.Original, 0600); err != nil {
+		if _, served := rpc.RequestFromContext(ctx); !served {
+			if err := writePlanFile(cmp.Or(opts.Output, defaultPlanPath), payload.Plan.Original); err != nil {
 				return PlanOutput{}, err
 			}
 		}
 		return PlanOutput{*payload.Plan}, nil
 	})
-	cmd.Short = "Generate a reviewed artifact without changing the database"
+	cmd.Short = "Plan a migration into a plan file without changing the database"
+	cmd.Long = migrationPlanHelp
 	jsonCLICommand(cmd)
 	return cmd
 }
@@ -118,17 +130,18 @@ func newMigrationPlanCommand() *cobra.Command {
 func newMigrationApplyCommand() *cobra.Command {
 	parent := &cobra.Command{Use: "migrate"}
 	cmd := clicky.AddNamedCommandWithContext("apply", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (ApplyOutput, error) {
-		opts, err := migrationInput(ctx, opts)
+		opts, err := migrationInput(ctx, opts, pathIsPlanFile)
 		if err != nil {
 			return ApplyOutput{}, err
 		}
-		if opts.Hash == "" {
-			return ApplyOutput{}, fmt.Errorf("reviewed --hash is required")
+		if len(opts.ArtifactContent) == 0 {
+			return ApplyOutput{}, fmt.Errorf("a plan file is required: sqlglot migrate apply %s", defaultPlanPath)
 		}
 		payload, err := migrateRun(ctx, opts, "apply")
 		return ApplyOutput{Value: payload.Result}, err
 	})
-	cmd.Short = "Apply exact reviewed SQL with hash and destructive acknowledgements"
+	cmd.Short = "Apply a plan file, refusing it when the target changed since the plan"
+	cmd.Long = migrationApplyHelp
 	jsonCLICommand(cmd)
 	return cmd
 }
@@ -136,33 +149,63 @@ func newMigrationApplyCommand() *cobra.Command {
 func newMigrationReviewCommand() *cobra.Command {
 	parent := &cobra.Command{Use: "migrate"}
 	cmd := clicky.AddNamedCommandWithContext("review", parent, MigrationOptions{}, func(ctx context.Context, opts MigrationOptions) (PlanOutput, error) {
-		opts, err := migrationInput(ctx, opts)
+		opts, err := migrationInput(ctx, opts, pathIsPlanFile)
 		if err != nil {
 			return PlanOutput{}, err
+		}
+		if len(opts.ArtifactContent) == 0 {
+			return PlanOutput{}, fmt.Errorf("a plan file is required: sqlglot migrate review %s", defaultPlanPath)
 		}
 		plan, err := workflow.Review(opts.ArtifactContent, opts.Driver, opts.Schema)
 		return PlanOutput{PlanResult: plan}, err
 	})
-	cmd.Short = "Review an uploaded artifact without opening a database"
+	cmd.Short = "Review a plan file without opening a database"
+	cmd.Long = migrationReviewHelp
 	jsonCLICommand(cmd)
 	return cmd
 }
 
-func migrationInput(ctx context.Context, opts MigrationOptions) (MigrationOptions, error) {
+// pathRole is what a migrate command reads its positional paths as.
+type pathRole int
+
+const (
+	// pathsAreSources: migrate plan's SQL and HCL files and directories.
+	pathsAreSources pathRole = iota
+	// pathIsPlanFile: the one plan file migrate apply and review read.
+	pathIsPlanFile
+)
+
+func migrationInput(ctx context.Context, opts MigrationOptions, role pathRole) (MigrationOptions, error) {
 	if request, ok := rpc.RequestFromContext(ctx); ok {
 		if err := decodeRequest(request, &opts); err != nil {
 			return opts, err
 		}
-		if opts.Bundle != "" || opts.CSVRoot != "" || opts.Desired != "" || opts.Artifact != "" || opts.Output != "" || opts.ConnectionsDir != "" {
+		if opts.Bundle != "" || opts.CSVRoot != "" || opts.Desired != "" || len(opts.Paths) > 0 || opts.Output != "" || opts.ConnectionsDir != "" {
 			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "HTTP requests require uploaded content, not server paths")
 		}
 		return opts, nil
 	}
-	if opts.CSVRoot != "" && (opts.Bundle != "" || opts.Desired != "") {
-		return opts, fmt.Errorf("select exactly one migration source")
+	sources := 0
+	for _, set := range []bool{opts.CSVRoot != "", opts.Bundle != "", opts.Desired != "", role == pathsAreSources && len(opts.Paths) > 0} {
+		if set {
+			sources++
+		}
 	}
-	if (opts.Bundle != "" && (opts.Desired != "" || opts.Artifact != "")) || (opts.Desired != "" && opts.Artifact != "") {
-		return opts, fmt.Errorf("select exactly one source")
+	if sources > 1 {
+		return opts, fmt.Errorf("select exactly one migration source: source paths, --bundle, --desired or --csv-root")
+	}
+	if role == pathIsPlanFile && (opts.Bundle != "" || opts.Desired != "" || opts.CSVRoot != "") {
+		return opts, fmt.Errorf("apply and review read their sources from the plan file; pass only the plan file")
+	}
+	if role == pathIsPlanFile && len(opts.Paths) > 1 {
+		return opts, fmt.Errorf("expected one plan file, got %d paths", len(opts.Paths))
+	}
+	if role == pathsAreSources && len(opts.Paths) > 0 {
+		files, err := readBundleSources(opts.Paths, os.Stderr)
+		if err != nil {
+			return opts, err
+		}
+		opts.Source = workflow.Source{Kind: "bundle", Files: files}
 	}
 	if opts.Desired != "" {
 		data, err := os.ReadFile(opts.Desired)
@@ -174,8 +217,8 @@ func migrationInput(ctx context.Context, opts MigrationOptions) (MigrationOption
 			opts.Source.Kind = "snapshot"
 		}
 	}
-	if opts.Artifact != "" {
-		data, err := os.ReadFile(opts.Artifact)
+	if role == pathIsPlanFile && len(opts.Paths) == 1 {
+		data, err := os.ReadFile(opts.Paths[0])
 		if err != nil {
 			return opts, err
 		}
@@ -215,7 +258,7 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 				defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
 				plan.Bundle = root.FS()
 			}
-			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ConnectionsDir: dir}, Plan: plan, Hash: opts.Hash, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
+			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ConnectionsDir: dir}, Plan: plan, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
 		})
 	})
 }
@@ -243,4 +286,18 @@ func migrationLayerFilters(opts MigrationOptions) (map[string]string, error) {
 		result[name] = expression
 	}
 	return result, nil
+}
+
+// writePlanFile writes data to path, creating its directory, and refuses a
+// path whose final element escapes that directory.
+func writePlanFile(path string, data []byte) (returnErr error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create plan file directory: %w", err)
+	}
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
+	return root.WriteFile(filepath.Base(path), data, 0600)
 }

@@ -4,7 +4,7 @@ import { UiDownload, UiRefresh } from "@flanksource/clicky-ui/icons";
 import { asPatchResult } from "../api";
 import { downloadText } from "../download";
 import type { CompareResult, PatchResult } from "../types";
-import { applyCommand, changeLabel, isDriftError } from "./model";
+import { PLAN_FILE, applyCommand, changeLabel, isDriftError } from "./model";
 import { comparisonOf, useStartComparison } from "./queries";
 import { ComparisonHeader } from "./Review";
 import { ResultGate } from "./ResultGate";
@@ -64,13 +64,13 @@ function PatchRun({ route, navigate, result }: { route: Route; navigate: Navigat
 
 function PatchView({ patch, result }: { patch: PatchResult; result: CompareResult }) {
   const labels = new Map(result.changes.map((change) => [change.id, change]));
-  const command = applyCommand({ target: result.target, hash: patch.hash, acks: patch.acks });
+  const command = applyCommand({ target: result.target, acks: patch.acks });
   return (
     <>
       <Panel title="Patch" actions={
         <>
           <Button size="sm" variant="outline" onClick={() => downloadText({ filename: "patch.sql", content: patch.sql, type: "application/sql" })}><UiDownload className="size-3.5" />patch.sql</Button>
-          <Button size="sm" variant="outline" onClick={() => downloadText({ filename: "artifact.json", content: JSON.stringify(patch.artifact, null, 2), type: "application/json" })}><UiDownload className="size-3.5" />artifact.json</Button>
+          <Button size="sm" variant="outline" onClick={() => downloadText({ filename: PLAN_FILE, content: JSON.stringify(patch.artifact, null, 2), type: "application/json" })}><UiDownload className="size-3.5" />{PLAN_FILE}</Button>
         </>
       }>
         <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">

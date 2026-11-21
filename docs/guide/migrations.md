@@ -5,7 +5,7 @@ description: Use saved connections to compare databases, create a patch, resume 
 
 # Compare, review, and apply a migration
 
-This guide follows one complete migration: choose two saved connections, inspect the differences, create a patch, leave and resume the review, then apply it to the target. Start with [Add connections and inspect a database](./inspection) if you have not saved your connections yet.
+This guide follows one complete migration: choose two saved connections, inspect the differences, create a patch, leave and resume the review, then apply it to the target. Start with [Add connections and inspect a database](./inspection) if you have not saved your connections yet. For migrations sourced from HCL, SQL scripts, snapshots or CSV, see [the migration CLI guide](./cli#migrate).
 
 The example uses `inventory-reference` and `inventory-target`. The reference's `items` table has a `notes` column that the target is missing. Both databases already contain two rows.
 
@@ -56,11 +56,11 @@ Click **Create patch (1)** for the example's single selected change. If the sele
 
 The patch screen shows:
 
-- **Patch** — the number of selected changes and the reviewed hash.
+- **Patch** — the number of selected changes and the plan file's hash.
 - **SQL script** — the statements the patch will execute.
-- **Apply to the target** — the command for applying this artifact to the selected target.
+- **Apply to the target** — the command for applying this plan file to the selected target.
 
-Read the SQL and confirm the target connection. Click **artifact.json** to download the migration artifact. You can also download **patch.sql** for a readable copy of the SQL. Keep the artifact unchanged after reviewing it.
+Read the SQL and confirm the target connection. Click **plan.json** to download the plan file. You can also download **patch.sql** for a readable copy of the SQL. Keep the plan file unchanged after reviewing it: its hash guards its integrity, so an edited file is refused.
 
 Creating the patch checks the databases again. If their schemas changed since the comparison, use **Re-compare** and review the new differences before making another patch.
 
@@ -83,7 +83,7 @@ If you want to preserve your exact selection and focused object, bookmark the re
 
 1. In **History**, choose **Patch**.
 2. Open the patch by its time.
-3. Review the saved SQL, download **artifact.json** again if needed, or copy the same apply command.
+3. Review the saved SQL, download **plan.json** again if needed, or copy the same apply command.
 
 Reopening a patch does not regenerate or apply it. Its saved contents remain available if a database is offline. You can also bookmark the patch page to return directly to it.
 
@@ -95,13 +95,13 @@ Click **Re-compare** when you need the latest schema state. It runs a new compar
 
 The browser prepares and downloads the patch; execution happens in the terminal.
 
-1. Put the downloaded `artifact.json` in your working folder.
+1. Put the downloaded `plan.json` in your working folder.
 2. In **Apply to the target**, click **Copy command**.
 3. Open a terminal in that folder.
 4. Read the command and confirm that its connection is `inventory-target`.
 5. Run the copied command.
 
-The command already includes the saved target connection, the artifact filename, its reviewed hash, and any required destructive acknowledgements. You do not need to assemble these values manually. Review destructive changes before running a command that acknowledges them.
+The command has the form `sqlglot migrate apply --dsn <target> [--ack <id>…] plan.json`: the saved target connection, any required destructive acknowledgements, and the plan file as its last argument. You do not need to assemble these values manually, and there is no hash to pass: apply checks the file's own hash and refuses the plan, running nothing, if the target changed since it was planned. Review destructive changes before running a command that acknowledges them.
 
 A successful apply reports `applied`. For the SQLite example, one step adds `notes` and the two existing rows remain. You can check them from the folder containing the database:
 
@@ -124,7 +124,19 @@ If you selected only some changes from a larger comparison, the unselected diffe
 
 Open **History** and choose **Migration** to read the apply result. The original comparison and patch are still available as records of what you reviewed. Restarting the app does not remove saved connections or completed runs.
 
-Running the same schema artifact again reports `already-applied` when the target already matches its expected result. If apply reports drift, return to **Compare**, run a fresh comparison, and review a new patch instead of editing the old artifact.
+Running the same schema plan file again reports `already-applied` when the target already matches its expected result. If apply reports drift or a stale plan, return to **Compare**, run a fresh comparison, and review a new patch instead of editing the old plan file.
+
+## Plan and apply from the terminal
+
+The CLI works the same way terraform does: plan writes a file, apply runs exactly that file.
+
+```sh
+sqlglot migrate plan --dsn connection://inventory-target --bundle ./db
+sqlglot migrate review .sqlglot-go/plan.json
+sqlglot migrate apply --dsn connection://inventory-target .sqlglot-go/plan.json
+```
+
+`plan` prints what will change to stderr, terraform-style: `+ run` for new scripts, `~ re-run` with the reason (for example `upstream-write: dbo.asenv ← PreDeployment_0_AsEnv`), `! blocked`, `? effects unknown`, the schema statements with destructive ones marked, warnings and totals. The plan file's hash only guards its integrity; there is nothing else to approve. If the database changed after the plan, `apply` stops with `plan is stale: <what moved>; run sqlglot migrate plan again` and runs nothing. See the [CLI guide](./cli.md#migrate) for every source and flag.
 
 ## If something goes wrong
 
@@ -135,7 +147,7 @@ Running the same schema artifact again reports `already-applied` when the target
 | Identical schemas | There is no change to apply; check that you selected the intended pair |
 | Missing required changes | Add the required changes, then review the selection and SQL again |
 | A database changed since review | Re-compare and create a newly reviewed patch |
-| The artifact hash does not match | Download the artifact from the same saved patch as the copied apply command |
+| The plan file is refused as invalid | Download **plan.json** again from the same saved patch as the copied apply command; do not edit it |
 | A database is offline | Read the saved comparison or patch in History; reconnect before creating or applying a new patch |
 | The commit result is unknown | Inspect the target and its migration history before deciding whether to retry |
 
