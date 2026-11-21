@@ -1,7 +1,6 @@
 package sqlserver
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -62,23 +61,20 @@ func validateProbe(f Function, modules map[string]moduleSnapshot) error {
 	return visit(f.Name)
 }
 
-func (o *observer) readModule(ctx context.Context, name string) (catalog.Module, error) {
+// readModule answers from what the epoch loaded; a name it never loaded is a
+// broken invariant, not a reason to query.
+func (o *observer) readModule(name string) (catalog.Module, error) {
 	if m, ok := o.names[name]; ok {
 		return m, nil
 	}
-	quoted, err := scripts.QuoteName(name)
-	if err != nil {
+	if err, ok := o.missing[name]; ok {
 		return catalog.Module{}, err
 	}
-	m, err := catalog.ReadModule(ctx, catalog.FromDB(o.q), quoted)
-	if err == nil {
-		o.names[name], o.names[m.Schema+"."+m.Name] = m, m
-	}
-	return m, err
+	return catalog.Module{}, fmt.Errorf("module %s was not loaded for this observation", name)
 }
 
-func (o *observer) module(ctx context.Context, name string) error {
-	m, err := o.readModule(ctx, name)
+func (o *observer) module(name string) error {
+	m, err := o.readModule(name)
 	if err != nil {
 		return err
 	}
@@ -87,7 +83,7 @@ func (o *observer) module(ctx context.Context, name string) error {
 		return nil
 	}
 	o.visited[key] = true
-	snapshot, err := o.moduleDefinition(ctx, key, m)
+	snapshot, err := o.moduleDefinition(key, m)
 	if err != nil {
 		return err
 	}
@@ -100,32 +96,27 @@ func (o *observer) module(ctx context.Context, name string) error {
 	o.inputs["definition:"+key] = scripts.Observation{Kind: "function-definition", Hash: snapshot.Hash}
 	o.modules[key] = snapshot
 	for _, ref := range snapshot.References {
-		if err := o.module(ctx, ref); err != nil {
+		if err := o.module(ref); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (o *observer) moduleDefinition(ctx context.Context, key string, m catalog.Module) (moduleSnapshot, error) {
+func (o *observer) moduleDefinition(key string, m catalog.Module) (moduleSnapshot, error) {
 	if definition, exists := o.definitions[key]; exists {
 		return definition, nil
 	}
-	quoted, err := scripts.QuoteName(key)
-	if err != nil {
-		return moduleSnapshot{}, err
+	loaded, ok := o.loaded[key]
+	if !ok {
+		return moduleSnapshot{}, fmt.Errorf("module %s was not loaded for this observation", key)
 	}
-	canonical, err := sqlglot.CanonicalSQL(m.Definition, "tsql")
-	if err != nil {
-		return moduleSnapshot{}, fmt.Errorf("module %s: %w", key, err)
+	if loaded.err != nil {
+		return moduleSnapshot{}, loaded.err
 	}
-	a := scripts.Analyze(scripts.AnalysisOptions{SQL: m.Definition, InvokedModule: true})
-	refs, err := catalog.ModuleReferences(ctx, catalog.FromDB(o.q), quoted)
-	if err != nil {
-		return moduleSnapshot{}, err
-	}
-	snapshot := moduleSnapshot{Metadata: m, Analysis: a, Hash: scripts.Digest(canonical, strconv.FormatBool(m.ANSI), strconv.FormatBool(m.Quoted))}
-	for _, ref := range refs {
+	a := loaded.analysis.Analysis
+	snapshot := moduleSnapshot{Metadata: m, Analysis: a, Hash: scripts.Digest(loaded.analysis.Canonical, strconv.FormatBool(m.ANSI), strconv.FormatBool(m.Quoted))}
+	for _, ref := range loaded.refs {
 		if ref.Database != "" || ref.Server != "" || !ref.Bound {
 			return moduleSnapshot{}, fmt.Errorf("module %s: unresolved or external dependency %s.%s", key, ref.Schema, ref.Name)
 		}
@@ -138,7 +129,7 @@ func (o *observer) moduleDefinition(ctx context.Context, key string, m catalog.M
 		}
 	}
 	for _, call := range a.Calls {
-		called, err := o.readModule(ctx, call)
+		called, err := o.readModule(call)
 		if err != nil {
 			return moduleSnapshot{}, err
 		}

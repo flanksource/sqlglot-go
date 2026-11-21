@@ -48,7 +48,7 @@ layers:
 		Expect(err).NotTo(HaveOccurred())
 		Expect(plan.CSVPlan.Tables).To(ConsistOf(MatchFieldsForCounts(3, 1, 1, 0, 0)))
 		Expect(string(plan.Artifact)).NotTo(ContainSubstring("regional"))
-		_, err = workflow.Apply(ctx, db, workflow.ApplyOptions{Dialect: "sqlserver", Schema: "dbo", Artifact: plan.Artifact, Hash: plan.Hash, Acks: plan.Acks, CSV: opts, LockTimeout: time.Second})
+		_, err = workflow.Apply(ctx, db, workflow.ApplyOptions{Dialect: "sqlserver", Schema: "dbo", Artifact: plan.Artifact, Acks: plan.Acks, CSV: opts, LockTimeout: time.Second})
 		Expect(err).NotTo(HaveOccurred())
 
 		var values string
@@ -126,17 +126,15 @@ CREATE TABLE dbo.ObservedCountries (Name nvarchar(40));`)
 		_, err = db.ExecContext(ctx, `CREATE FUNCTION dbo.get_country_name() RETURNS nvarchar(40) AS
 BEGIN RETURN (SELECT Name FROM dbo.CountryLookup WHERE ID=1); END`)
 		Expect(err).NotTo(HaveOccurred())
-		session, err := scriptserver.Open(ctx, scriptserver.Options{
+		options := scriptserver.Options{
 			DB: db, Scope: "csv-lookup",
 			Functions: []scriptserver.Function{{Name: "dbo.get_country_name", Type: "nvarchar"}},
 			Scripts: []scripts.Script{{ID: "lookup", Phase: scripts.Post,
 				SQL: "INSERT dbo.ObservedCountries VALUES (dbo.get_country_name());"}},
-		})
+		}
+		first, err := scriptserver.Plan(ctx, options)
 		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(session.Close)
-		first, err := session.Inspect(ctx, scripts.Post)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = session.Apply(ctx, scriptserver.ApplyOptions{Preview: first})
+		_, err = scriptserver.Apply(ctx, db, first)
 		Expect(err).NotTo(HaveOccurred())
 		csv := csvdata.Options{Schema: "dbo", Files: fstest.MapFS{
 			"CountryLookup.csv.yaml": {Data: []byte("version: 1\ntable: dbo.CountryLookup\n")},
@@ -146,9 +144,11 @@ BEGIN RETURN (SELECT Name FROM dbo.CountryLookup WHERE ID=1); END`)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = csvdata.Apply(ctx, db, csvdata.ApplyOptions{Options: csv, Artifact: plan, Hash: plan.Hash, LockTimeout: time.Second})
 		Expect(err).NotTo(HaveOccurred())
-		next, err := session.Inspect(ctx, scripts.Post)
+		next, err := scriptserver.Plan(ctx, options)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(next.Plan.Scripts[0].Reasons).To(ContainElement("function-result-changed"))
+		Expect(next.Actions[0].Reasons).To(ContainElement("function-result-changed"))
+		_, err = scriptserver.Apply(ctx, db, first)
+		Expect(err).To(MatchError(ContainSubstring("plan is stale")), "the CSV import moved the plan's function result")
 	})
 })
 

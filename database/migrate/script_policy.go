@@ -10,10 +10,9 @@ import (
 )
 
 type ScriptPolicy struct {
-	Functions                   []backend.Function
-	Dependencies                map[string][]scripts.Dependency
-	ExplicitDependencies        []string
-	AcknowledgeNonTransactional bool
+	Functions            []backend.Function
+	Dependencies         map[string][]scripts.Dependency
+	ExplicitDependencies []string
 }
 
 // WithScriptPolicy enables SQL Server dependency tracking for named script paths.

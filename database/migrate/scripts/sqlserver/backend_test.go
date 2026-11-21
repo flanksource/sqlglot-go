@@ -38,10 +38,12 @@ var _ = Describe("Dependency observation contracts", func() {
 		DeferCleanup(func() { mock.ExpectClose(); Expect(db.Close()).To(Succeed()) })
 		mock.ExpectQuery("SELECT CONVERT").WillReturnRows(sqlmock.NewRows([]string{"server", "database"}).AddRow("example", "disposable"))
 		mock.ExpectQuery("SELECT CASE").WillReturnRows(sqlmock.NewRows([]string{"exists", "extended"}).AddRow(0, 0))
-		preview, err := Inspect(context.Background(), Options{DB: db, Scope: "example", Scripts: []scripts.Script{{ID: "seed", SQL: "SELECT 1", Phase: scripts.Post}}}, scripts.Post)
+		file, err := Plan(context.Background(), Options{DB: db, Scope: "example", Scripts: []scripts.Script{{ID: "seed", SQL: "SELECT 1", Phase: scripts.Post}}})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(preview.Plan.Scripts).To(HaveLen(1))
-		Expect(preview.Plan.Scripts[0].Selected).To(BeTrue())
+		Expect(file.Actions).To(HaveLen(1))
+		Expect(file.Actions[0].Selected).To(BeTrue())
+		Expect(file.Target).To(Equal(PlanTarget{Server: "example", Database: "disposable", Scope: "example"}))
+		Expect(file.Verify()).To(Succeed())
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 	It("samples a shared function once per preview and resamples on the next preview", func(ctx SpecContext) {
@@ -54,20 +56,44 @@ var _ = Describe("Dependency observation contracts", func() {
 		}}
 		var hashes []string
 		for _, country := range []string{"Zimbabwe", "Malawi"} {
-			mock.ExpectQuery("SELECT CONVERT").WillReturnRows(sqlmock.NewRows([]string{"server", "database"}).AddRow("example", "disposable"))
-			mock.ExpectQuery("SELECT CASE").WillReturnRows(sqlmock.NewRows([]string{"exists", "extended"}).AddRow(0, 0))
-			mock.ExpectQuery("SELECT SCHEMA_NAME").WithArgs("[dbo].[country]").WillReturnRows(sqlmock.NewRows([]string{
-				"schema", "name", "kind", "definition", "ansi", "quoted", "type", "length", "precision", "scale", "parameters",
-			}).AddRow("dbo", "country", "FN", "CREATE FUNCTION dbo.country() RETURNS nvarchar(40) AS BEGIN RETURN N'country' END", true, true, "nvarchar", 80, 0, 0, 0))
-			mock.ExpectQuery("SELECT COALESCE").WithArgs("[dbo].[country]").WillReturnRows(sqlmock.NewRows([]string{"server", "db", "schema", "name", "kind", "bound"}))
+			expectTarget(mock)
+			expectLevel(mock, []string{"dbo.country"}, function("dbo.country", "N'country'"))
 			mock.ExpectQuery(`SELECT \[dbo\]\.\[country\]\(\)`).WillReturnRows(sqlmock.NewRows([]string{"country"}).AddRow(country))
-			preview, err := Inspect(ctx, opts, scripts.Post)
+			file, err := Plan(ctx, opts)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(preview.Plan.Scripts[0].State.Inputs).To(HaveKey("result:dbo.country"))
-			Expect(preview.Plan.Scripts[0].State.Inputs).To(Equal(preview.Plan.Scripts[1].State.Inputs))
-			hashes = append(hashes, preview.Plan.Scripts[0].State.Inputs["result:dbo.country"])
+			Expect(file.Actions[0].State.Inputs).To(HaveKey("result:dbo.country"))
+			Expect(file.Actions[0].State.Inputs).To(Equal(file.Actions[1].State.Inputs))
+			hashes = append(hashes, file.Actions[0].State.Inputs["result:dbo.country"])
 		}
 		Expect(hashes[0]).NotTo(Equal(hashes[1]))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+	It("plans several phases from one ledger read and one observation epoch", func(ctx SpecContext) {
+		db, mock, err := sqlmock.New()
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { mock.ExpectClose(); Expect(db.Close()).To(Succeed()) })
+		opts := Options{DB: db, Scope: "phases", Functions: []Function{{Name: "dbo.country", Type: "nvarchar"}}, Scripts: []scripts.Script{
+			{ID: "seed", SQL: "SELECT dbo.country()", Phase: scripts.Pre},
+			{ID: "report", SQL: "SELECT dbo.country()", Phase: scripts.Post},
+		}}
+		expectTarget(mock)
+		expectLevel(mock, []string{"dbo.country"}, function("dbo.country", "N'country'"))
+		mock.ExpectQuery(`SELECT \[dbo\]\.\[country\]\(\)`).WillReturnRows(sqlmock.NewRows([]string{"country"}).AddRow("Zimbabwe"))
+
+		file, err := Plan(ctx, opts)
+
+		Expect(err).NotTo(HaveOccurred())
+		selected := map[scripts.Phase][]string{}
+		for _, item := range file.Actions {
+			if item.Selected {
+				selected[item.Script.Phase] = append(selected[item.Script.Phase], item.Script.ID)
+			}
+		}
+		Expect(selected).To(Equal(map[scripts.Phase][]string{scripts.Pre: {"seed"}, scripts.Post: {"report"}}))
+		Expect(file.Observations).To(Equal(map[string]string{
+			"definition:dbo.country": file.Actions[0].State.Inputs["definition:dbo.country"],
+			"result:dbo.country":     file.Actions[0].State.Inputs["result:dbo.country"],
+		}))
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 })

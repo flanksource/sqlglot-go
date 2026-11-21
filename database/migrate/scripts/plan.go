@@ -3,9 +3,11 @@ package scripts
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 )
 
+// Build plans the bundle in Ordered order. With an empty phase it plans both
+// phases in one pass; a phase filters the plan to that phase while still
+// propagating every earlier script's writes.
 func Build(opts PlanOptions) (Plan, error) {
 	if opts.Target == "" {
 		return Plan{}, fmt.Errorf("script plan target is empty")
@@ -19,11 +21,21 @@ func Build(opts PlanOptions) (Plan, error) {
 	}
 	plan := Plan{Target: opts.Target, Phase: opts.Phase, Scripts: []Pending{}}
 	current := map[string]Pending{}
+	walk := newPropagation(opts.Modules)
+	schemaWritten := false
 	for _, script := range ordered {
+		if script.Phase == Post && !schemaWritten {
+			walk.write(SchemaWriter, opts.SchemaWrites)
+			schemaWritten = true
+		}
 		item := pending(script, opts, current)
+		walk.visit(&item)
 		current[script.ID] = item
 		if opts.Phase == "" || opts.Phase == script.Phase {
 			plan.Scripts = append(plan.Scripts, item)
+			if item.Selected && len(item.EffectsUnknown) > 0 {
+				plan.Warnings = append(plan.Warnings, unknownWarning(item))
+			}
 		}
 	}
 	content, err := json.Marshal(plan)
@@ -32,6 +44,11 @@ func Build(opts PlanOptions) (Plan, error) {
 	}
 	plan.Hash = SourceHash(string(content))
 	return plan, nil
+}
+
+// StateHash is the ledger hash of a state: its source, policy and inputs.
+func StateHash(s State) string {
+	return Digest("script-v2", s.SourceHash, s.PolicyHash, InputHash(s.Inputs))
 }
 
 func pending(script Script, opts PlanOptions, current map[string]Pending) Pending {
@@ -43,7 +60,9 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 		Dependencies                       []Dependency
 		ContextPolicy                      string
 	}{script.Phase, script.Always, script.NonTransactional, script.ExplicitDependencies, script.DependsOn, script.Dependencies, script.ContextPolicy})
-	item := Pending{Script: script, State: State{Version: Version, SourceHash: SourceHash(script.SQL), PolicyHash: SourceHash(string(policy)), Inputs: map[string]string{}}}
+	item := Pending{Script: script, State: State{Version: Version, SourceHash: SourceHash(script.SQL), PolicyHash: SourceHash(string(policy)),
+		EffectsHash: effectsHash(script), Inputs: map[string]string{}}}
+	legacy := old.Version == legacyVersion
 	for key, input := range observations {
 		if input.Error != "" {
 			item.Blocked = append(item.Blocked, key+": "+input.Error)
@@ -69,7 +88,7 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 		}
 		item.State.Inputs["script:"+dep] = input.State.Hash
 		changed := old.Inputs["script:"+dep] != input.State.Hash
-		if old.Version < Version {
+		if legacy {
 			changed = false
 			for _, reason := range input.Reasons {
 				changed = changed || reason != "always"
@@ -79,7 +98,7 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 			item.Reasons = append(item.Reasons, "script-dependency-changed")
 		}
 	}
-	item.State.Hash = Digest("script-v2", item.State.SourceHash, item.State.PolicyHash, InputHash(item.State.Inputs))
+	item.State.Hash = StateHash(item.State)
 	switch {
 	case old.Outcome == "partial" || old.Outcome == "commit-unknown":
 		item.Blocked = append(item.Blocked, "reconciliation required: "+old.Outcome)
@@ -89,17 +108,14 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 		item.Reasons = append(item.Reasons, "new")
 	case old.SourceHash != item.State.SourceHash:
 		item.Reasons = append(item.Reasons, "source-changed")
-	case old.Version < Version && len(observations) > 0:
+	case legacy && len(observations) > 0:
 		item.Blocked = append(item.Blocked, "adoption-required")
-	case old.Version == Version && old.Hash != item.State.Hash && len(item.Reasons) == 0:
+	case !legacy && old.Hash != item.State.Hash && len(item.Reasons) == 0:
 		item.Reasons = append(item.Reasons, "policy-changed")
 	}
 	if script.Always {
 		item.Reasons = append(item.Reasons, "always")
 	}
-	slices.Sort(item.Reasons)
-	item.Reasons = slices.Compact(item.Reasons)
-	slices.Sort(item.Blocked)
-	item.Selected = len(item.Reasons) > 0 && len(item.Blocked) == 0
+	item.settle()
 	return item
 }

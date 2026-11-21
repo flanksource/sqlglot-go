@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
+	scriptplan "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 	native "github.com/flanksource/sqlglot-go/migrate"
 )
 
@@ -49,14 +50,17 @@ type PlanResult struct {
 	Applicable bool              `json:"applicable"`
 	SQL        string            `json:"sql"`
 	CSVPlan    *csvdata.Artifact `json:"csvPlan,omitempty"`
-	Original   json.RawMessage   `json:"-"`
+	// ScriptPlan is the plan file of a SQL Server script bundle.
+	ScriptPlan *scriptplan.PlanFile `json:"scriptPlan,omitempty"`
+	Original   json.RawMessage      `json:"-"`
 }
 
+// ApplyOptions applies an artifact as reviewed: its own hash guards its
+// integrity, and Acks acknowledge its destructive steps.
 type ApplyOptions struct {
 	Dialect     string
 	Schema      string
 	Artifact    json.RawMessage
-	Hash        string
 	Acks        []string
 	LockTimeout time.Duration
 	CSV         csvdata.Options

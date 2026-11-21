@@ -146,7 +146,7 @@ var _ = Describe("SQL Server migrations", Ordered, Label("integration"), func() 
 		pending, err := PendingSQLServer(ctx, db, bundle, opts...)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(pending.Statements).ToNot(BeEmpty())
-		Expect(pending.Scripts).To(Equal([]PendingScript{{Path: "post/seed_orders.sql", Phase: "post", Reason: "new"}}))
+		Expect(pendingReasons(pending)).To(Equal([]string{"post/seed_orders.sql post new [new upstream-write:dbo.acme_orders]"}), "the schema step creates the table the script reads")
 
 		Expect(Apply(ctx, "", bundle, opts...)).To(Succeed())
 		count, total := orders()
@@ -162,7 +162,7 @@ var _ = Describe("SQL Server migrations", Ordered, Label("integration"), func() 
 		bundle["db/post/seed_orders.sql"] = file("UPDATE dbo.acme_orders SET total = total + 10;\n")
 		pending, err = PendingSQLServer(ctx, db, bundle, opts...)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(pending.Scripts).To(Equal([]PendingScript{{Path: "post/seed_orders.sql", Phase: "post", Reason: "changed"}}))
+		Expect(pendingReasons(pending)).To(Equal([]string{"post/seed_orders.sql post changed [source-changed]"}))
 		Expect(Apply(ctx, "", bundle, opts...)).To(Succeed())
 		_, total = orders()
 		Expect(total).To(Equal(12.0))
@@ -510,3 +510,12 @@ var _ = Describe("SQL Server migration bundle", func() {
 		Expect(changes).To(Equal([]schema.Change{&schema.ModifyTable{T: table, Changes: []schema.Change{kept}}}))
 	})
 })
+
+// pendingReasons projects each pending script to its path, phase, reason and reasons.
+func pendingReasons(pending SQLServerPending) []string {
+	out := make([]string, len(pending.Scripts))
+	for i, s := range pending.Scripts {
+		out[i] = fmt.Sprintf("%s %s %s %v", s.Path, s.Phase, s.Reason, s.Reasons)
+	}
+	return out
+}

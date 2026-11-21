@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"ariga.io/atlas/sql/schema"
-	"github.com/flanksource/sqlglot-go/database/atlas/sqlserver"
 	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 )
 
@@ -44,8 +43,24 @@ func loadSQLServerBundle(schemaFS fs.FS, cfg options) (sqlServerBundle, error) {
 }
 
 func (b sqlServerBundle) declaresObjects() bool {
+	return len(b.declaredObjects()) > 0
+}
+
+// declaredObjects names the declared tables and routines, schema-qualified.
+func (b sqlServerBundle) declaredObjects() []string {
 	target := b.realm.Schemas[0]
-	return len(target.Tables)+len(target.Procs)+len(target.Funcs) > 0
+	var names []string
+	for _, t := range target.Tables {
+		names = append(names, target.Name+"."+t.Name)
+	}
+	for _, p := range target.Procs {
+		names = append(names, target.Name+"."+p.Name)
+	}
+	for _, f := range target.Funcs {
+		names = append(names, target.Name+"."+f.Name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // PendingScript is one script Apply would run, and why: new or changed since
@@ -62,51 +77,32 @@ type PendingScript struct {
 }
 
 // SQLServerPending is what Apply would do to a SQL Server database: the
-// statements that reconcile the declared tables and routines, and the scripts
-// it would run. It inspects only the objects the bundle names.
+// statements that reconcile the declared tables and routines, the scripts it
+// would run, and the plan file holding both. It inspects only the objects the
+// bundle names.
 type SQLServerPending struct {
-	Statements []string         `json:"statements,omitempty"`
-	Scripts    []PendingScript  `json:"scripts,omitempty"`
-	ScriptPlan *backend.Preview `json:"scriptPlan,omitempty"`
+	Statements []string          `json:"statements,omitempty"`
+	Scripts    []PendingScript   `json:"scripts,omitempty"`
+	Plan       *backend.PlanFile `json:"plan"`
 }
 
 // Changed reports whether Apply would change anything beyond running its
 // `runs: always` scripts.
-func (p SQLServerPending) Changed() bool {
-	if len(p.Statements) > 0 {
-		return true
-	}
-	for _, s := range p.Scripts {
-		if s.Reason != "always" {
-			return true
-		}
-	}
-	return false
-}
+func (p SQLServerPending) Changed() bool { return p.Plan.Changed() }
 
 // PendingSQLServer plans Apply on db without executing or recording anything.
 func PendingSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, opts ...Option) (SQLServerPending, error) {
-	cfg := resolveOptions(opts)
-	bundle, err := loadSQLServerBundle(schemaFS, cfg)
+	file, err := planSQLServer(ctx, db, schemaFS, resolveOptions(opts))
 	if err != nil {
 		return SQLServerPending{}, err
 	}
-	var pending SQLServerPending
-	if bundle.declaresObjects() {
-		if pending.Statements, err = pendingSQLServerStatements(ctx, db, bundle, cfg); err != nil {
-			return pending, err
+	pending := SQLServerPending{Plan: &file}
+	if file.Bundle.Schema != nil {
+		for _, statement := range file.Bundle.Schema.Statements {
+			pending.Statements = append(pending.Statements, statement.SQL)
 		}
 	}
-	options, err := scriptOptions(db, bundle, cfg)
-	if err != nil {
-		return pending, err
-	}
-	preview, err := backend.Inspect(ctx, options, "")
-	if err != nil {
-		return pending, err
-	}
-	pending.ScriptPlan = &preview
-	for _, item := range preview.Plan.Scripts {
+	for _, item := range file.Actions {
 		if !item.Selected && len(item.Blocked) == 0 {
 			continue
 		}
@@ -124,24 +120,4 @@ func PendingSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, opts ...O
 		pending.Scripts = append(pending.Scripts, PendingScript{Path: item.Script.Path, Phase: string(item.Script.Phase), Reason: reason, Reasons: item.Reasons, Blocked: item.Blocked, Hash: item.State.Hash})
 	}
 	return pending, nil
-}
-
-func pendingSQLServerStatements(ctx context.Context, db *sql.DB, bundle sqlServerBundle, cfg options) ([]string, error) {
-	client, err := sqlserver.OpenClient(ctx, db)
-	if err != nil {
-		return nil, fmt.Errorf("open SQL Server migration database: %w", err)
-	}
-	changes, err := sqlServerChanges(ctx, client, bundle.realm, cfg.exclude)
-	if err != nil || len(changes) == 0 {
-		return nil, err
-	}
-	plan, err := client.PlanChanges(ctx, "", changes)
-	if err != nil {
-		return nil, fmt.Errorf("plan %d schema changes: %w", len(changes), err)
-	}
-	statements := make([]string, len(plan.Changes))
-	for i, change := range plan.Changes {
-		statements[i] = change.Cmd
-	}
-	return statements, nil
 }

@@ -19,13 +19,13 @@ commons-db preserves its migration and inspection APIs through aliases and forwa
 
 ## CLI
 
-Build with `make build`. Database commands emit JSON. Set the database connection in your shell rather than writing credentials into artifacts.
+Build with `make build`. Database commands emit JSON. Set the database connection in your shell rather than writing credentials into artifacts. See the [migration CLI guide](../docs/guide/cli.md#migrate) for HCL, SQL, script headers, dependency invalidation, and CSV examples.
 
 ```sh
 .tmp/sqlglot schema inspect --dsn "$DATABASE_URL"
 .tmp/sqlglot schema inspect --dsn "$DATABASE_URL" --snapshot --schema public
 .tmp/sqlglot migrate plan --dsn "$DATABASE_URL" --desired examples/database/schema.hcl --out .tmp/reviewed.json
-.tmp/sqlglot migrate apply --dsn "$DATABASE_URL" --artifact .tmp/reviewed.json --hash "$REVIEWED_HASH"
+.tmp/sqlglot migrate apply --dsn "$DATABASE_URL" .tmp/reviewed.json
 ```
 
 `--dsn` is required. Migration connections support PostgreSQL URLs or keyword DSNs, SQL Server URLs/ADO/ODBC strings, and SQLite file paths or file URIs. `--driver` selects a catalog backend explicitly, including `mysql` with its native driver DSN and `clickhouse` with its native URL. `--schema` defaults to `public`, `dbo`, or `main`. Catalog inspection is bounded and may report truncation; `--snapshot` requests a migration snapshot and rejects unsupported features instead of truncating.
@@ -66,30 +66,30 @@ spec:
 .tmp/sqlglot schema inspect --dsn connection://tenant-x --snapshot --schema dbo
 ```
 
-`migrate plan` accepts a desired schema with `--desired`, a schema bundle with `--bundle`, or a [SQL Server CSV folder](migrate/README.md#reviewed-csv-data) with `--csv-root`. Desired input is backend HCL or a saved snapshot JSON. SQL Server uses its typed snapshot JSON. `--out` stores the reviewed JSON with owner-only permissions. Bundle directories use the portable HCL conventions and retain omitted columns, tables, and types by default. `--allow-drops` includes their removal in the reviewed plan. Use `--routines` to select SQL Server routine files relative to the bundle directory.
+`migrate plan` accepts a desired schema with `--desired`, a schema bundle with `--bundle`, or a [SQL Server CSV folder](migrate/README.md#reviewed-csv-data) with `--csv-root`. Desired input is backend HCL or a saved snapshot JSON. SQL Server uses its typed snapshot JSON. `--out` writes the reviewed JSON and creates new files with owner-only permissions. Bundle directories retain omitted columns and tables by default. `--allow-drops` considers those omissions for removal in the reviewed plan. Use `--routines` to select SQL Server routine files relative to the bundle directory.
 
 Supply bundle variables with repeatable `--var 'name=HCL-literal'`, for example `--var 'prefix="app"'` or `--var 'limit=10'`. Variables, routines and the drop option require a bundle input. SQLite apply opens an existing file with `mode=rw`; the reviewed executor owns its temporary connection pragmas.
 
 ```sh
 .tmp/sqlglot migrate plan --dsn "$DATABASE_URL" --bundle ./db --out .tmp/preview.json
-.tmp/sqlglot migrate apply --dsn "$DATABASE_URL" --bundle ./db --hash "$REVIEWED_HASH"
-.tmp/sqlglot migrate apply --dsn "$DATABASE_URL" --artifact .tmp/reviewed.json --hash "$REVIEWED_HASH" --ack "$DESTRUCTIVE_STEP_ID"
+.tmp/sqlglot migrate review .tmp/preview.json
+.tmp/sqlglot migrate apply --dsn "$DATABASE_URL" .tmp/preview.json --ack "$DESTRUCTIVE_STEP_ID"
 ```
 
-Applying a bundle replans it and requires the resulting hash to match the reviewed hash. Applying an artifact executes its saved SQL after validating it against the backend planner. `--hash` is mandatory. `--ack` accepts each required destructive ID, repeated or comma separated; missing, duplicate and unknown IDs fail. `--lock-timeout` bounds migration lock waiting and defaults to five seconds. PostgreSQL/SQLite zero selects the default; SQL Server zero means no wait. A commit error returns `commit-unknown` because loss of the commit response cannot prove rollback.
+Schema apply takes the saved plan file as its argument. The file carries its own hash, which guards only its integrity; apply validates the artifact and executes its saved SQL. Pass each required destructive ID as its own `--ack` argument. Missing, duplicate and unknown IDs fail. Omit `--ack` when the artifact has no destructive steps. `--lock-timeout` accepts positive durations and defaults to five seconds. The executor records a commit error as `commit-unknown` because the commit response may have been lost.
 
-SQLite inspection and preview open existing files in read-only mode. They do not create files or change journal mode. Bundle preview never runs pre/post scripts, creates migration metadata or creates a PostgreSQL schema. Pre-scripts are parsed with sqlglot and reported as DML, DDL, mixed or unknown, with parser completeness and diagnostics. DDL or unknown pre-scripts produce warnings, and schema planning is still attempted against the current database. Planning errors return the script analysis and a nonzero exit code.
+SQLite inspection and preview open existing files in read-only mode. Bundle preview parses SQL with sqlglot and reports scripts as DML, DDL, mixed or unknown, with parser completeness and diagnostics. Pre-scripts classified as DDL, mixed or unknown produce warnings, and schema planning uses the current database without executing the scripts. Bundles with phased scripts produce advisory previews.
 
 ### Comparing two connections
 
-`schema compare` inspects a reference connection (the desired schema) and a target connection (the database to patch) of the same dialect, and lists every difference as a selectable change grouped by object, with each object's definition on both sides and a `diffHash`. `schema patch` re-inspects both sides, refuses with a schema drift error when the differences no longer match `diffHash`, and plans only the `--select`ed change IDs into a reviewed artifact plus a plain SQL script. Selecting a change without the changes it `requires` fails. Apply the artifact to the target with `migrate apply` and the returned `hash` and `acks`.
+`schema compare` inspects a reference connection (the desired schema) and a target connection (the database to patch) of the same dialect, and lists every difference as a selectable change grouped by object, with each object's definition on both sides and a `diffHash`. `schema patch` re-inspects both sides, refuses with a schema drift error when the differences no longer match `diffHash`, and plans only the `--select`ed change IDs into a reviewed artifact plus a plain SQL script. Selecting a change without the changes it `requires` fails. Apply the artifact to the target with `migrate apply`, passing the returned `acks`.
 
 ```sh
 .tmp/sqlglot schema compare --reference connection://dev --target connection://dev-0a > .tmp/compare.json
 .tmp/sqlglot schema patch --reference connection://dev --target connection://dev-0a \
   --diff-hash "$(jq -r .diffHash .tmp/compare.json)" --select '["add","table","dbo","customers",""]' > .tmp/patch.json
 jq .artifact .tmp/patch.json > .tmp/artifact.json
-.tmp/sqlglot migrate apply --dsn connection://dev-0a --artifact .tmp/artifact.json --hash "$(jq -r .hash .tmp/patch.json)"
+.tmp/sqlglot migrate apply --dsn connection://dev-0a .tmp/artifact.json
 ```
 
 Repeat `--select` once per change ID; each value is taken whole, never split on commas. Over HTTP, `select` is a JSON array of IDs.

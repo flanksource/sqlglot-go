@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,16 +45,16 @@ var _ = Describe("content-backed migration workflow", func() {
 		var original review.Artifact
 		Expect(json.Unmarshal(plan.Artifact, &original)).To(Succeed())
 		Expect(plan.Hash).To(Equal(original.Hash))
-		request := ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact, Hash: plan.Hash, Acks: plan.Acks, LockTimeout: time.Second}
+		request := ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact, Acks: plan.Acks, LockTimeout: time.Second}
 		value, err := Apply(ctx, db, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(value).To(Equal(review.Result{Hash: plan.Hash, Outcome: review.Applied, Steps: len(plan.Steps)}))
 		value, err = Apply(ctx, db, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(value).To(Equal(review.Result{Hash: plan.Hash, Outcome: review.AlreadyApplied}))
-		request.Hash = "tampered"
+		request.Artifact = json.RawMessage(strings.Replace(string(plan.Artifact), "CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
 		_, err = Apply(ctx, db, request)
-		Expect(err).To(MatchError(ContainSubstring("hash mismatch")))
+		Expect(err).To(MatchError(ContainSubstring("hash mismatch")), "an edited artifact fails its own integrity hash")
 	})
 	It("produces identical plans from uploaded and on-disk bundle contents", func() {
 		content := "schema \"public\" {}\ntable \"items\" {\n schema = schema.public\n column \"id\" { type = int }\n}"
@@ -81,7 +82,7 @@ var _ = Describe("content-backed migration workflow", func() {
 		plan, err := Plan(ctx, db, Options{Dialect: "sqlite", Schema: "main", Source: Source{Kind: "hcl", Content: "schema \"main\" {}"}})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(plan.Acks).NotTo(BeEmpty())
-		request := ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact, Hash: plan.Hash}
+		request := ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact}
 		_, err = Apply(ctx, db, request)
 		Expect(err).To(HaveOccurred())
 		request.Acks = plan.Acks
@@ -99,7 +100,7 @@ var _ = Describe("content-backed migration workflow", func() {
 		Expect(plan.Applicable).To(BeFalse())
 		Expect(plan.Artifact).To(MatchJSON(data))
 		Expect(plan.Warnings).To(ContainElement("manual review required"))
-		_, err = Apply(context.Background(), db, ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact, Hash: "unreviewed"})
+		_, err = Apply(context.Background(), db, ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact})
 		Expect(err).To(HaveOccurred())
 	})
 })

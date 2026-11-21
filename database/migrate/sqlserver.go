@@ -14,7 +14,6 @@ import (
 	"ariga.io/atlas/sql/sqlclient"
 	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sqlglot-go/database/atlas/sqlserver"
-	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 )
 
@@ -23,51 +22,81 @@ const (
 	sqlServerSchema = "dbo"
 )
 
-// applySQLServer runs the bundle's pre scripts, reconciles its HCL tables and
-// WithRoutines routines against the dbo schema, then runs its post scripts.
-// It inspects only the objects the bundle names, never drops a routine or an
-// index the bundle does not declare, and runs no DDL when the database
-// already matches. Scripts are hash-gated in dbo.sqlglot_migrations.
-// The caller owns db: closing the Atlas client would close it.
-func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) (returnErr error) {
-	bundle, err := loadSQLServerBundle(schemaFS, cfg)
+// applySQLServer plans the bundle and applies that plan: its pre scripts, the
+// reconciliation of its HCL tables and WithRoutines routines against the dbo
+// schema, then its post scripts. It inspects only the objects the bundle
+// names, never drops a routine or an index the bundle does not declare, and
+// runs no DDL when the database already matches. Scripts are recorded in
+// dbo.sqlglot_migrations. The caller owns db.
+func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) error {
+	file, err := planSQLServer(ctx, db, schemaFS, cfg)
 	if err != nil {
 		return err
+	}
+	result, err := backend.Apply(ctx, db, file)
+	if err != nil {
+		return err
+	}
+	logger.GetLogger("migrate").V(1).Infof("SQL Server migration %s: %d scripts applied", result.Outcome, len(result.Applied))
+	return nil
+}
+
+// planSQLServer is the read-only plan file of the bundle on db.
+func planSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) (backend.PlanFile, error) {
+	bundle, err := loadSQLServerBundle(schemaFS, cfg)
+	if err != nil {
+		return backend.PlanFile{}, err
 	}
 	options, err := scriptOptions(db, bundle, cfg)
 	if err != nil {
-		return err
+		return backend.PlanFile{}, err
 	}
-	session, err := backend.Open(ctx, options)
+	if bundle.declaresObjects() {
+		if options.Schema, err = sqlServerSchemaStep(ctx, db, bundle, cfg); err != nil {
+			return backend.PlanFile{}, err
+		}
+	}
+	return backend.Plan(ctx, options)
+}
+
+// sqlServerSchemaStep plans the statements that bring the declared objects to
+// the desired state, without drops.
+func sqlServerSchemaStep(ctx context.Context, db *sql.DB, bundle sqlServerBundle, cfg options) (*backend.SchemaStep, error) {
+	// The caller owns db: closing the Atlas client would close it.
+	client, err := sqlserver.OpenClient(ctx, db)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("open SQL Server migration database: %w", err)
 	}
-	defer func() { returnErr = errors.Join(returnErr, session.Close()) }()
-	for _, phase := range []scripts.Phase{scripts.Pre, scripts.Post} {
-		if phase == scripts.Post && bundle.declaresObjects() {
-			if err := session.Barrier(ctx, func(ctx context.Context, q backend.Connection) error {
-				driver, err := sqlserver.Open(q)
-				if err != nil {
-					return err
-				}
-				return reconcileSQLServer(ctx, &sqlclient.Client{Name: sqlserver.DriverName, Driver: driver}, bundle.realm, cfg.exclude)
-			}); err != nil {
-				return err
+	changes, err := sqlServerChanges(ctx, client, bundle.realm, cfg.exclude)
+	if err != nil {
+		return nil, err
+	}
+	step := &backend.SchemaStep{Objects: bundle.declaredObjects(), Statements: []backend.SchemaStatement{}}
+	for _, change := range changes {
+		plan, err := client.PlanChanges(ctx, "", []schema.Change{change})
+		if err != nil {
+			return nil, fmt.Errorf("plan schema change: %w", err)
+		}
+		for _, planned := range plan.Changes {
+			if len(planned.Args) > 0 {
+				return nil, fmt.Errorf("schema statement %q binds arguments, which a plan file cannot carry", planned.Cmd)
 			}
-		}
-		preview, err := session.Inspect(ctx, phase)
-		if err != nil {
-			return err
-		}
-		result, err := session.Apply(ctx, backend.ApplyOptions{Preview: preview, AcknowledgeNonTransactional: cfg.scriptPolicy != nil && cfg.scriptPolicy.AcknowledgeNonTransactional})
-		if err != nil {
-			return err
-		}
-		if result.Continuation != nil {
-			return &backend.ContinuationError{Preview: *result.Continuation}
+			step.Statements = append(step.Statements, backend.SchemaStatement{SQL: planned.Cmd, Comment: planned.Comment, Destructive: destructiveChange(change)})
 		}
 	}
-	return nil
+	return step, nil
+}
+
+// destructiveChange reports whether change drops an object or a part of one.
+func destructiveChange(change schema.Change) bool {
+	switch c := change.(type) {
+	case *schema.DropTable, *schema.DropColumn, *schema.DropIndex, *schema.DropForeignKey, *schema.DropCheck,
+		*schema.DropProc, *schema.DropFunc, *schema.DropObject, *schema.DropPrimaryKey:
+		return true
+	case *schema.ModifyTable:
+		return slices.ContainsFunc(c.Changes, destructiveChange)
+	}
+	return false
 }
 
 // sqlServerChanges inspects the declared objects and returns the changes that
@@ -83,30 +112,6 @@ func sqlServerChanges(ctx context.Context, client *sqlclient.Client, desired *sc
 		return nil, fmt.Errorf("compute schema diff: %w", err)
 	}
 	return withoutSQLServerDrops(changes), nil
-}
-
-func reconcileSQLServer(ctx context.Context, client *sqlclient.Client, desired *schema.Realm, exclude []string) error {
-	changes, err := sqlServerChanges(ctx, client, desired, exclude)
-	if err != nil {
-		return err
-	}
-	log := logger.GetLogger("migrate")
-	if len(changes) == 0 {
-		log.Debugf("No schema changes detected")
-		return nil
-	}
-	plan, err := client.PlanChanges(ctx, "", changes)
-	if err != nil {
-		return fmt.Errorf("plan %d schema changes: %w", len(changes), err)
-	}
-	for _, change := range plan.Changes {
-		log.Tracef("%s", change.Cmd)
-	}
-	if err := client.ApplyChanges(ctx, changes); err != nil {
-		return fmt.Errorf("apply %d schema changes: %w", len(changes), err)
-	}
-	log.V(1).Infof("Applied %d schema changes", len(changes))
-	return nil
 }
 
 // sqlServerInspectOptions scopes inspection to the declared object names.
