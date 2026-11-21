@@ -21,6 +21,9 @@ func (p PlanFile) Pretty() api.Text {
 	var totals planTotals
 	out := api.Text{}.Append("Plan for ", "font-bold").Append(p.Target.Server+"/"+p.Target.Database, "font-bold").
 		Append(" (scope "+p.Target.Scope+")", "text-gray-500")
+	if len(p.Absorbed) > 0 {
+		out = out.Append(" absorbing "+strings.Join(p.Absorbed, ", "), "text-gray-500")
+	}
 	out = p.prettyPhase(out, scripts.Pre, "Pre-deployment scripts", &totals)
 	out = p.prettySchema(out, &totals)
 	out = p.prettyPhase(out, scripts.Post, "Post-deployment scripts", &totals)

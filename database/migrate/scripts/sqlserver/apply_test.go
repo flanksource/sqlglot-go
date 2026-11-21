@@ -420,7 +420,7 @@ var _ = Describe("Plan file apply", func() {
 		state.Hash = scripts.StateHash(state)
 		expectLedger(mock, "legacy", map[string]scripts.State{"seed": state})
 
-		states, err := readStates(ctx, db, "legacy")
+		states, err := readStates(ctx, db, ledgerScope{Scope: "legacy"})
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(states).To(Equal(map[string]scripts.State{"seed": state}))

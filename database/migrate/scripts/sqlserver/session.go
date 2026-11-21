@@ -85,7 +85,7 @@ func (file PlanFile) options(ctx context.Context, db *sql.DB, cfg applyConfig) (
 	if err := file.Verify(); err != nil {
 		return Options{}, err
 	}
-	return prepare(ctx, Options{DB: db, Scope: file.Target.Scope, Scripts: file.Bundle.Scripts, Functions: file.Bundle.Functions,
+	return prepare(ctx, Options{DB: db, Scope: file.Target.Scope, absorbed: file.Absorbed, Scripts: file.Bundle.Scripts, Functions: file.Bundle.Functions,
 		Schema: file.Bundle.Schema, Analysis: cfg.analysis, AnalysisTTL: cfg.analysisTTL})
 }
 
