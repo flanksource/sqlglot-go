@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	bundle "github.com/flanksource/sqlglot-go/database/migrate"
 	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
 	"github.com/flanksource/sqlglot-go/database/migrate/review"
+	scriptplan "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 	executor "github.com/flanksource/sqlglot-go/database/migrate/sqlserver"
 	native "github.com/flanksource/sqlglot-go/migrate"
 	planner "github.com/flanksource/sqlglot-go/migrate/sqlserver"
@@ -37,6 +39,13 @@ func Unwrap(data []byte) (json.RawMessage, []string, error) {
 }
 
 func Review(data []byte, dialect, schema string) (PlanResult, error) {
+	file, warnings, err := scriptPlanOf(data)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if file != nil {
+		return reviewScriptPlan(data, file, warnings, dialect, schema)
+	}
 	var preview bundle.Preview
 	if err := json.Unmarshal(data, &preview); err != nil {
 		return PlanResult{}, err
@@ -142,9 +151,13 @@ func (result *PlanResult) complete() {
 	}
 }
 
+// Validate checks an artifact's integrity and acknowledgements without opening
+// a database. Each artifact carries its own hash, which guards only that the
+// file is what its planner wrote.
 func Validate(opts ApplyOptions) error {
-	if opts.Hash == "" {
-		return fmt.Errorf("reviewed hash is required")
+	file, _, err := scriptPlanOf(opts.Artifact)
+	if err != nil || file != nil {
+		return errors.Join(err, verifyScriptPlan(file))
 	}
 	data, _, err := Unwrap(opts.Artifact)
 	if err != nil {
@@ -162,25 +175,42 @@ func Validate(opts ApplyOptions) error {
 		if err := Decode(data, &artifact); err != nil {
 			return err
 		}
-		return artifact.Validate(opts.Hash, opts.Acks)
+		return artifact.Validate(artifact.Hash, opts.Acks)
 	}
 	if envelope.Version == 1 {
 		var artifact native.Artifact
 		if err = Decode(data, &artifact); err != nil {
 			return err
 		}
-		return executor.Validate(executor.Request{Artifact: artifact, Hash: opts.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
+		return executor.Validate(executor.Request{Artifact: artifact, Hash: artifact.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
 	}
 	var artifact review.Artifact
 	if err = Decode(data, &artifact); err != nil {
 		return err
 	}
-	return review.Validate(review.Request{Artifact: artifact, Hash: opts.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
+	return review.Validate(review.Request{Artifact: artifact, Hash: artifact.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
+}
+
+func verifyScriptPlan(file *scriptplan.PlanFile) error {
+	if file == nil {
+		return nil
+	}
+	return file.Verify()
 }
 
 func Apply(ctx context.Context, db *sql.DB, opts ApplyOptions) (any, error) {
 	if err := Validate(opts); err != nil {
 		return nil, err
+	}
+	file, _, err := scriptPlanOf(opts.Artifact)
+	if err != nil {
+		return nil, err
+	}
+	if file != nil {
+		if opts.Dialect != "sqlserver" {
+			return nil, fmt.Errorf("script plans require SQL Server")
+		}
+		return scriptplan.Apply(ctx, db, *file)
 	}
 	data, _, err := Unwrap(opts.Artifact)
 	if err != nil {
@@ -200,14 +230,14 @@ func Apply(ctx context.Context, db *sql.DB, opts ApplyOptions) (any, error) {
 		if err := Decode(data, &artifact); err != nil {
 			return nil, err
 		}
-		return csvdata.Apply(ctx, db, csvdata.ApplyOptions{Options: opts.CSV, Artifact: artifact, Hash: opts.Hash, Acks: opts.Acks, LockTimeout: opts.LockTimeout})
+		return csvdata.Apply(ctx, db, csvdata.ApplyOptions{Options: opts.CSV, Artifact: artifact, Hash: artifact.Hash, Acks: opts.Acks, LockTimeout: opts.LockTimeout})
 	}
 	if opts.Dialect == "sqlserver" {
 		var artifact native.Artifact
 		if err = Decode(data, &artifact); err != nil {
 			return nil, err
 		}
-		return executor.Apply(ctx, db, executor.Request{Artifact: artifact, Hash: opts.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
+		return executor.Apply(ctx, db, executor.Request{Artifact: artifact, Hash: artifact.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
 	}
 	var artifact review.Artifact
 	if err = Decode(data, &artifact); err != nil {
@@ -216,5 +246,5 @@ func Apply(ctx context.Context, db *sql.DB, opts ApplyOptions) (any, error) {
 	if artifact.Baseline.Dialect != opts.Dialect || artifact.Baseline.Schema != opts.Schema {
 		return nil, fmt.Errorf("artifact dialect or schema does not match target")
 	}
-	return review.Apply(ctx, db, review.Request{Artifact: artifact, Hash: opts.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
+	return review.Apply(ctx, db, review.Request{Artifact: artifact, Hash: artifact.Hash, Acknowledgements: opts.Acks, LockTimeout: opts.LockTimeout})
 }

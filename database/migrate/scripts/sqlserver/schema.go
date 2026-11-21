@@ -92,54 +92,80 @@ func (s schemaSnapshot) column(name string) (schemaSnapshot, error) {
 	return selected, nil
 }
 
+// schemaObservation is one schema dependency as an epoch observed it.
+type schemaObservation struct {
+	input       string
+	observation scripts.Observation
+	err         error
+}
+
+// schema observes a schema dependency once per epoch, however many scripts
+// declare it.
 func (o *observer) schema(ctx context.Context, name string) error {
+	observed, ok := o.schemas[name]
+	if !ok {
+		observed.input, observed.observation, observed.err = o.readSchema(ctx, name)
+		o.schemas[name] = observed
+	}
+	if observed.err == nil {
+		o.inputs[observed.input] = observed.observation
+	}
+	return observed.err
+}
+
+func (o *observer) readSchema(ctx context.Context, name string) (string, scripts.Observation, error) {
 	parts := strings.Split(name, ".")
 	if len(parts) != 2 && len(parts) != 3 {
-		return fmt.Errorf("schema dependency requires schema.table[.column]: %s", name)
+		return "", scripts.Observation{}, fmt.Errorf("schema dependency requires schema.table[.column]: %s", name)
 	}
 	q := catalog.FromDB(o.q)
 	if len(parts) == 3 {
 		column, err := catalog.ResolveColumn(ctx, q, catalog.ColumnName{Schema: parts[0], Table: parts[1], Column: parts[2]})
 		if err != nil {
-			return err
+			return "", scripts.Observation{}, err
 		}
 		parts = []string{column.Schema, column.Table, column.Column}
 		name = strings.Join(parts, ".")
 	}
-	scope := catalog.Scope{Schema: parts[0], Names: []string{parts[1]}}
-	var snapshot schemaSnapshot
-	var err error
-	snapshot.Columns, err = catalog.Columns(ctx, q, scope)
+	snapshot, err := readSnapshot(ctx, q, catalog.Scope{Schema: parts[0], Names: []string{parts[1]}})
 	if err != nil {
-		return err
+		return "", scripts.Observation{}, err
 	}
 	if len(snapshot.Columns) == 0 {
-		return fmt.Errorf("schema dependency %s is missing or not visible", name)
-	}
-	if snapshot.Indexes, err = catalog.Indexes(ctx, q, scope); err != nil {
-		return err
-	}
-	if snapshot.IndexColumns, err = catalog.IndexColumns(ctx, q, scope); err != nil {
-		return err
-	}
-	if snapshot.ForeignKeys, err = catalog.ForeignKeys(ctx, q, scope); err != nil {
-		return err
-	}
-	if snapshot.Checks, err = catalog.CheckConstraints(ctx, q, scope); err != nil {
-		return err
-	}
-	if snapshot.Details, err = catalog.ColumnDetails(ctx, q, scope); err != nil {
-		return err
+		return "", scripts.Observation{}, fmt.Errorf("schema dependency %s is missing or not visible", name)
 	}
 	if len(parts) == 3 {
 		if snapshot, err = snapshot.column(parts[2]); err != nil {
-			return err
+			return "", scripts.Observation{}, err
 		}
 	}
 	value, err := json.Marshal(snapshot)
 	if err != nil {
-		return err
+		return "", scripts.Observation{}, err
 	}
-	o.inputs["schema:"+name] = scripts.Observation{Kind: "schema-dependency", Hash: scripts.SourceHash(string(value))}
-	return nil
+	return "schema:" + name, scripts.Observation{Kind: "schema-dependency", Hash: scripts.SourceHash(string(value))}, nil
+}
+
+// readSnapshot reads the tables of scope; a scope naming no visible table
+// reads as an empty snapshot.
+func readSnapshot(ctx context.Context, q catalog.Queryer, scope catalog.Scope) (schemaSnapshot, error) {
+	var snapshot schemaSnapshot
+	var err error
+	if snapshot.Columns, err = catalog.Columns(ctx, q, scope); err != nil || len(snapshot.Columns) == 0 {
+		return snapshot, err
+	}
+	if snapshot.Indexes, err = catalog.Indexes(ctx, q, scope); err != nil {
+		return snapshot, err
+	}
+	if snapshot.IndexColumns, err = catalog.IndexColumns(ctx, q, scope); err != nil {
+		return snapshot, err
+	}
+	if snapshot.ForeignKeys, err = catalog.ForeignKeys(ctx, q, scope); err != nil {
+		return snapshot, err
+	}
+	if snapshot.Checks, err = catalog.CheckConstraints(ctx, q, scope); err != nil {
+		return snapshot, err
+	}
+	snapshot.Details, err = catalog.ColumnDetails(ctx, q, scope)
+	return snapshot, err
 }

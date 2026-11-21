@@ -274,14 +274,13 @@ The record store uses this lower-level API to add newly declared columns to tabl
 
 ### Reviewed CSV data
 
-Plan against a saved SQL Server connection. Review the counts and selected files in `review.json`, then pass the artifact hash, source root, and filters to apply. This example uses `jq` to read the hash and assumes the review lists zero deletes.
+Plan against a saved SQL Server connection. Review the counts and selected files in `review.json`, then apply the plan file with the same source root and filters. This example assumes the review lists zero deletes.
 
 ```sh
 sqlglot migrate plan --csv-root ./data --dsn connection://example \
-  --country=none,BW --env='!dev' --out ./review.json
-reviewed_hash="$(jq -er .hash ./review.json)"
+  --layer 'country=none,BW' --layer 'env=!dev' --out ./review.json
 sqlglot migrate apply --csv-root ./data --dsn connection://example \
-  --country=none,BW --env='!dev' --artifact ./review.json --hash "$reviewed_hash"
+  --layer 'country=none,BW' --layer 'env=!dev' ./review.json
 ```
 
 For a plan with deletes, review the count for each table and pass each exact acknowledgement reported by the preview using repeatable `--ack` flags. The artifact contains source digests, selected files, filters, and operation counts. Source CSVs stay in the import root. The HTTP workflow accepts uploaded files with `source.kind: csv` and a `layerFilters` map. Apply takes both the artifact and the uploaded files.
@@ -309,7 +308,7 @@ tables:
     key: [CODENAME, CODEVALUE]
 ```
 
-Use `tables.<schema.table>.sources` for exact paths or globs with different names. Use a sidecar such as `lookup.csv.yaml` with `version: 1` and `table: dbo.Lookup` to route a single file. Settings inherit in order from defaults, the table, and the sidecar. Configure `phase: post-rules` for datasets loaded after rule deployment.
+Use `tables.<schema.table>.sources` for exact paths or globs with different names. Use a sidecar such as `lookup.csv.yaml` with `version: 1` and `table: dbo.Lookup` to route a single file. Settings inherit in order from defaults, the table, and the sidecar. `--csv-phase` selects the tables with the matching YAML `phase`, which defaults to `pre-rules`. By default apply processes `pre-rules` first and `post-rules` second, committing each separately. Plan and apply each phase separately to schedule rule deployment between them.
 
 Layer filters are independent. `none` selects untagged files, `*` selects every value, and `!value` excludes a value. Within a layer, a comma-separated filter includes the union of positive terms and subtracts exclusions. Files pass every layer. Use `--layer name=filter` for additional layers. An overlay row supersedes a less specific row when its tags include every tag of that row. Incomparable records for the same key require a more specific record or a narrower filter.
 
@@ -368,7 +367,7 @@ An OIPA-sized database holds thousands of objects, so migrate inspects only the 
 
 ### Scripts are sqlcmd files
 
-Every other `.sql` file under `WithDir` (outside the routine directory) is a hash-gated script with the same `-- phase:`, `-- dependsOn:`, `-- runs: always` and `-- transaction:` headers as on PostgreSQL. It is plain T-SQL that runs unchanged with `sqlcmd -i` or in SSMS: migrate splits it at `GO` on its own line (never inside a string or comment) and sends each batch in turn. sqlcmd commands (`:setvar`, `:r`, `:on error`, `!!`) and `$(var)` scripting variables, which sqlcmd substitutes even inside strings, are refused, so a file never means something different here than in sqlcmd. `pre` scripts run before the table and routine reconcile, `post` scripts after, all under the bundle's `sp_getapplock`. A transactional script runs every batch and records its SHA-256 in `dbo.sqlglot_migrations` (created on first use) in one transaction under `SET LOCK_TIMEOUT 15000`; deadlocks (1205) and lock timeouts (1222) are retried. `PendingSQLServer` reports what an Apply would do without executing anything: the reconcile statements, and each script it would run with why (`new`, `changed`, `dependency` or `always`).
+Every other `.sql` file under `WithDir` (outside the routine directory) is a hash-gated script with the same `-- phase:`, `-- dependsOn:`, `-- runs: always` and `-- transaction:` headers as on PostgreSQL. It is plain T-SQL that runs unchanged with `sqlcmd -i` or in SSMS: migrate splits it at `GO` on its own line (never inside a string or comment) and sends each batch in turn. sqlcmd commands (`:setvar`, `:r`, `:on error`, `!!`) and `$(var)` scripting variables, which sqlcmd substitutes even inside strings, are refused, so a file never means something different here than in sqlcmd. `pre` scripts run before the table and routine reconcile, `post` scripts after, all under the bundle's `sp_getapplock`. A transactional script runs every batch and records its SHA-256 in `dbo.sqlglot_migrations` (created on first use) in one transaction under `SET LOCK_TIMEOUT 15000`; deadlocks (1205) and lock timeouts (1222) are retried. Apply plans the bundle into a `sqlserver.PlanFile` and runs exactly that file, refusing it as stale when the target moved during the apply. `PendingSQLServer` reports what an Apply would do without executing anything: the reconcile statements, each script it would run with why (`new`, `changed`, `dependency` or `always`), and the plan file itself (`Plan`).
 
 ### Compatibility level 100
 

@@ -16,13 +16,13 @@ import (
 )
 
 type Preview struct {
-	Artifact          *review.Artifact      `json:"artifact,omitempty"`
-	SQLServerArtifact *native.Artifact      `json:"sqlServerArtifact,omitempty"`
-	SQLServerPlan     *native.Plan          `json:"sqlServerPlan,omitempty"`
-	Scripts           []ScriptAnalysis      `json:"scripts,omitempty"`
-	ScriptPlan        *scriptserver.Preview `json:"scriptPlan,omitempty"`
-	Warnings          []string              `json:"warnings,omitempty"`
-	Error             string                `json:"error,omitempty"`
+	Artifact          *review.Artifact       `json:"artifact,omitempty"`
+	SQLServerArtifact *native.Artifact       `json:"sqlServerArtifact,omitempty"`
+	SQLServerPlan     *native.Plan           `json:"sqlServerPlan,omitempty"`
+	Scripts           []ScriptAnalysis       `json:"scripts,omitempty"`
+	ScriptPlan        *scriptserver.PlanFile `json:"scriptPlan,omitempty"`
+	Warnings          []string               `json:"warnings,omitempty"`
+	Error             string                 `json:"error,omitempty"`
 }
 
 // PreviewBundle inspects and plans without executing scripts or creating metadata.
@@ -67,18 +67,16 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 		advisory = append(advisory, "security changes require phased reviewed artifacts")
 	}
 	if dialect == "sqlserver" {
-		if len(scripts) > 0 || cfg.scriptPolicy != nil {
-			options, err := scriptOptions(db, sqlServerBundle{scripts: scripts}, cfg)
-			if err != nil {
-				return result, err
-			}
-			plan, err := scriptserver.Inspect(ctx, options, "")
-			if err != nil {
-				return result, err
-			}
-			result.ScriptPlan = &plan
+		if len(scripts) == 0 && cfg.scriptPolicy == nil {
+			return previewSQLServer(ctx, db, files, cfg, result, advisory)
 		}
-		return previewSQLServer(ctx, db, files, cfg, result, advisory)
+		// A script bundle plans as one plan file: scripts and schema step.
+		plan, err := planSQLServer(ctx, db, files, cfg)
+		if err != nil {
+			return result, err
+		}
+		result.ScriptPlan = &plan
+		return result, nil
 	}
 	if cfg.routines != "" || len(cfg.exclude) > 0 {
 		return result, fmt.Errorf("reviewed bundle previews do not support routines or inspection exclusions")

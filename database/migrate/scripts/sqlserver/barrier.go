@@ -2,23 +2,40 @@ package sqlserver
 
 import (
 	"context"
-	"fmt"
+	"time"
+
+	"github.com/flanksource/clicky/cache"
 )
 
-// Connection is the owned SQL session available during a deployment barrier.
+// Connection is the locked SQL session a barrier runs on.
 type Connection interface{ sessionDB }
 
-// Barrier runs a caller's reviewed schema operation while retaining the bundle lock.
-// Subsequent inspections start with fresh observations.
-func (s *Session) Barrier(ctx context.Context, run func(context.Context, Connection) error) error {
-	if s.closed || run == nil {
-		return fmt.Errorf("barrier requires an open session and an operation")
-	}
-	return run(ctx, s.conn)
+// ApplyOption configures Apply and Adopt.
+type ApplyOption func(*applyConfig)
+
+type applyConfig struct {
+	barrier     func(context.Context, Connection) error
+	analysis    cache.Store
+	analysisTTL time.Duration
 }
 
-type ContinuationError struct{ Preview Preview }
+// WithBarrier runs fn on the locked apply connection after the schema step
+// and before the post scripts, for deployment steps that belong between the
+// phases. Its writes are not part of the plan.
+func WithBarrier(fn func(context.Context, Connection) error) ApplyOption {
+	return func(c *applyConfig) { c.barrier = fn }
+}
 
-func (e *ContinuationError) Error() string {
-	return "script dependencies changed; review continuation " + e.Preview.Plan.Hash
+// WithAnalysisCache reuses script and module analyses across Plan and Apply,
+// as Options.Analysis does for Plan.
+func WithAnalysisCache(store cache.Store, ttl time.Duration) ApplyOption {
+	return func(c *applyConfig) { c.analysis, c.analysisTTL = store, ttl }
+}
+
+func resolveApply(options []ApplyOption) applyConfig {
+	var cfg applyConfig
+	for _, option := range options {
+		option(&cfg)
+	}
+	return cfg
 }

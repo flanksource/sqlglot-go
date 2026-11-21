@@ -58,7 +58,9 @@ CASE WHEN COL_LENGTH('dbo.sqlglot_migrations','state') IS NULL THEN 0 ELSE 1 END
 			if err := json.Unmarshal([]byte(state.String), &s); err != nil {
 				return nil, fmt.Errorf("invalid ledger state for %s: %w", id, err)
 			}
-			if s.Version != scripts.Version || s.Hash != hex.EncodeToString(hash) {
+			// A version 2 state lacks only EffectsHash, which never selects a
+			// script, so it reads as current.
+			if (s.Version != scripts.Version && s.Version != 2) || s.Hash != hex.EncodeToString(hash) {
 				return nil, fmt.Errorf("inconsistent ledger state for %s", id)
 			}
 		}
@@ -76,7 +78,10 @@ IF COL_LENGTH('dbo.sqlglot_migrations','state') IS NULL ALTER TABLE dbo.sqlglot_
 IF OBJECT_ID(N'dbo.sqlglot_migration_attempts',N'U') IS NULL
 CREATE TABLE dbo.sqlglot_migration_attempts(id uniqueidentifier NOT NULL DEFAULT NEWID() PRIMARY KEY,scope nvarchar(256) NOT NULL,
 path nvarchar(512) NOT NULL,plan_hash varchar(64) NOT NULL,outcome nvarchar(32) NOT NULL,detail nvarchar(max) NULL,
-updated_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME());`)
+updated_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME());
+IF OBJECT_ID(N'dbo.sqlglot_observations',N'U') IS NULL
+CREATE TABLE dbo.sqlglot_observations(scope nvarchar(256) NOT NULL,plan_hash varchar(64) NOT NULL,[key] nvarchar(512) NOT NULL,
+hash varchar(64) NOT NULL,observed_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME());`)
 	return err
 }
 

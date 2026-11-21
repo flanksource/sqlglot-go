@@ -3,6 +3,7 @@ package scripts
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/flanksource/sqlglot-go/sqlglot"
@@ -14,6 +15,10 @@ type Analysis struct {
 	Blocked            []string                  `json:"blocked,omitempty"`
 	Unresolved         []string                  `json:"unresolved,omitempty"`
 	TransactionControl bool                      `json:"transactionControl,omitempty"`
+	// Effects is what running the body does (see analyzeEffects); Defines
+	// holds the body effects of each routine a script creates or alters.
+	Effects Effects                `json:"effects"`
+	Defines map[ObjectName]Effects `json:"defines,omitempty"`
 }
 
 type AnalysisOptions struct {
@@ -21,8 +26,31 @@ type AnalysisOptions struct {
 	InvokedModule bool
 }
 
-// Analyze visits executable expressions, leaving stored module bodies for catalog analysis.
-func Analyze(opts AnalysisOptions) Analysis { return analyze(opts, 0) }
+// AnalysisVersion versions every cached analysis. Bump it whenever the
+// analyser, the batch splitter or canonicalisation changes what it produces.
+const AnalysisVersion = "2"
+
+// CachedAnalysis is what a backend stores for one body: its analysis, the
+// canonical text of a module definition, and the batch error of a script body
+// that does not split.
+type CachedAnalysis struct {
+	Analysis   Analysis `json:"analysis"`
+	Canonical  string   `json:"canonical,omitempty"`
+	BatchError string   `json:"batchError,omitempty"`
+}
+
+// AnalysisKey is the content-addressed cache key of a body's analysis.
+func AnalysisKey(sql string, invokedModule bool) string {
+	return "sqlglot:analysis:" + AnalysisVersion + ":" + Digest(strconv.FormatBool(invokedModule), sql)
+}
+
+// Analyze visits executable expressions, leaving stored module bodies for
+// catalog analysis, and reads the body's effects.
+func Analyze(opts AnalysisOptions) Analysis {
+	a := analyze(opts, 0)
+	a.Effects, a.Defines = analyzeEffects(opts.SQL, opts.InvokedModule)
+	return a
+}
 
 func analyze(opts AnalysisOptions, depth int) Analysis {
 	a := Analysis{Calls: []string{}}

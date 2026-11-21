@@ -6,26 +6,23 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	mssql "github.com/microsoft/go-mssqldb"
 )
 
-type Session struct {
-	conn       *sql.Conn
-	opts       Options
-	bundleHash string
-	lockName   string
-	closed     bool
+// session is one apply or adoption: a dedicated connection holding the
+// scope's migration lock for its whole run.
+type session struct {
+	conn     *sql.Conn
+	opts     Options
+	lockName string
+	closed   bool
 }
 
-func Open(ctx context.Context, opts Options) (*Session, error) {
-	opts, hash, err := prepare(opts)
-	if err != nil {
-		return nil, err
-	}
+// open locks the scope of prepared options on a dedicated connection.
+func open(ctx context.Context, opts Options) (*session, error) {
 	conn, err := opts.DB.Conn(ctx)
 	if err != nil {
 		return nil, err
@@ -39,10 +36,10 @@ func Open(ctx context.Context, opts Options) (*Session, error) {
 	if code < 0 {
 		return nil, errors.Join(fmt.Errorf("acquire migration lock: SQL Server returned code %d", code), discardConnection(conn))
 	}
-	return &Session{conn: conn, opts: opts, bundleHash: hash, lockName: lockName}, nil
+	return &session{conn: conn, opts: opts, lockName: lockName}, nil
 }
 
-func (s *Session) Close() error {
+func (s *session) Close() error {
 	if s.closed {
 		return fmt.Errorf("migration session already closed")
 	}
@@ -66,109 +63,30 @@ func discardConnection(conn *sql.Conn) error {
 	return errors.Join(discardErr, closeErr)
 }
 
-func (s *Session) Inspect(ctx context.Context, phase scripts.Phase) (Preview, error) {
-	if s.closed {
-		return Preview{}, fmt.Errorf("migration session closed")
-	}
-	return inspect(ctx, s.conn, s.opts, phase, s.bundleHash)
-}
-
-type ApplyOptions struct {
-	Preview                     Preview
-	AcknowledgeNonTransactional bool
-}
-
-type Result struct {
-	Outcome      string   `json:"outcome"`
-	Applied      []string `json:"applied"`
-	Continuation *Preview `json:"continuation,omitempty"`
-}
-
-func (s *Session) Apply(ctx context.Context, opts ApplyOptions) (Result, error) {
-	result := Result{Outcome: "failed", Applied: []string{}}
-	current, err := s.Inspect(ctx, opts.Preview.Plan.Phase)
+// verified re-plans file's bundle on the session connection and returns that
+// fresh plan, refusing a file for another target or one the target moved
+// away from.
+func (s *session) verified(ctx context.Context, file PlanFile) (PlanFile, error) {
+	fresh, err := plan(ctx, s.conn, s.opts)
 	if err != nil {
-		return result, err
+		return fresh, err
 	}
-	if current.Plan.Hash != opts.Preview.Plan.Hash || current.BundleHash != opts.Preview.BundleHash {
-		if alreadyApplied(opts.Preview, current) {
-			result.Outcome = "already-applied"
-			return result, nil
-		}
-		result.Outcome, result.Continuation = "continuation-required", &current
-		return result, nil
+	if fresh.Target != file.Target {
+		return fresh, fmt.Errorf("plan targets %s, but the connection is %s", file.Target, fresh.Target)
 	}
-	for _, item := range current.Plan.Scripts {
-		if item.Selected && item.Script.NonTransactional && !opts.AcknowledgeNonTransactional {
-			return result, fmt.Errorf("script %s requires nontransactional acknowledgement", item.Script.ID)
-		}
+	if moved := file.moved(fresh); len(moved) > 0 {
+		return fresh, &StalePlanError{Moved: moved}
 	}
-	selected := false
-	for _, item := range current.Plan.Scripts {
-		selected = selected || item.Selected
-	}
-	result.Outcome = "already-applied"
-	if selected {
-		if err := ensureStore(ctx, s.conn); err != nil {
-			return result, err
-		}
-	}
-	for _, approved := range current.Plan.Scripts {
-		if !approved.Selected {
-			continue
-		}
-		fresh, err := s.Inspect(ctx, current.Plan.Phase)
-		if err != nil {
-			return result, err
-		}
-		var item scripts.Pending
-		for _, candidate := range fresh.Plan.Scripts {
-			if candidate.Script.ID == approved.Script.ID {
-				item = candidate
-			}
-		}
-		if item.State.Hash != approved.State.Hash || len(item.Blocked) > 0 {
-			result.Outcome, result.Continuation = "continuation-required", &fresh
-			return result, nil
-		}
-		if err := s.execute(ctx, item, current.Plan.Hash); err != nil {
-			result.Outcome = "failed"
-			var execution *ExecutionError
-			if errors.As(err, &execution) {
-				result.Outcome = execution.Outcome
-				if execution.Outcome == "applied" {
-					result.Applied = append(result.Applied, item.Script.ID)
-				}
-			}
-			return result, err
-		}
-		result.Applied = append(result.Applied, item.Script.ID)
-		result.Outcome = "applied"
-	}
-	remaining, err := s.Inspect(ctx, current.Plan.Phase)
-	if err != nil {
-		return result, err
-	}
-	for _, item := range remaining.Plan.Scripts {
-		if (item.Selected || len(item.Blocked) > 0) && !slices.Contains(result.Applied, item.Script.ID) {
-			result.Outcome, result.Continuation = "continuation-required", &remaining
-			break
-		}
-	}
-	return result, nil
+	return fresh, nil
 }
 
-func alreadyApplied(approved, current Preview) bool {
-	if approved.BundleHash != current.BundleHash || approved.Plan.Target != current.Plan.Target || len(approved.Plan.Scripts) != len(current.Plan.Scripts) {
-		return false
+// options are the prepared options of file's bundle on db.
+func (file PlanFile) options(ctx context.Context, db *sql.DB, cfg applyConfig) (Options, error) {
+	if err := file.Verify(); err != nil {
+		return Options{}, err
 	}
-	for i, item := range current.Plan.Scripts {
-		before := approved.Plan.Scripts[i]
-		if item.Script.ID != before.Script.ID || item.State.Hash != before.State.Hash || item.Selected || len(item.Blocked) > 0 {
-			return false
-		}
-	}
-	return true
+	return prepare(ctx, Options{DB: db, Scope: file.Target.Scope, Scripts: file.Bundle.Scripts, Functions: file.Bundle.Functions,
+		Schema: file.Bundle.Schema, Analysis: cfg.analysis, AnalysisTTL: cfg.analysisTTL})
 }
 
 func retryable(err error) bool {

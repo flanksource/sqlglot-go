@@ -31,32 +31,27 @@ BEGIN RETURN (SELECT Name FROM dbo.CountryContext); END`)).To(Succeed())
 		Expect(err).NotTo(HaveOccurred())
 		_, err = db.ExecContext(ctx, "INSERT dbo.sqlglot_migrations(scope,path,hash) VALUES(N'adoption',N'seed',@p1)", binaryHash)
 		Expect(err).NotTo(HaveOccurred())
-		session, err := backend.Open(ctx, backend.Options{
+		opts := backend.Options{
 			DB: db, Scope: "adoption", Scripts: []scripts.Script{{ID: "seed", Phase: scripts.Post, SQL: script}},
 			Functions: []backend.Function{{Name: "dbo.get_country_name", Type: "nvarchar"}},
-		})
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(session.Close)
-		before, err := session.Inspect(ctx, scripts.Post)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(before.Plan.Scripts[0].Blocked).To(ContainElement("adoption-required"))
+		}
+		before := plan(ctx, opts)
+		Expect(before.Actions[0].Blocked).To(ContainElement("adoption-required"))
 		evidence := []backend.AdoptionEvidence{{
 			ID: "seed", SourceHash: hash, Provenance: "reviewed-output",
 			Query: "SELECT Country FROM dbo.PreviousOutput", Expected: "Zimbabwe",
 		}}
 		artifact, err := backend.AdoptionPlan(before, evidence)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(session.Adopt(ctx, backend.AdoptionOptions{Adoption: artifact})).To(MatchError(ContainSubstring("postcondition mismatch")))
+		Expect(backend.Adopt(ctx, db, backend.AdoptionOptions{Adoption: artifact})).To(MatchError(ContainSubstring("postcondition mismatch")))
 
 		Expect(execSQL(ctx, db, "UPDATE dbo.PreviousOutput SET Country=N'Zimbabwe'")).To(Succeed())
-		Expect(session.Adopt(ctx, backend.AdoptionOptions{Adoption: artifact})).To(Succeed())
-		after, err := session.Inspect(ctx, scripts.Post)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(after.Plan.Scripts[0].Blocked).To(BeEmpty())
-		Expect(after.Plan.Scripts[0].Selected).To(BeFalse())
+		Expect(backend.Adopt(ctx, db, backend.AdoptionOptions{Adoption: artifact})).To(Succeed())
+		after := plan(ctx, opts)
+		Expect(after.Actions[0].Blocked).To(BeEmpty())
+		Expect(after.Actions[0].Selected).To(BeFalse())
 		var count int
 		Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dbo.PreviousOutput").Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(1), "adoption must never execute the INSERT in the original script")
-		AddReportEntry("C14", map[string]any{"initialBlock": before.Plan.Scripts[0].Blocked, "verifiedResult": evidence[0].Expected, "rowsAfterAdoption": count})
 	})
 })

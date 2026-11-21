@@ -16,7 +16,6 @@ type RunOptions struct {
 	Mode            string
 	Target          dbtarget.OpenOptions
 	Plan            Options
-	Hash            string
 	Acks            []string
 	ArtifactContent json.RawMessage
 	LockTimeout     string
@@ -32,7 +31,7 @@ type RunResult struct {
 }
 
 func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *task.Task) (payload RunResult, returnErr error) {
-	payload.Mode, payload.Hash, payload.Acks = opts.Mode, opts.Hash, opts.Acks
+	payload.Mode, payload.Acks = opts.Mode, opts.Acks
 	if opts.Mode != "plan" && opts.Mode != "apply" {
 		return payload, fmt.Errorf("unknown migration mode %q", opts.Mode)
 	}
@@ -49,7 +48,7 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 			return payload, err
 		}
 		record.Dialect, record.Schemas = plan.Dialect, []string{plan.Schema}
-		payload.Plan, payload.Artifact = &plan, plan.Artifact
+		payload.Plan, payload.Artifact, payload.Hash = &plan, plan.Artifact, plan.Hash
 		return payload, nil
 	}
 	timeout := 5 * time.Second
@@ -63,7 +62,7 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 	if timeout <= 0 {
 		return payload, fmt.Errorf("lock timeout must be positive")
 	}
-	apply := ApplyOptions{Hash: opts.Hash, Acks: opts.Acks, Artifact: opts.ArtifactContent, LockTimeout: timeout}
+	apply := ApplyOptions{Acks: opts.Acks, Artifact: opts.ArtifactContent, LockTimeout: timeout}
 	if opts.Mode == "apply" && len(apply.Artifact) > 0 {
 		if err := Validate(apply); err != nil {
 			return payload, err
@@ -90,7 +89,7 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 	if err != nil {
 		return payload, err
 	}
-	payload.Plan, payload.Artifact = &plan, plan.Artifact
+	payload.Plan, payload.Artifact, payload.Hash = &plan, plan.Artifact, plan.Hash
 	if opts.Mode == "plan" {
 		return payload, nil
 	}

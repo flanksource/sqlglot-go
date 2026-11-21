@@ -26,14 +26,10 @@ CREATE SEQUENCE dbo.AttemptSequence START WITH 1 INCREMENT BY 1;`)).To(Succeed()
 SET LOCK_TIMEOUT 250;
 INSERT dbo.RunResult VALUES(NEXT VALUE FOR dbo.AttemptSequence);
 UPDATE dbo.LockGate SET Id = 1 WHERE Id = 1;`}}}
-		session, err := backend.Open(ctx, opts)
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(session.Close)
-		preview, err := session.Inspect(ctx, scripts.Post)
-		Expect(err).NotTo(HaveOccurred())
+		file := plan(ctx, opts)
 
 		lock := lockFixtureRow(ctx, db)
-		outcomes := beginApply(ctx, session, preview)
+		outcomes := beginApply(ctx, db, file)
 		Eventually(func() int { return lastAttempt(ctx, db) }).WithTimeout(6 * time.Second).Should(BeNumerically(">=", 2))
 		Expect(lock.Rollback()).To(Succeed())
 		var retry applyOutcome
@@ -43,16 +39,12 @@ UPDATE dbo.LockGate SET Id = 1 WHERE Id = 1;`}}}
 
 		// A separate migration scope selects the same body again, this time cancelling while it is blocked.
 		opts.Scope = "live-cancel"
-		cancelledSession, err := backend.Open(ctx, opts)
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(cancelledSession.Close)
-		preview, err = cancelledSession.Inspect(ctx, scripts.Post)
-		Expect(err).NotTo(HaveOccurred())
+		file = plan(ctx, opts)
 		priorAttempt := lastAttempt(ctx, db)
 		lock = lockFixtureRow(ctx, db)
 		cancelled, cancel := context.WithCancel(ctx)
 		defer cancel()
-		outcomes = beginApply(cancelled, cancelledSession, preview)
+		outcomes = beginApply(cancelled, db, file)
 		Eventually(func() int { return lastAttempt(ctx, db) }).WithTimeout(6 * time.Second).Should(BeNumerically(">", priorAttempt))
 		cancel()
 		var cancelledOutcome applyOutcome
@@ -63,14 +55,12 @@ UPDATE dbo.LockGate SET Id = 1 WHERE Id = 1;`}}}
 		var count int
 		Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dbo.RunResult").Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(1))
-		after, err := cancelledSession.Inspect(ctx, scripts.Post)
-		Expect(err).NotTo(HaveOccurred())
+		after := plan(ctx, opts)
 		if cancelledOutcome.result.Outcome == "commit-unknown" {
-			Expect(after.Plan.Scripts[0].Blocked).To(ContainElement(ContainSubstring("reconciliation required")))
+			Expect(after.Actions[0].Blocked).To(ContainElement(ContainSubstring("reconciliation required")))
 		} else {
-			Expect(after.Plan.Scripts[0].Reasons).To(ContainElement("retry-failed"))
+			Expect(after.Actions[0].Reasons).To(ContainElement("retry-failed"))
 		}
-		AddReportEntry("C11", map[string]any{"attemptsBeforeCancel": priorAttempt, "committedRows": count, "cancelledOutcome": cancelledOutcome.result.Outcome})
 	})
 })
 
@@ -79,10 +69,10 @@ type applyOutcome struct {
 	err    error
 }
 
-func beginApply(ctx context.Context, session *backend.Session, plan backend.Preview) <-chan applyOutcome {
+func beginApply(ctx context.Context, db *sql.DB, file backend.PlanFile) <-chan applyOutcome {
 	outcomes := make(chan applyOutcome, 1)
 	go func() {
-		result, err := session.Apply(ctx, backend.ApplyOptions{Preview: plan})
+		result, err := backend.Apply(ctx, db, file)
 		outcomes <- applyOutcome{result: result, err: err}
 	}()
 	return outcomes

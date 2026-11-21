@@ -11,11 +11,57 @@ import (
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 )
 
-func (s *Session) execute(ctx context.Context, item scripts.Pending, planHash string) error {
-	if item.Script.NonTransactional {
-		return s.nonTransactional(ctx, item, planHash)
+// inputCheck is what a script's run observes of its inputs. Apply verified
+// every input once, at its start, and re-observes an input after each
+// upstream writer the plan predicts, so a script with known effects observes
+// only after, the inputs its own writes reach, once its body ran: a script
+// must not change its own inputs. full observes every input before the body
+// (a change there is drift, which makes the plan stale) and after it.
+type inputCheck struct {
+	full  bool
+	after []string
+}
+
+// before observes every input of a full check; any other check holds item to
+// the snapshot values apply settled it with, without observing.
+func (c inputCheck) before(ctx context.Context, opts Options, q queryer, item scripts.Pending) error {
+	if !c.full {
+		return nil
 	}
-	uncertain, err := s.inProgressState(ctx, item, "commit-unknown")
+	if err := validateInputs(item, opts.observe(ctx, newObservationEpoch(q), item.Script)); err != nil {
+		return &inputDrift{err}
+	}
+	return nil
+}
+
+// afterRun observes what c checks once item's body ran on q.
+func (c inputCheck) afterRun(ctx context.Context, opts Options, q queryer, item scripts.Pending) error {
+	if c.full {
+		return validateInputs(item, opts.observe(ctx, newObservationEpoch(q), item.Script))
+	}
+	if len(c.after) == 0 {
+		return nil
+	}
+	observed, err := opts.observeKeys(ctx, q, c.after)
+	if err != nil {
+		return err
+	}
+	for _, key := range c.after {
+		if observed[key].Error != "" {
+			return fmt.Errorf("script %s dependency %s: %s", item.Script.ID, key, observed[key].Error)
+		}
+		if observed[key].Hash != item.State.Inputs[key] {
+			return fmt.Errorf("script %s dependency drift: observed inputs changed (%s)", item.Script.ID, key)
+		}
+	}
+	return nil
+}
+
+func (s *session) execute(ctx context.Context, item scripts.Pending, planHash string, check inputCheck) error {
+	if item.Script.NonTransactional {
+		return s.nonTransactional(ctx, item, planHash, check)
+	}
+	uncertain, previous, err := s.inProgressState(ctx, item, "commit-unknown")
 	if err != nil {
 		return err
 	}
@@ -23,7 +69,13 @@ func (s *Session) execute(ctx context.Context, item scripts.Pending, planHash st
 		return err
 	}
 	for attempt := 0; attempt < 6; attempt++ {
-		err := s.transaction(ctx, item)
+		err := s.transaction(ctx, item, check)
+		var drift *inputDrift
+		if errors.As(err, &drift) {
+			after, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			return errors.Join(err, restoreState(after, s.conn, s.opts.Scope, item.Script.ID, previous))
+		}
 		if err == nil {
 			if err := s.attempt(ctx, item.Script.ID, planHash, "applied", ""); err != nil {
 				return &ExecutionError{Outcome: "applied", Err: err}
@@ -62,7 +114,9 @@ type ExecutionError struct {
 	Err     error
 }
 
-func (s *Session) inProgressState(ctx context.Context, item scripts.Pending, outcome string) (scripts.State, error) {
+// inProgressState is item.State marked outcome, carrying the last success
+// forward, and the record it replaces.
+func (s *session) inProgressState(ctx context.Context, item scripts.Pending, outcome string) (scripts.State, scripts.State, error) {
 	recorded, err := readStates(ctx, s.conn, s.opts.Scope)
 	state := item.State
 	state.Outcome = outcome
@@ -72,13 +126,21 @@ func (s *Session) inProgressState(ctx context.Context, item scripts.Pending, out
 		(previous.Outcome == "applied" || previous.Outcome == "adopted" || previous.Version == 1) {
 		state.LastSuccess = &previous
 	}
-	return state, err
+	return state, previous, err
 }
+
+// inputDrift is a failed pre-run input validation: an input changed, or could
+// not be observed, with no predicted upstream write. The script did not run,
+// and apply refuses the plan as stale.
+type inputDrift struct{ err error }
+
+func (e *inputDrift) Error() string { return e.err.Error() }
+func (e *inputDrift) Unwrap() error { return e.err }
 
 func (e *ExecutionError) Error() string { return "script " + e.Outcome + ": " + e.Err.Error() }
 func (e *ExecutionError) Unwrap() error { return e.Err }
 
-func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err error) {
+func (s *session) transaction(ctx context.Context, item scripts.Pending, check inputCheck) (err error) {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
@@ -95,8 +157,7 @@ func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err er
 	if _, err = tx.ExecContext(ctx, "SET LOCK_TIMEOUT 15000"); err != nil {
 		return err
 	}
-	inputs := s.opts.observe(ctx, newObservationEpoch(tx), item.Script)
-	if err = validateInputs(item, inputs); err != nil {
+	if err = check.before(ctx, s.opts, tx, item); err != nil {
 		return err
 	}
 	if err = runBatches(ctx, tx, item.Script, func(ctx context.Context) error {
@@ -111,7 +172,7 @@ func (s *Session) transaction(ctx context.Context, item scripts.Pending) (err er
 	}); err != nil {
 		return err
 	}
-	if err = validateInputs(item, s.opts.observe(ctx, newObservationEpoch(tx), item.Script)); err != nil {
+	if err = check.afterRun(ctx, s.opts, tx, item); err != nil {
 		return err
 	}
 	committed := item.State
@@ -165,11 +226,11 @@ func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(
 	return nil
 }
 
-func (s *Session) nonTransactional(ctx context.Context, item scripts.Pending, planHash string) error {
-	if err := validateInputs(item, s.opts.observe(ctx, newObservationEpoch(s.conn), item.Script)); err != nil {
+func (s *session) nonTransactional(ctx context.Context, item scripts.Pending, planHash string, check inputCheck) error {
+	if err := check.before(ctx, s.opts, s.conn, item); err != nil {
 		return err
 	}
-	state, err := s.inProgressState(ctx, item, "partial")
+	state, _, err := s.inProgressState(ctx, item, "partial")
 	if err != nil {
 		return err
 	}
@@ -179,7 +240,7 @@ func (s *Session) nonTransactional(ctx context.Context, item scripts.Pending, pl
 	if err := runBatches(ctx, s.conn, item.Script, nil); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: errors.Join(err, s.attempt(context.WithoutCancel(ctx), item.Script.ID, planHash, "partial", err.Error()))}
 	}
-	if err := validateInputs(item, s.opts.observe(ctx, newObservationEpoch(s.conn), item.Script)); err != nil {
+	if err := check.afterRun(ctx, s.opts, s.conn, item); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: err}
 	}
 	state.Outcome = "applied"
@@ -193,7 +254,7 @@ func (s *Session) nonTransactional(ctx context.Context, item scripts.Pending, pl
 	return nil
 }
 
-func (s *Session) attempt(ctx context.Context, id, planHash, outcome, detail string) error {
+func (s *session) attempt(ctx context.Context, id, planHash, outcome, detail string) error {
 	_, err := s.conn.ExecContext(ctx, `INSERT INTO dbo.sqlglot_migration_attempts(scope,path,plan_hash,outcome,detail) VALUES(@p1,@p2,@p3,@p4,@p5)`, s.opts.Scope, id, planHash, outcome, detail)
 	return err
 }
