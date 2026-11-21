@@ -28,7 +28,7 @@ var _ = Describe("Dependency observation contracts", func() {
 		DeferCleanup(func() { mock.ExpectClose(); Expect(db.Close()).To(Succeed()) })
 		mock.ExpectQuery("SELECT CASE").WillReturnRows(sqlmock.NewRows([]string{"exists", "extended"}).AddRow(1, 1))
 		mock.ExpectQuery("SELECT path,hash,state").WithArgs("example").WillReturnRows(sqlmock.NewRows([]string{"path", "hash", "state"}).AddRow("example", []byte{1}, `{"version":2,"hash":"wrong"}`))
-		_, err = readStates(context.Background(), db, "example")
+		_, err = readStates(context.Background(), db, ledgerScope{Scope: "example"})
 		Expect(err).To(MatchError(ContainSubstring("inconsistent ledger")))
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
@@ -44,6 +44,9 @@ var _ = Describe("Dependency observation contracts", func() {
 		Expect(file.Actions[0].Selected).To(BeTrue())
 		Expect(file.Target).To(Equal(PlanTarget{Server: "example", Database: "disposable", Scope: "example"}))
 		Expect(file.Verify()).To(Succeed())
+		previous := file
+		previous.Version = 1
+		Expect(previous.Verify()).To(MatchError(ContainSubstring("re-run sqlglot migrate plan")))
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 	It("samples a shared function once per preview and resamples on the next preview", func(ctx SpecContext) {

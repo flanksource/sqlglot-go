@@ -58,6 +58,9 @@ func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Re
 	if _, err := s.verified(ctx, file); err != nil {
 		return result, err
 	}
+	if err := s.absorb(ctx); err != nil {
+		return result, err
+	}
 	run := applyRun{s: s, file: file, stale: map[string]bool{}, recorded: map[string]string{}}
 	for _, item := range file.Actions {
 		if len(item.Blocked) > 0 {

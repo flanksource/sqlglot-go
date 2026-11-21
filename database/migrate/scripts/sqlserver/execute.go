@@ -117,7 +117,7 @@ type ExecutionError struct {
 // inProgressState is item.State marked outcome, carrying the last success
 // forward, and the record it replaces.
 func (s *session) inProgressState(ctx context.Context, item scripts.Pending, outcome string) (scripts.State, scripts.State, error) {
-	recorded, err := readStates(ctx, s.conn, s.opts.Scope)
+	recorded, err := readStates(ctx, s.conn, s.opts.ledger())
 	state := item.State
 	state.Outcome = outcome
 	previous := recorded[item.Script.ID]

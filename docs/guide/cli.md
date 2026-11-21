@@ -184,7 +184,7 @@ Plan: 1 to run, 2 to re-run, 1 blocked, 4 unchanged, 1 schema statements (0 dest
 
 `+ run` is a new script, `~ re-run` names why a script runs again (`source-changed`, `script-dependency-changed`, `function-result-changed`, `upstream-write: <object> ← <writer>`), `! blocked` names the blocker, and `? effects unknown` lists the statements whose effects could not be determined. `scriptPlan.actions` holds the same in JSON, and the file also records the target, the scripts with their SQL and effects, the ledger and every observed input.
 
-`migrate apply` checks that the plan file is for the connected server and database, then re-reads the ledger and every observed input. Any difference fails as `plan is stale: <what moved>; run sqlglot migrate plan again` before anything runs. An input an upstream script writes is re-observed after that writer. After a script with unknown effects, apply re-plans; work the file did not include stops the apply as stale, with the scripts already committed recorded.
+`migrate apply` checks that the plan file is for the connected server and database, then re-reads the ledger and every observed input. A version 1 plan file, written before ledger scopes could be absorbed, is refused: re-run `sqlglot migrate plan`. Any difference fails as `plan is stale: <what moved>; run sqlglot migrate plan again` before anything runs. An input an upstream script writes is re-observed after that writer. After a script with unknown effects, apply re-plans; work the file did not include stops the apply as stale, with the scripts already committed recorded.
 
 ### Review a SQL Server CSV import
 

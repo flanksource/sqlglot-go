@@ -21,10 +21,15 @@ type Function struct {
 }
 
 type Options struct {
-	DB        *sql.DB
-	Scope     string
-	Scripts   []scripts.Script
-	Functions []Function
+	DB    *sql.DB
+	Scope string
+	// AbsorbScopes, when set, merges the ledgers of the other scopes it accepts
+	// into Scope: Plan reads the newest row of each path across Scope and those
+	// scopes, and Apply moves them into Scope. The plan file records the
+	// scopes it absorbed.
+	AbsorbScopes func(scope string) bool
+	Scripts      []scripts.Script
+	Functions    []Function
 	// Schema is the declared-schema reconciliation that runs between the pre
 	// and post scripts; nil when the bundle declares no objects.
 	Schema *SchemaStep
@@ -35,6 +40,7 @@ type Options struct {
 	// writes without expiry.
 	AnalysisTTL time.Duration
 	analysis    map[string]scripts.Analysis
+	absorbed    []string
 }
 
 type queryer interface {
