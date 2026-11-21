@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import compareFixture from "../fixtures/compare.json";
 import type { CompareResult } from "../types";
-import { applyCommand, changeLabel, connectionRef, countChanges, groupByObject, isDriftError, objectKey, parseSchemas, stepsFor } from "./model";
+import { PLAN_FILE, applyCommand, changeLabel, connectionRef, countChanges, groupByObject, isDriftError, objectKey, parseSchemas, stepsFor } from "./model";
 
 const result = compareFixture as CompareResult;
 const id = (action: string, kind: string, object: string, member = "") => JSON.stringify([action, kind, "main", object, member]);
@@ -84,19 +84,24 @@ describe("parseSchemas", () => {
 });
 
 describe("applyCommand", () => {
-  it("builds the apply command with the target, hash and one quoted --ack per destructive change", () => {
+  it("builds the apply command with the target, one quoted --ack per destructive change and the downloaded plan file last", () => {
     const ack = id("drop", "column", "customers", "legacy_code");
-    expect(applyCommand({ target: "connection://dev-0a", hash: "sha256:abc", acks: [ack] })).toBe(
-      `sqlglot migrate apply --artifact artifact.json --dsn 'connection://dev-0a' --hash 'sha256:abc' --ack '${ack}'`,
+    expect(applyCommand({ target: "connection://dev-0a", acks: [ack] })).toBe(
+      `sqlglot migrate apply --dsn 'connection://dev-0a' --ack '${ack}' ${PLAN_FILE}`,
     );
   });
 
   it("omits --ack when nothing is destructive", () => {
-    expect(applyCommand({ target: "t", hash: "h", acks: [] })).toBe("sqlglot migrate apply --artifact artifact.json --dsn 't' --hash 'h'");
+    expect(applyCommand({ target: "t", acks: [] })).toBe(`sqlglot migrate apply --dsn 't' ${PLAN_FILE}`);
+  });
+
+  it("names the plan file positionally and never passes the removed --hash or --artifact flags", () => {
+    expect(PLAN_FILE).toBe("plan.json");
+    expect(applyCommand({ target: "t", acks: [] })).not.toMatch(/--hash|--artifact/);
   });
 
   it("escapes single quotes inside a value", () => {
-    expect(applyCommand({ target: "it's", hash: "h", acks: [] })).toContain(`--dsn 'it'\\''s'`);
+    expect(applyCommand({ target: "it's", acks: [] })).toContain(`--dsn 'it'\\''s'`);
   });
 });
 

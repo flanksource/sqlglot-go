@@ -35,31 +35,43 @@ var _ = Describe("standalone database commands", func() {
 		Expect(db.Close()).To(Succeed())
 		desired := filepath.Join(dir, "desired.hcl")
 		Expect(os.WriteFile(desired, []byte("schema \"main\" {}\ntable \"items\" {\n schema = schema.main\n column \"id\" { type = integer }\n}"), 0600)).To(Succeed())
+		var stderr string
 		run := func(args ...string) (string, error) {
 			root := newRootCommand(strings.NewReader(""))
-			out := &bytes.Buffer{}
+			out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 			root.SetOut(out)
-			root.SetErr(out)
-			root.SetArgs(args)
+			root.SetErr(errOut)
+			root.SetArgs(append(args, "--no-color"))
 			err := root.Execute()
+			stderr = errOut.String()
 			return out.String(), err
 		}
 		output, err := run("schema", "inspect", "--dsn", dbPath, "--snapshot")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(output).To(ContainSubstring("\"dialect\": \"sqlite\""))
+		GinkgoT().Chdir(dir)
 		output, err = run("migrate", "plan", "--dsn", dbPath, "--desired", desired)
 		Expect(err).NotTo(HaveOccurred())
 		var artifact review.Artifact
-		Expect(json.Unmarshal([]byte(output), &artifact)).To(Succeed())
+		Expect(json.Unmarshal([]byte(output), &artifact)).To(Succeed(), "stdout carries the structured plan")
 		Expect(artifact.Hash).NotTo(BeEmpty())
-		artifactPath := filepath.Join(dir, "reviewed.json")
-		Expect(os.WriteFile(artifactPath, []byte(output), 0600)).To(Succeed())
-		output, err = run("migrate", "apply", "--dsn", dbPath, "--artifact", artifactPath, "--hash", artifact.Hash)
+		Expect(stderr).To(SatisfyAll(ContainSubstring("Plan for sqlite schema main"), ContainSubstring("+ CREATE TABLE"), ContainSubstring("Plan: 1 steps (0 destructive).")))
+		root, err := os.OpenRoot(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(root.Close)
+		written, err := root.ReadFile(".sqlglot-go/plan.json")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(written).To(MatchJSON(output), "the default plan file holds the structured plan")
+		output, err = run("migrate", "apply", "--dsn", dbPath, ".sqlglot-go/plan.json")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(output).To(ContainSubstring("\"outcome\": \"applied\""))
-		output, err = run("migrate", "apply", "--dsn", dbPath, "--artifact", artifactPath, "--hash", artifact.Hash)
+		output, err = run("migrate", "apply", "--dsn", dbPath, ".sqlglot-go/plan.json")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(output).To(ContainSubstring("already-applied"))
+		output, err = run("migrate", "review", ".sqlglot-go/plan.json")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(MatchJSON(written))
+		Expect(stderr).To(ContainSubstring("+ CREATE TABLE"))
 
 		store, err := history.Open(historyPath)
 		Expect(err).NotTo(HaveOccurred())
@@ -77,6 +89,11 @@ var _ = Describe("standalone database commands", func() {
 			modes = append(modes, string(r.Kind)+" "+payload.Mode+" "+string(r.Status))
 		}
 		Expect(modes).To(ConsistOf("inspection  succeeded", "migration plan succeeded", "migration apply succeeded", "migration apply succeeded"))
+
+		edited := strings.Replace(string(written), "CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1)
+		Expect(os.WriteFile(filepath.Join(dir, ".sqlglot-go", "plan.json"), []byte(edited), 0600)).To(Succeed())
+		_, err = run("migrate", "apply", "--dsn", dbPath, ".sqlglot-go/plan.json")
+		Expect(err).To(MatchError(ContainSubstring("hash mismatch")), "an edited plan file fails its integrity hash")
 	})
 	It("inspects and lists a named connection from the connections directory", func() {
 		dir := GinkgoT().TempDir()
@@ -107,9 +124,11 @@ var _ = Describe("standalone database commands", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(summaries).To(Equal([]ConnectionSummary{{Name: "local", Type: "sqlite", Layer: "app", Source: filepath.Join(connectionsDir, "local.yaml")}}))
 	})
-	It("requires an explicit reviewed hash before connecting", func() {
+	It("requires a plan file before connecting", func() {
 		root := newRootCommand(strings.NewReader(""))
-		root.SetArgs([]string{"migrate", "apply", "--dsn", "missing.db", "--artifact", "missing.json"})
-		Expect(root.Execute()).To(MatchError(ContainSubstring("hash")))
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"migrate", "apply", "--dsn", "missing.db"})
+		Expect(root.Execute()).To(MatchError(ContainSubstring("a plan file is required: sqlglot migrate apply .sqlglot-go/plan.json")))
 	})
 })

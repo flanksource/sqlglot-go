@@ -85,7 +85,7 @@ export function Migrations({
         <div>
           <h1 className="text-xl font-semibold">Migrations</h1>
           <p className="text-sm text-muted-foreground">
-            Plan, review, and explicitly apply hash-bound migrations.
+            Plan, review, and explicitly apply migrations.
           </p>
         </div>
         {run && (
@@ -221,7 +221,7 @@ function MigrationOutcome({ value }: { value: MigrationPayload }) {
       >
         {uncertain
           ? "Inspect the target before attempting another application. A commit response was lost; this is not a confirmed rollback."
-          : `${result.steps} steps reported. Reviewed hash: ${result.hash}`}
+          : `${result.steps} steps reported. Plan hash: ${result.hash}`}
       </Callout>
       <CodeBlock
         language="json"

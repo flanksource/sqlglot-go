@@ -165,8 +165,9 @@ describe("Patch", () => {
     expect(screen.getByLabelText("Destructive acknowledgements").textContent).toContain("drops column customers.legacy_code");
     const command = document.querySelector("[data-apply-command]")?.textContent;
     expect(command).toBe(
-      `sqlglot migrate apply --artifact artifact.json --dsn 'connection://dev-0a' --hash '${patchFixture.hash}' --ack '${LEGACY}'`,
+      `sqlglot migrate apply --dsn 'connection://dev-0a' --ack '${LEGACY}' plan.json`,
     );
+    expect(screen.getByRole("button", { name: "plan.json" })).toBeTruthy();
   });
 
   it("offers a re-compare under a new run when the patch failed with drift", async () => {

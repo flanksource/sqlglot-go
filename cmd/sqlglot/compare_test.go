@@ -64,7 +64,7 @@ var _ = Describe("schema compare and patch commands", func() {
 		artifactPath := filepath.Join(dir, "artifact.json")
 		Expect(os.WriteFile(artifactPath, patch.Artifact, 0600)).To(Succeed())
 
-		output, err = run("migrate", "apply", "--dsn", target, "--artifact", artifactPath, "--hash", patch.Hash)
+		output, err = run("migrate", "apply", "--dsn", target, artifactPath)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(output).To(ContainSubstring("\"outcome\": \"applied\""))
 		output, err = run("schema", "compare", "--reference", reference, "--target", target)

@@ -55,12 +55,15 @@ export function parseSchemas(value: string): string[] | undefined {
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-export function applyCommand({ target, hash, acks }: { target: string; hash: string; acks: readonly string[] }): string {
+/** The filename a downloaded plan is saved as, and the file the generated apply command runs. */
+export const PLAN_FILE = "plan.json";
+
+export function applyCommand({ target, acks }: { target: string; acks: readonly string[] }): string {
   return [
-    "sqlglot migrate apply --artifact artifact.json",
+    "sqlglot migrate apply",
     `--dsn ${shellQuote(target)}`,
-    `--hash ${shellQuote(hash)}`,
     ...acks.map((ack) => `--ack ${shellQuote(ack)}`),
+    PLAN_FILE,
   ].join(" ");
 }
 

@@ -27,7 +27,6 @@ export type ReviewedPlan = {
   sql: string;
 };
 export type ApplyInput = {
-  hash: string;
   ack: string[];
   "lock-timeout": string;
 };

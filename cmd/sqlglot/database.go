@@ -18,8 +18,10 @@ func addDatabaseCommands(root *cobra.Command) {
 	schemaCmd := &cobra.Command{Use: "schema", Short: "Inspect database schemas"}
 	addInspectCommand(schemaCmd)
 	addCompareCommands(schemaCmd)
-	migrateCmd := &cobra.Command{Use: "migrate", Short: "Plan and apply reviewed database migrations"}
+	migrateCmd := &cobra.Command{Use: "migrate", Short: "Plan and apply reviewed database migrations", Long: migrationHelp}
 	migrateCmd.AddCommand(newMigrationPlanCommand(), newMigrationApplyCommand(), newMigrationReviewCommand())
+	migrateCmd.SetHelpFunc(renderMigrationHelp)
+	clicky.SetGroupedUsage(migrateCmd)
 	root.AddCommand(schemaCmd, migrateCmd)
 	connectionsCmd := &cobra.Command{Use: "connections", Short: "Manage named database connections"}
 	list := clicky.AddNamedCommand("list", connectionsCmd, ConnectionListOptions{}, listConnections)

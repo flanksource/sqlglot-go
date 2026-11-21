@@ -62,7 +62,7 @@ describe("SQL Tools", () => {
 });
 
 describe("reviewed migrations", () => {
-  it("requires individual acknowledgements and target/hash confirmation before apply", async () => {
+  it("requires individual acknowledgements and target confirmation, then applies without a reviewed hash", async () => {
     const plan: ReviewedPlan = {
       dialect: "sqlite",
       schema: "main",
@@ -99,10 +99,10 @@ describe("reviewed migrations", () => {
     );
     await waitFor(() =>
       expect(apply).toHaveBeenCalledWith({
-        hash: "reviewed",
         ack: ["drop-items"],
         "lock-timeout": "5s",
       }),
     );
+    expect(apply.mock.calls[0]![0]).not.toHaveProperty("hash");
   });
 });
