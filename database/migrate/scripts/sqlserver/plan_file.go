@@ -14,7 +14,7 @@ const (
 	// PlanFileKind identifies a plan file among migration artifacts.
 	PlanFileKind = "sqlglot-go/script-plan"
 	// PlanFileVersion is the plan file format this package writes and reads.
-	PlanFileVersion = 1
+	PlanFileVersion = 2
 )
 
 // PlanTarget is the database a plan was made for.
@@ -40,15 +40,18 @@ type PlanBundle struct {
 // takes. Hash covers every other field; it guards the file's integrity and
 // nothing else.
 type PlanFile struct {
-	Kind         string                   `json:"kind"`
-	Version      int                      `json:"version"`
-	Target       PlanTarget               `json:"target"`
-	Bundle       PlanBundle               `json:"bundle"`
-	Ledger       map[string]scripts.State `json:"ledger"`
-	Observations map[string]string        `json:"observations"`
-	Actions      []scripts.Pending        `json:"actions"`
-	Warnings     []string                 `json:"warnings,omitempty"`
-	Hash         string                   `json:"hash"`
+	Kind    string                   `json:"kind"`
+	Version int                      `json:"version"`
+	Target  PlanTarget               `json:"target"`
+	Bundle  PlanBundle               `json:"bundle"`
+	Ledger  map[string]scripts.State `json:"ledger"`
+	// Absorbed are the other ledger scopes the plan read, newest row per path
+	// with Target.Scope, and apply moves into it.
+	Absorbed     []string          `json:"absorbed,omitempty"`
+	Observations map[string]string `json:"observations"`
+	Actions      []scripts.Pending `json:"actions"`
+	Warnings     []string          `json:"warnings,omitempty"`
+	Hash         string            `json:"hash"`
 }
 
 // StalePlanError refuses a plan whose target moved since it was made.
@@ -78,6 +81,9 @@ func (p PlanFile) seal() (PlanFile, error) {
 
 // Verify checks the file's kind, version and integrity hash.
 func (p PlanFile) Verify() error {
+	if p.Kind == PlanFileKind && p.Version == 1 {
+		return fmt.Errorf("plan file version 1 predates absorbed ledger scopes; re-run sqlglot migrate plan")
+	}
 	if p.Kind != PlanFileKind || p.Version != PlanFileVersion {
 		return fmt.Errorf("not a version %d %s file (kind %q, version %d)", PlanFileVersion, PlanFileKind, p.Kind, p.Version)
 	}

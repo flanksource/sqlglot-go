@@ -11,7 +11,7 @@ import (
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 )
 
-func readStates(ctx context.Context, q queryer, scope string) (_ map[string]scripts.State, cause error) {
+func readStates(ctx context.Context, q queryer, ledger ledgerScope) (_ map[string]scripts.State, cause error) {
 	rows, err := q.QueryContext(ctx, `SELECT CASE WHEN OBJECT_ID(N'dbo.sqlglot_migrations',N'U') IS NULL THEN 0 ELSE 1 END,
 CASE WHEN COL_LENGTH('dbo.sqlglot_migrations','state') IS NULL THEN 0 ELSE 1 END`)
 	if err != nil {
@@ -37,11 +37,8 @@ CASE WHEN COL_LENGTH('dbo.sqlglot_migrations','state') IS NULL THEN 0 ELSE 1 END
 	if exists == 0 {
 		return states, nil
 	}
-	query := `SELECT path,hash,CAST(NULL AS nvarchar(max)) FROM dbo.sqlglot_migrations WHERE scope=@p1`
-	if extended == 1 {
-		query = `SELECT path,hash,state FROM dbo.sqlglot_migrations WHERE scope=@p1`
-	}
-	rows, err = q.QueryContext(ctx, query, scope)
+	query, args := ledger.query(extended == 1)
+	rows, err = q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

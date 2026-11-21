@@ -15,6 +15,9 @@ func prepare(ctx context.Context, opts Options) (Options, error) {
 	if opts.DB == nil || strings.TrimSpace(opts.Scope) == "" || len(opts.Scope) > 256 {
 		return Options{}, fmt.Errorf("script database and scope (up to 256 characters) are required")
 	}
+	if err := validateAbsorbed(opts); err != nil {
+		return Options{}, err
+	}
 	if err := opts.Schema.validate(); err != nil {
 		return Options{}, err
 	}
@@ -112,11 +115,18 @@ func Plan(ctx context.Context, opts Options) (PlanFile, error) {
 }
 
 func plan(ctx context.Context, q queryer, opts Options) (PlanFile, error) {
+	if opts.AbsorbScopes != nil {
+		absorbed, err := absorbableScopes(ctx, q, opts)
+		if err != nil {
+			return PlanFile{}, err
+		}
+		opts.absorbed = absorbed
+	}
 	target, err := observeTarget(ctx, q, opts)
 	if err != nil {
 		return PlanFile{}, err
 	}
-	file := PlanFile{Kind: PlanFileKind, Version: PlanFileVersion, Ledger: target.states,
+	file := PlanFile{Kind: PlanFileKind, Version: PlanFileVersion, Ledger: target.states, Absorbed: opts.absorbed,
 		Target: PlanTarget{Server: target.server, Database: target.database, Scope: opts.Scope},
 		Bundle: PlanBundle{Scripts: opts.Scripts, Functions: opts.Functions, Schema: opts.Schema}}
 	built, err := scripts.Build(scripts.PlanOptions{Target: file.Target.String(), Scripts: opts.Scripts, Recorded: target.states,
@@ -185,7 +195,7 @@ func observeTarget(ctx context.Context, q queryer, opts Options) (observedTarget
 	if t.server, t.database, err = readIdentity(ctx, q); err != nil {
 		return t, err
 	}
-	if t.states, err = readStates(ctx, q, opts.Scope); err != nil {
+	if t.states, err = readStates(ctx, q, opts.ledger()); err != nil {
 		return t, err
 	}
 	t.observations = map[string]map[string]scripts.Observation{}
