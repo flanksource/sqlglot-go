@@ -61,17 +61,20 @@ func (s *session) execute(ctx context.Context, item scripts.Pending, planHash st
 	if item.Script.NonTransactional {
 		return s.nonTransactional(ctx, item, planHash, check)
 	}
-	uncertain, previous, err := s.inProgressState(ctx, item, "commit-unknown")
-	if err != nil {
-		return err
-	}
-	if err := recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, uncertain); err != nil {
-		return err
+	uncertain, previous := s.inProgressState(item, "commit-unknown")
+	marked := s.mayEndTransaction(item)
+	if marked {
+		if err := recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, uncertain); err != nil {
+			return err
+		}
 	}
 	for attempt := 0; attempt < 6; attempt++ {
-		err := s.transaction(ctx, item, check)
+		err := s.transaction(ctx, item, planHash, check)
 		var drift *inputDrift
 		if errors.As(err, &drift) {
+			if !marked {
+				return err
+			}
 			after, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			return errors.Join(err, restoreState(after, s.conn, s.opts.Scope, item.Script.ID, previous))
@@ -80,16 +83,16 @@ func (s *session) execute(ctx context.Context, item scripts.Pending, planHash st
 			if err := s.recordReads(ctx, item); err != nil {
 				return &ExecutionError{Outcome: "applied", Err: err}
 			}
-			if err := s.attempt(ctx, item.Script.ID, planHash, "applied", ""); err != nil {
-				return &ExecutionError{Outcome: "applied", Err: err}
-			}
 			return nil
 		}
-		var outcome *ExecutionError
-		if errors.As(err, &outcome) {
+		var execution *ExecutionError
+		if errors.As(err, &execution) {
 			after, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			return errors.Join(err, s.attempt(after, item.Script.ID, planHash, outcome.Outcome, err.Error()))
+			if execution.committing {
+				return errors.Join(err, s.attempt(after, item.Script.ID, planHash, execution.Outcome, err.Error()))
+			}
+			return errors.Join(err, s.record(after, outcome{script: item.Script.ID, planHash: planHash, detail: err.Error(), state: uncertain}))
 		}
 		if retryable(err) && attempt < 5 {
 			select {
@@ -104,12 +107,21 @@ func (s *session) execute(ctx context.Context, item scripts.Pending, planHash st
 		failed.LastSuccess = uncertain.LastSuccess
 		after, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if recordErr := recordState(after, s.conn, s.opts.Scope, item.Script.ID, failed); recordErr != nil {
+		if recordErr := s.record(after, outcome{script: item.Script.ID, planHash: planHash, detail: err.Error(), state: failed}); recordErr != nil {
 			return &ExecutionError{Outcome: "commit-unknown", Err: errors.Join(err, fmt.Errorf("record rollback for %s: %w", item.Script.ID, recordErr))}
 		}
-		return errors.Join(err, s.attempt(after, item.Script.ID, planHash, "failed", err.Error()))
+		return err
 	}
 	return fmt.Errorf("migration retries exhausted")
+}
+
+// mayEndTransaction reports whether running item may end the migration's
+// transaction, which makes its writes outlive a failure of its ledger row. Only
+// such a script is marked commit-unknown before it runs: any other commits
+// with its ledger row, so the row alone says whether it landed.
+func (s *session) mayEndTransaction(item scripts.Pending) bool {
+	a := s.opts.analysis[item.Script.ID]
+	return a.TransactionControl || a.Dynamic || len(a.Blocked) > 0 || len(a.Calls) > 0 || len(item.EffectsUnknown) > 0
 }
 
 // recordReads adds what the reads of item answer, now that it ran, to its
@@ -134,27 +146,33 @@ func (s *session) recordReads(ctx context.Context, item scripts.Pending) error {
 			state.Reads[read.Key()] = answer
 		}
 	}
-	return recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, state)
+	if err := recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, state); err != nil {
+		return err
+	}
+	s.states[item.Script.ID] = state
+	return nil
 }
 
 type ExecutionError struct {
 	Outcome string
 	Err     error
+	// committing is set when the commit itself failed: the ledger row, which
+	// commits with the script, says whether it landed.
+	committing bool
 }
 
 // inProgressState is item.State marked outcome, carrying the last success
 // forward, and the record it replaces.
-func (s *session) inProgressState(ctx context.Context, item scripts.Pending, outcome string) (scripts.State, scripts.State, error) {
-	recorded, err := readStates(ctx, s.conn, s.opts.ledger())
+func (s *session) inProgressState(item scripts.Pending, outcome string) (scripts.State, scripts.State) {
 	state := item.State
 	state.Outcome = outcome
-	previous := recorded[item.Script.ID]
+	previous := s.states[item.Script.ID]
 	state.LastSuccess = previous.LastSuccess
 	if previous.LastSuccess == nil && previous.Hash != "" &&
 		(previous.Outcome == "applied" || previous.Version == 1) {
 		state.LastSuccess = &previous
 	}
-	return state, previous, err
+	return state, previous
 }
 
 // inputDrift is a failed pre-run input validation: an input changed, or could
@@ -168,8 +186,18 @@ func (e *inputDrift) Unwrap() error { return e.err }
 func (e *ExecutionError) Error() string { return "script " + e.Outcome + ": " + e.Err.Error() }
 func (e *ExecutionError) Unwrap() error { return e.Err }
 
-func (s *session) transaction(ctx context.Context, item scripts.Pending, check inputCheck) (err error) {
+// transaction runs item and records its success in one transaction, the record
+// in the same request as item's last batch. The commit is a request of its own:
+// a failed statement does not stop the batch it is in, so what follows it runs
+// whether or not the script succeeded.
+func (s *session) transaction(ctx context.Context, item scripts.Pending, planHash string, check inputCheck) (err error) {
 	if err = ctx.Err(); err != nil {
+		return err
+	}
+	done := outcome{script: item.Script.ID, planHash: planHash, state: item.State}
+	done.state.Outcome = "applied"
+	completion, err := s.completion(done)
+	if err != nil {
 		return err
 	}
 	// Finish rollback synchronously before writing the outcome on this connection.
@@ -182,37 +210,46 @@ func (s *session) transaction(ctx context.Context, item scripts.Pending, check i
 			err = &ExecutionError{Outcome: "commit-unknown", Err: errors.Join(err, rollbackErr)}
 		}
 	}()
-	if _, err = tx.ExecContext(ctx, "SET LOCK_TIMEOUT 15000"); err != nil {
-		return err
-	}
 	if err = check.before(ctx, s.opts, tx, item); err != nil {
 		return err
 	}
-	if err = runBatches(ctx, tx, item.Script, func(ctx context.Context, last bool) error {
-		var count int
-		if err := tx.QueryRowContext(ctx, "SELECT @@TRANCOUNT").Scan(&count); err != nil {
-			return &ExecutionError{Outcome: "commit-unknown", Err: fmt.Errorf("check script transaction: %w", err)}
-		}
-		if count < 1 || (last && count != 1) {
-			return &ExecutionError{Outcome: "commit-unknown", Err: fmt.Errorf("script changed the migration transaction count to %d", count)}
-		}
-		return nil
-	}); err != nil {
+	if err = s.runTransactional(ctx, tx, item.Script, completion); err != nil {
 		return err
 	}
 	if err = check.afterRun(ctx, s.opts, tx, item); err != nil {
-		return err
-	}
-	committed := item.State
-	committed.Outcome = "applied"
-	if err = recordState(ctx, tx, s.opts.Scope, item.Script.ID, committed); err != nil {
 		return err
 	}
 	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
-		return &ExecutionError{Outcome: "commit-unknown", Err: fmt.Errorf("script %s commit: %w", item.Script.ID, err)}
+		return &ExecutionError{Outcome: "commit-unknown", committing: true, Err: fmt.Errorf("script %s commit: %w", item.Script.ID, err)}
+	}
+	s.states[item.Script.ID] = done.state
+	return nil
+}
+
+// runTransactional runs the batches of script on tx, each followed by a check
+// that the migration's transaction is open and the last by completion.
+func (s *session) runTransactional(ctx context.Context, tx *sql.Tx, script scripts.Script, completion string) error {
+	batches, err := Batches(script.ID, script.SQL)
+	if err != nil {
+		return err
+	}
+	tails := s.opts.analysis[script.ID].Tails
+	if len(tails) != len(batches) {
+		return fmt.Errorf("script %s has %d batches, its analysis %d", script.ID, len(batches), len(tails))
+	}
+	for i, batch := range batches {
+		after, last := countCheck("<1")+";", i == len(batches)-1
+		if last {
+			after = completion
+		}
+		for _, statement := range request(batch, tails[i], after, last) {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return countError(fmt.Errorf("script %s batch %d: %w", script.ID, i+1, err))
+			}
+		}
 	}
 	return nil
 }
@@ -236,8 +273,8 @@ func validateInputs(item scripts.Pending, observed map[string]scripts.Observatio
 	return nil
 }
 
-// runBatches runs each batch of s on db, then check, told whether it was the last.
-func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(ctx context.Context, last bool) error) error {
+// runBatches runs each batch of s on db.
+func runBatches(ctx context.Context, db sessionDB, s scripts.Script) error {
 	batches, err := Batches(s.ID, s.SQL)
 	if err != nil {
 		return err
@@ -245,11 +282,6 @@ func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(
 	for i, batch := range batches {
 		if _, err := db.ExecContext(ctx, batch); err != nil {
 			return fmt.Errorf("script %s batch %d: %w", s.ID, i+1, err)
-		}
-		if check != nil {
-			if err := check(ctx, i == len(batches)-1); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -259,14 +291,11 @@ func (s *session) nonTransactional(ctx context.Context, item scripts.Pending, pl
 	if err := check.before(ctx, s.opts, s.conn, item); err != nil {
 		return err
 	}
-	state, _, err := s.inProgressState(ctx, item, "partial")
-	if err != nil {
-		return err
-	}
+	state, _ := s.inProgressState(item, "partial")
 	if err := recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, state); err != nil {
 		return err
 	}
-	if err := runBatches(ctx, s.conn, item.Script, nil); err != nil {
+	if err := runBatches(ctx, s.conn, item.Script); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: errors.Join(err, s.attempt(context.WithoutCancel(ctx), item.Script.ID, planHash, "partial", err.Error()))}
 	}
 	if err := check.afterRun(ctx, s.opts, s.conn, item); err != nil {
@@ -274,13 +303,10 @@ func (s *session) nonTransactional(ctx context.Context, item scripts.Pending, pl
 	}
 	state.Outcome = "applied"
 	state.LastSuccess = nil
-	if err := recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, state); err != nil {
+	if err := s.record(ctx, outcome{script: item.Script.ID, planHash: planHash, state: state}); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: err}
 	}
 	if err := s.recordReads(ctx, item); err != nil {
-		return &ExecutionError{Outcome: "applied", Err: err}
-	}
-	if err := s.attempt(ctx, item.Script.ID, planHash, "applied", ""); err != nil {
 		return &ExecutionError{Outcome: "applied", Err: err}
 	}
 	return nil

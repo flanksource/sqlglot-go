@@ -60,6 +60,70 @@ func separatesBatches(tokens []Token, i int) bool {
 	return i == 0 || tokens[i-1].Line < token.Line
 }
 
+// BatchTail is what may follow a T-SQL batch in the same request.
+type BatchTail string
+
+const (
+	// TailOpen batches run on into statements appended to them.
+	TailOpen BatchTail = "open"
+	// TailModule batches define a module, whose body appended statements would
+	// become part of; running one only stores it.
+	TailModule BatchTail = "module"
+	// TailClosed batches may end before, or not execute, appended statements.
+	TailClosed BatchTail = "closed"
+)
+
+// moduleKinds are the objects whose definition is a batch of its own.
+var moduleKinds = map[string]bool{"PROC": true, "PROCEDURE": true, "FUNCTION": true, "VIEW": true, "TRIGGER": true, "SCHEMA": true, "RULE": true, "DEFAULT": true}
+
+// closingWords end a batch early, or stop what follows them from executing.
+var closingWords = map[string]bool{"RETURN": true, "GOTO": true, "NOEXEC": true, "PARSEONLY": true, "FMTONLY": true, "IMPLICIT_TRANSACTIONS": true,
+	"SHOWPLAN_ALL": true, "SHOWPLAN_TEXT": true, "SHOWPLAN_XML": true}
+
+// BatchTailOf is what may follow batch in the same request, read off its
+// tokens: text in strings, comments and quoted names says nothing.
+func BatchTailOf(batch string) (BatchTail, error) {
+	tk, err := NewTokenizer("tsql")
+	if err != nil {
+		return "", err
+	}
+	tk.noCommandPayload = true
+	tokens, err := tk.Tokenize(batch)
+	if err != nil {
+		return "", fmt.Errorf("batch tail: %w", err)
+	}
+	var words []string
+	for _, token := range tokens {
+		if token.Type == TokIDENTIFIER || stringTokens[token.Type] {
+			words = append(words, "")
+			continue
+		}
+		words = append(words, strings.Fields(strings.ToUpper(token.Text))...)
+	}
+	tail := TailOpen
+	for i, word := range words {
+		if definesModule(words[i:]) {
+			if i == 0 {
+				return TailModule, nil
+			}
+			return TailClosed, nil
+		}
+		if closingWords[word] {
+			tail = TailClosed
+		}
+	}
+	return tail, nil
+}
+
+// definesModule reports whether words begin with CREATE, ALTER or CREATE OR
+// ALTER and an object defined in a batch of its own.
+func definesModule(words []string) bool {
+	if len(words) > 3 && words[0] == "CREATE" && words[1] == "OR" && words[2] == "ALTER" {
+		return moduleKinds[words[3]]
+	}
+	return len(words) > 1 && (words[0] == "CREATE" || words[0] == "ALTER") && moduleKinds[words[1]]
+}
+
 // CanonicalSQL is the definition written back from its tree, with the
 // differences that do not change what a routine is taken out: comments,
 // whitespace, keyword case and brackets round a name that reads the same

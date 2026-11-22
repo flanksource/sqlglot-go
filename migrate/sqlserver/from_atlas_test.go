@@ -14,7 +14,7 @@ var _ = Describe("Atlas snapshot projection", func() {
 			{Name: "id", Type: "int", Identity: &migrate.Identity{Seed: 1, Increment: 1}},
 			{Name: "label", Type: "nvarchar(20)", Nullable: true, Default: &migrate.Default{Name: "DF_items_label", Expression: "N'new'"}},
 		}, Indexes: []migrate.Index{{Name: "PK_items", Primary: true, Unique: true, Clustered: true, Columns: []migrate.IndexColumn{{Name: "id"}}}}, Checks: []migrate.Check{{Name: "positive_id", Expression: "id > 0"}}}}}
-		r, err := realm(input, []string{"dbo"})
+		r, err := realm(input, []string{"dbo"}, func(d migrate.Definition, _ *atlas.UnparsedError) { Fail("unparsed " + d.Name.Name) })
 		Expect(err).NotTo(HaveOccurred())
 		proc, err := atlas.ParseRoutine("CREATE PROCEDURE dbo.example AS SELECT 1")
 		Expect(err).NotTo(HaveOccurred())

@@ -74,7 +74,7 @@ func (r *applyRun) failed(ctx context.Context, result *Result, id string, err er
 	}
 	// The script may have left a transaction of its own open, and a fatal error
 	// ends the session, and with it the migration lock.
-	if _, sessionErr := r.s.conn.ExecContext(ctx, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"); sessionErr != nil {
+	if _, sessionErr := r.s.conn.ExecContext(ctx, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; "+r.s.reset()); sessionErr != nil {
 		return errors.Join(err, fmt.Errorf("the session did not survive script %s: %w", id, sessionErr))
 	}
 	r.failures = append(r.failures, err)

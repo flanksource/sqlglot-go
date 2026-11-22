@@ -21,6 +21,9 @@ type Options struct {
 type Result struct {
 	Schema  migrate.Schema
 	Schemas []string
+	// Warnings names each definition whose body is not understood. The snapshot
+	// still holds it, as written.
+	Warnings []string
 }
 
 type catalog struct {
@@ -99,9 +102,11 @@ func Inspect(ctx context.Context, db Querier, options Options) (Result, error) {
 	if options.Task != nil {
 		options.Task.SetDescription("validating snapshot")
 	}
-	if _, err := planner.Plan(migrate.Request{Current: result.Schema, Desired: result.Schema}); err != nil {
+	plan, err := planner.Plan(migrate.Request{Current: result.Schema, Desired: result.Schema})
+	if err != nil {
 		return Result{}, fmt.Errorf("migration snapshot validation: %w", err)
 	}
+	result.Warnings = plan.Warnings
 	return result, nil
 }
 

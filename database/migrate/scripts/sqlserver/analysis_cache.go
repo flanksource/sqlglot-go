@@ -57,10 +57,19 @@ func cachedBodies[T any](ctx context.Context, opts Options, bodies map[string]st
 }
 
 func analyseScript(sql string) (scripts.CachedAnalysis, error) {
-	if _, problem := splitBatches(sql); problem != "" {
+	batches, problem := splitBatches(sql)
+	if problem != "" {
 		return scripts.CachedAnalysis{BatchError: problem}, nil
 	}
-	return scripts.CachedAnalysis{Analysis: scripts.Analyze(scripts.AnalysisOptions{SQL: sql})}, nil
+	analysis := scripts.Analyze(scripts.AnalysisOptions{SQL: sql})
+	for _, batch := range batches {
+		tail, err := sqlglot.BatchTailOf(batch)
+		if err != nil {
+			return scripts.CachedAnalysis{}, err
+		}
+		analysis.Tails = append(analysis.Tails, tail)
+	}
+	return scripts.CachedAnalysis{Analysis: analysis}, nil
 }
 
 func analyseModule(definition string) (scripts.CachedAnalysis, error) {
@@ -78,7 +87,7 @@ func (opts Options) scriptAnalyses(ctx context.Context) (map[string]scripts.Anal
 	for _, s := range opts.Scripts {
 		bodies[scripts.AnalysisKey(s.SQL, false)] = s.SQL
 	}
-	cached, _, err := cachedBodies(ctx, opts, bodies, analyseScript)
+	cached, failed, err := cachedBodies(ctx, opts, bodies, analyseScript)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +96,11 @@ func (opts Options) scriptAnalyses(ctx context.Context) (map[string]scripts.Anal
 		if len(s.ID) > 512 {
 			return nil, fmt.Errorf("script ID exceeds 512 characters")
 		}
-		entry := cached[scripts.AnalysisKey(s.SQL, false)]
+		key := scripts.AnalysisKey(s.SQL, false)
+		if err := failed[key]; err != nil {
+			return nil, fmt.Errorf("analyse script %s: %w", s.ID, err)
+		}
+		entry := cached[key]
 		if entry.BatchError != "" {
 			return nil, batchError(s.ID, entry.BatchError)
 		}

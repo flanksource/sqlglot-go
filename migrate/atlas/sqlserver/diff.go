@@ -49,11 +49,11 @@ func (*diff) SchemaObjectDiff(from, to *schema.Schema, _ *schema.DiffOptions) ([
 	changes = append(changes, types...)
 	for _, s := range []*schema.Schema{from, to} {
 		for _, v := range s.Views {
-			text, err := definitionOf(v.Name, v.Attrs)
+			definition, err := definitionOf(v.Name, v.Attrs)
 			if err != nil {
 				return nil, err
 			}
-			v.Def, err = canonicalDefinition(v.Name, text)
+			v.Def, err = canonicalDefinition(v.Name, definition)
 			if err != nil {
 				return nil, err
 			}
@@ -345,19 +345,19 @@ func sameDefinition(name string, live, declared []schema.Attr) (bool, error) {
 	if quotedIdentifierOff(live) != quotedIdentifierOff(declared) {
 		return false, nil
 	}
-	liveText, err := definitionOf(name, live)
+	liveDefinition, err := definitionOf(name, live)
 	if err != nil {
 		return false, err
 	}
-	declaredText, err := definitionOf(name, declared)
+	declaredDefinition, err := definitionOf(name, declared)
 	if err != nil {
 		return false, err
 	}
-	liveCanonical, err := canonicalDefinition(name, liveText)
+	liveCanonical, err := canonicalDefinition(name, liveDefinition)
 	if err != nil {
 		return false, fmt.Errorf("live definition: %w", err)
 	}
-	declaredCanonical, err := canonicalDefinition(name, declaredText)
+	declaredCanonical, err := canonicalDefinition(name, declaredDefinition)
 	if err != nil {
 		return false, fmt.Errorf("declared definition: %w", err)
 	}

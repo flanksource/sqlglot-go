@@ -47,6 +47,47 @@ func TestSplitBatches(t *testing.T) {
 	}
 }
 
+func TestBatchTailOf(t *testing.T) {
+	for _, c := range []struct {
+		name, batch string
+		want        BatchTail
+	}{
+		{"a statement", "INSERT acme.codes VALUES ('a')", TailOpen},
+		{"a trailing line comment", "SELECT 1 -- done", TailOpen},
+		{"a trailing block comment", "SELECT 1 /* done */", TailOpen},
+		{"a bare procedure call", "sp_rename 'acme.a', 'b'", TailOpen},
+		{"variables and control flow", "DECLARE @n int = 1\nIF @n = 1 BEGIN SELECT 1 END ELSE SELECT 2", TailOpen},
+		{"its own transaction", "BEGIN TRANSACTION\nSELECT 1\nCOMMIT", TailOpen},
+		{"module text in a string", "EXEC('CREATE PROCEDURE acme.p AS RETURN 1')", TailOpen},
+		{"module text in a comment", "/* CREATE PROCEDURE acme.p AS RETURN 1 */ SELECT 1", TailOpen},
+		{"quoted names spelled like keywords", "SELECT [return], [goto] FROM acme.codes", TailOpen},
+		{"a table", "CREATE TABLE acme.a (b int DEFAULT 1)", TailOpen},
+		{"a procedure", "CREATE PROCEDURE acme.p AS SELECT 1", TailModule},
+		{"a short, lower-case procedure", "-- header\ncreate proc acme.p as return 1", TailModule},
+		{"create or alter", "CREATE OR ALTER FUNCTION acme.f() RETURNS int AS BEGIN RETURN 1 END", TailModule},
+		{"an altered view", "ALTER VIEW acme.v AS SELECT 1 AS a", TailModule},
+		{"a trigger", "CREATE TRIGGER acme.t ON acme.a AFTER INSERT AS SELECT 1", TailModule},
+		{"a schema", "CREATE SCHEMA acme", TailModule},
+		{"a default object", "CREATE DEFAULT acme.d AS 1", TailModule},
+		{"a module after another statement", "SELECT 1\nCREATE PROCEDURE acme.p AS SELECT 1", TailClosed},
+		{"return", "IF 1 = 1 RETURN\nSELECT 1", TailClosed},
+		{"goto", "GOTO done\ndone:\nSELECT 1", TailClosed},
+		{"noexec", "SET NOEXEC ON", TailClosed},
+		{"parseonly", "SET PARSEONLY ON", TailClosed},
+		{"fmtonly", "set fmtonly on", TailClosed},
+		{"implicit transactions", "SET IMPLICIT_TRANSACTIONS ON", TailClosed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, err := BatchTailOf(c.batch); err != nil || got != c.want {
+				t.Fatalf("%q has tail %q (%v), want %q", c.batch, got, err, c.want)
+			}
+		})
+	}
+	if tail, err := BatchTailOf("SELECT 'unterminated"); err == nil {
+		t.Fatalf("an unterminated batch has tail %q; it should be refused", tail)
+	}
+}
+
 func TestCanonicalSQL(t *testing.T) {
 	base := "CREATE PROCEDURE acme.p @a INT = 1 OUTPUT AS BEGIN SELECT 'a  b' FROM acme.orders; END"
 	for _, same := range []string{

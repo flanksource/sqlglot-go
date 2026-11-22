@@ -145,4 +145,7 @@ type Step struct {
 type Plan struct {
 	Steps   []Step   `json:"steps"`
 	Changes []Change `json:"changes"`
+	// Warnings names each definition whose body is not understood. It is
+	// compared and created as written.
+	Warnings []string `json:"warnings,omitempty"`
 }

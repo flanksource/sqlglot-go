@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,6 +17,9 @@ import (
 type Definition struct {
 	schema.Attr
 	Text string
+	// Unparsed marks a definition known by its header alone, which is compared
+	// as written. Comparing any other that is not read whole is an error.
+	Unparsed bool
 }
 
 // Routine is one CREATE PROCEDURE or CREATE FUNCTION read from its definition.
@@ -26,19 +30,24 @@ type Routine struct {
 	Schema string
 	Name   string
 	// Text is the definition as written.
-	Text   string
-	parsed sqlglot.Routine
+	Text     string
+	parsed   sqlglot.Routine
+	unparsed bool
 }
 
 // ParseRoutine parses a single CREATE [OR ALTER] PROCEDURE|FUNCTION batch. A
-// batch holding anything else, or more than one statement, is an error.
+// batch holding anything else, or more than one statement, is an error; one
+// that is not read whole is an UnparsedError.
 func ParseRoutine(definition string) (*Routine, error) {
 	script, err := sqlglot.ParseScript(definition, Dialect)
 	if err != nil {
 		return nil, fmt.Errorf("sqlserver: parse routine: %w", err)
 	}
-	if !script.Complete || script.Tree == nil || script.Tree.Class == "Block" || len(script.Diagnostics) > 0 {
-		return nil, fmt.Errorf("sqlserver: parse routine: expected one completely parsed definition: %v", script.Diagnostics)
+	if !script.Complete || len(script.Diagnostics) > 0 {
+		return nil, fmt.Errorf("sqlserver: parse routine: %w", &UnparsedError{Diagnostics: script.Diagnostics})
+	}
+	if script.Tree == nil || script.Tree.Class == "Block" {
+		return nil, errors.New("sqlserver: parse routine: expected one definition")
 	}
 	parsed, err := sqlglot.RoutineOf(script.Tree)
 	if err != nil {
@@ -57,7 +66,7 @@ func (r *Routine) AddTo(s *schema.Schema) error {
 	if err != nil {
 		return err
 	}
-	attrs := []schema.Attr{&Definition{Text: r.Text}}
+	attrs := []schema.Attr{&Definition{Text: r.Text, Unparsed: r.unparsed}}
 	if r.Kind == "PROCEDURE" {
 		s.AddProcs((&schema.Proc{Name: r.Name, Schema: s, Args: args, Lang: "T-SQL", Attrs: attrs}).AddDeps(deps...))
 		return nil
@@ -155,19 +164,10 @@ func CreateOrAlter(definition string) (string, error) {
 	} else if len(tokens) < 3 || !strings.EqualFold(tokens[1].Text, "OR") || !strings.EqualFold(tokens[2].Text, "ALTER") {
 		text = string(runes[:end]) + " OR ALTER" + string(runes[end:])
 	}
-	parsed, err := sqlglot.ParseScript(text, Dialect)
-	if err != nil {
+	if _, err := HeaderOf(text); err != nil {
 		return "", err
 	}
-	if !parsed.Complete || parsed.Tree == nil || parsed.Tree.Class != "Create" {
-		return "", fmt.Errorf("sqlserver: expected one completely parsed module definition: %v", parsed.Diagnostics)
-	}
-	switch parsed.Tree.Args["kind"] {
-	case "PROCEDURE", "PROC", "FUNCTION", "VIEW", "TRIGGER":
-		return text, nil
-	default:
-		return "", fmt.Errorf("sqlserver: unsupported module definition kind %v", parsed.Tree.Args["kind"])
-	}
+	return text, nil
 }
 
 // QualifyDefinition prefixes an unqualified module name -- and a trigger's
@@ -211,8 +211,11 @@ func unqualified(tokens []sqlglot.Token, i int) bool {
 
 // canonicalDefinition is a definition's sqlglot canonical form: comments,
 // whitespace, keyword case, brackets and OR ALTER normalised away.
-func canonicalDefinition(name, definition string) (string, error) {
-	text, err := CreateOrAlter(definition)
+func canonicalDefinition(name string, definition *Definition) (string, error) {
+	if definition.Unparsed {
+		return tokenDefinition(definition.Text)
+	}
+	text, err := CreateOrAlter(definition.Text)
 	if err != nil {
 		return "", fmt.Errorf("sqlserver: routine %s: %w", name, err)
 	}
@@ -224,11 +227,11 @@ func canonicalDefinition(name, definition string) (string, error) {
 }
 
 // definitionOf returns the Definition attribute a routine carries.
-func definitionOf(name string, attrs []schema.Attr) (string, error) {
+func definitionOf(name string, attrs []schema.Attr) (*Definition, error) {
 	for _, attr := range attrs {
 		if d, ok := attr.(*Definition); ok {
-			return d.Text, nil
+			return d, nil
 		}
 	}
-	return "", fmt.Errorf("sqlserver: routine %s has no T-SQL definition", name)
+	return nil, fmt.Errorf("sqlserver: routine %s has no T-SQL definition", name)
 }

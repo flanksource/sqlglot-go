@@ -9,7 +9,7 @@ import (
 	"github.com/flanksource/sqlglot-go/sqlglot"
 )
 
-func module(r *schema.Realm, s *schema.Schema, input migrate.Definition) error {
+func module(r *schema.Realm, s *schema.Schema, input migrate.Definition, warn warnUnparsed) error {
 	text, err := atlas.CreateOrAlter(input.SQL)
 	if err != nil {
 		return err
@@ -18,17 +18,22 @@ func module(r *schema.Realm, s *schema.Schema, input migrate.Definition) error {
 	if err != nil {
 		return err
 	}
-	if !parsed.Complete || parsed.Tree == nil || parsed.Tree.Class == "Block" {
-		return fmt.Errorf("sqlserver: module %s requires one completely parsed definition", input.Name.Name)
+	unparsed := !parsed.Complete || len(parsed.Diagnostics) > 0
+	header, err := atlas.HeaderOf(text)
+	if err != nil {
+		return err
 	}
 	tree := parsed.Tree
-	if tree == nil || tree.Class != "Create" || tree.Args["kind"] != input.Kind {
+	if header.Kind != input.Kind || !unparsed && (tree == nil || tree.Class != "Create") {
 		return fmt.Errorf("sqlserver: definition is not CREATE %s", input.Kind)
 	}
-	if definitionName(tree.This()) != input.Name {
+	if (migrate.Name{Schema: header.Schema, Name: header.Name}) != input.Name {
 		return fmt.Errorf("sqlserver: module must name its qualified catalog identifier %+v", input.Name)
 	}
-	attrs := []schema.Attr{&atlas.Definition{Text: input.SQL}}
+	if unparsed {
+		warn(input, &atlas.UnparsedError{Diagnostics: parsed.Diagnostics})
+	}
+	attrs := []schema.Attr{&atlas.Definition{Text: input.SQL, Unparsed: unparsed}}
 	if input.QuotedIdentifierOff {
 		attrs = append(attrs, &atlas.QuotedIdentifierOff{})
 	}
@@ -39,19 +44,17 @@ func module(r *schema.Realm, s *schema.Schema, input migrate.Definition) error {
 		if _, ok := s.View(input.Name.Name); ok {
 			return fmt.Errorf("sqlserver: duplicate view %s", input.Name.Name)
 		}
-		canonical, err := sqlglot.CanonicalSQL(text, "tsql")
-		if err != nil {
-			return err
-		}
-		s.AddViews(&schema.View{Name: input.Name.Name, Def: canonical, Attrs: attrs})
+		s.AddViews(&schema.View{Name: input.Name.Name, Def: text, Attrs: attrs})
 		return nil
 	}
 	if input.Parent == nil || input.Parent.Schema != input.Name.Schema {
 		return fmt.Errorf("sqlserver: trigger %s requires its parent in the same schema", input.Name.Name)
 	}
-	parent, _ := tree.Args["target"].(*sqlglot.Expression)
-	if definitionName(parent) != *input.Parent {
-		return fmt.Errorf("sqlserver: trigger %s ON does not match its catalog parent", input.Name.Name)
+	if !unparsed {
+		parent, _ := tree.Args["target"].(*sqlglot.Expression)
+		if definitionName(parent) != *input.Parent {
+			return fmt.Errorf("sqlserver: trigger %s ON does not match its catalog parent", input.Name.Name)
+		}
 	}
 	trigger := &schema.Trigger{Name: input.Name.Name, Attrs: attrs}
 	if input.Disabled {
