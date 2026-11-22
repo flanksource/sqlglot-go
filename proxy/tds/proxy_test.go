@@ -17,6 +17,16 @@ func prelogin(enc byte) []byte {
 }
 func batch(sql string) []byte { return append([]byte{4, 0, 0, 0}, encodeUTF16LE(sql)...) }
 
+type recordedWrites struct {
+	net.Conn
+	writes []int
+}
+
+func (r *recordedWrites) Write(b []byte) (int, error) {
+	r.writes = append(r.writes, len(b))
+	return len(b), nil
+}
+
 var _ = Describe("TDS relay", func() {
 	for _, clientTLS := range []bool{false, true} {
 		for _, upstreamTLS := range []bool{false, true} {
@@ -138,6 +148,19 @@ var _ = Describe("TDS relay", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(got).To(Equal(sql))
+	})
+	It("writes one TDS packet per upstream TLS record regardless of read boundaries", func() {
+		first, second := buildTDSPacket(typeRPC, statusNormal, make([]byte, 4088)), buildTDSPacket(typeRPC, statusEOM, make([]byte, 100))
+		stream := append(append([]byte(nil), first...), second...)
+		for _, chunk := range []int{1, 1460, 4096, len(stream)} {
+			records := &recordedWrites{}
+			conn := &packetConn{Conn: records}
+			for start := 0; start < len(stream); start += chunk {
+				_, err := conn.Write(stream[start:min(start+chunk, len(stream))])
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(records.writes).To(Equal([]int{len(first), len(second)}))
+		}
 	})
 	It("rejects malformed framing", func() { _, err := (&sniffer{}).Write(make([]byte, 8)); Expect(err).To(HaveOccurred()) })
 	It("joins continuation packets before decoding SQL", func() {

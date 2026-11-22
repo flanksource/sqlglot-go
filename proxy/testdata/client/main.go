@@ -26,13 +26,14 @@ import (
 
 type options struct {
 	mode, driver, dsnEnv, address, sql, args, capture, marker, ca, dir string
+	connection, upstream, sqlglot                                      string
 	pid                                                                int
 	padding                                                            int
 }
 
 func main() {
 	var o options
-	flag.StringVar(&o.mode, "mode", "query", "query, capture, certs, stop, closed")
+	flag.StringVar(&o.mode, "mode", "query", "query, capture, certs, stop, closed, tds-fixtures")
 	flag.StringVar(&o.driver, "driver", "postgres", "Database driver")
 	flag.StringVar(&o.dsnEnv, "dsn-env", "FIXTURE_DSN", "Environment variable containing the upstream URL")
 	flag.StringVar(&o.address, "address", "", "Proxy host:port; empty queries upstream directly")
@@ -42,6 +43,9 @@ func main() {
 	flag.StringVar(&o.marker, "marker", "", "SQL substring identifying the query")
 	flag.StringVar(&o.ca, "ca", "", "Client TLS CA PEM file")
 	flag.StringVar(&o.dir, "dir", "", "Directory for ephemeral certificates")
+	flag.StringVar(&o.connection, "connection", "", "Saved connection used to regenerate TDS fixtures")
+	flag.StringVar(&o.upstream, "upstream", "", "host:port the saved connection must target")
+	flag.StringVar(&o.sqlglot, "sqlglot", ".tmp/sqlglot", "sqlglot binary that runs the capturing proxy")
 	flag.IntVar(&o.pid, "pid", 0, "Fixture-owned proxy PID")
 	flag.IntVar(&o.padding, "padding", 0, "Unicode comment repetitions to force wire fragmentation")
 	flag.Parse()
@@ -72,6 +76,8 @@ func run(o options) (any, error) {
 		return result, err
 	case "capture":
 		return capture(o)
+	case "tds-fixtures":
+		return tdsFixtures(o)
 	case "certs":
 		return certificates(o.dir)
 	case "stop":

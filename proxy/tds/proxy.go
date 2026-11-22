@@ -44,9 +44,19 @@ func readMessage(r io.Reader) (message, error) {
 	}
 }
 func Start(ctx context.Context, opts proxy.Options) (*proxy.Server, error) {
-	return proxy.Start(ctx, opts, handle)
+	files, err := newCaptureFiles(opts.CaptureDir)
+	if err != nil {
+		return nil, err
+	}
+	return proxy.Start(ctx, opts, func(ctx context.Context, s *proxy.Server, client net.Conn) error {
+		capture, err := files.open()
+		if err != nil {
+			return err
+		}
+		return errors.Join(handle(ctx, s, client, capture), capture.close())
+	})
 }
-func handle(ctx context.Context, s *proxy.Server, client net.Conn) error {
+func handle(ctx context.Context, s *proxy.Server, client net.Conn, capture *capture) error {
 	server, err := s.Dial(ctx)
 	if err != nil {
 		return err
@@ -55,7 +65,7 @@ func handle(ctx context.Context, s *proxy.Server, client net.Conn) error {
 	defer s.Release(raw)
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
-	client, server, err = handshake(ctx, s.Options, client, server)
+	client, server, err = handshake(ctx, s.Options, client, server, capture)
 	if err != nil {
 		return err
 	}
@@ -72,6 +82,9 @@ func handle(ctx context.Context, s *proxy.Server, client net.Conn) error {
 	if login.payload[25]&0x80 != 0 || login.payload[27]&0x10 != 0 {
 		return errors.New("only TDS SQL authentication is supported")
 	}
+	if err = capture.client(login.raw); err != nil {
+		return err
+	}
 	if _, err = server.Write(login.raw); err != nil {
 		return err
 	}
@@ -79,14 +92,20 @@ func handle(ctx context.Context, s *proxy.Server, client net.Conn) error {
 	_ = server.SetDeadline(time.Time{})
 	session := &session{server: s, label: client.RemoteAddr().String(), prepared: map[int32]string{}}
 	defer session.flush()
-	return proxy.Relay(client, server, &sniffer{message: session.frontend}, &sniffer{message: session.backend})
+	frontend, backend := &sniffer{message: session.frontend}, &sniffer{message: session.backend}
+	if capture != nil {
+		frontend.record, backend.record = capture.client, capture.server
+	}
+	return proxy.Relay(client, server, frontend, backend)
 }
 
 type sniffer struct {
 	buf     []byte
 	payload []byte
+	raw     []byte
 	kind    byte
 	message func(byte, []byte) error
+	record  func(raw []byte) error // optional; sees every message before it is decoded
 }
 
 func (s *sniffer) Write(b []byte) (int, error) {
@@ -105,9 +124,18 @@ func (s *sniffer) Write(b []byte) (int, error) {
 		}
 		s.kind = s.buf[0]
 		s.payload = append(s.payload, s.buf[8:size]...)
+		if s.record != nil {
+			s.raw = append(s.raw, s.buf[:size]...)
+		}
 		end := s.buf[1]&statusEOM != 0
 		s.buf = s.buf[size:]
 		if end {
+			if s.record != nil {
+				if err := s.record(s.raw); err != nil {
+					return 0, err
+				}
+				s.raw = nil
+			}
 			if err := s.message(s.kind, s.payload); err != nil {
 				return 0, err
 			}
