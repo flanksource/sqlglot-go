@@ -30,7 +30,19 @@ Upstream addresses are `host:port`, without credentials. The original client's a
 .tmp/sqlglot proxy tds --upstream db.example:1433 --upstream-tls require --upstream-ca upstream-ca.pem --upstream-server-name db.example
 ```
 
-`--client-tls` accepts `disable`, `allow` (TLS and plaintext clients), or `require`. Enabled modes require both `--tls-cert` and `--tls-key` PEM files. `--upstream-tls require` verifies upstream certificates against system roots or `--upstream-ca`; `--upstream-server-name` overrides the certificate hostname. TLS uses version 1.2 or later and never retries in plaintext after a TLS failure. Supplied certificate files must already exist; the proxy does not generate production certificates.
+`--client-tls` accepts `disable`, `allow` (TLS and plaintext clients), or `require`. Enabled modes require both `--tls-cert` and `--tls-key` PEM files. `--upstream-tls require` verifies upstream certificates against system roots or `--upstream-ca`; `--upstream-server-name` overrides the certificate hostname. For a self-signed server that no CA or hostname can verify, such as SQL Server's fallback certificate, `--upstream-cert` accepts only the exact certificate in a `.pem` or `.der` file. TLS uses version 1.2 or later and never retries in plaintext after a TLS failure. Supplied certificate files must already exist; the proxy does not generate production certificates.
+
+## Wire capture
+
+`proxy tds --capture <dir>` also writes every TDS message to `<dir>`, one `0600` YAML file per connection. Messages are recorded after TLS termination with their original packet boundaries.
+
+```sh
+.tmp/sqlglot proxy tds --upstream db.example:1433 --upstream-tls require --upstream-ca upstream-ca.pem --capture .tmp/captures
+```
+
+LOGIN7 is rebuilt with placeholders, so credentials, host and application names are never written, not even their lengths. Server and database names are replaced in the login response and wherever later tokens length-prefix them. Everything else after login is recorded as sent: SQL text, parameter values, result rows and error text. Treat captures as sensitive. A connection that uses SSPI, routing or a password change, or whose login response cannot be scrubbed, is closed instead of recorded.
+
+`proxy/tds/testdata/captures` holds SQL Server traffic recorded this way. `GOWORK=off make tds-fixtures TDS_CONNECTION=connection://example TDS_UPSTREAM=db.example:1433` regenerates it. The fixture client trusts the certificate the server presents on that run, creates and drops its own database, runs each scenario through the proxy, and refuses to publish files that contain the password, host, server, machine or database name.
 
 ## Go API
 
@@ -50,12 +62,12 @@ return server.Wait()
 
 Import `github.com/flanksource/sqlglot-go/proxy` and either protocol subpackage. `Start` binds before returning; `Addr` reports the actual listener. Cancel the supplied context or call `Close` to stop. `Wait` reports fatal listener or callback errors. Callbacks are serialized, apply backpressure, and must not call `Close` or `Wait`. There is no retained capture database or event-drop queue.
 
-Set `ClientTLSMode` and `ClientTLS` for incoming TLS. A non-nil `UpstreamTLS` requires verified upstream TLS; nil means plaintext. TLS configurations are cloned before use. Protocol errors are emitted as incomplete observations and close the affected connection. Callback errors stop the proxy.
+Set `ClientTLSMode` and `ClientTLS` for incoming TLS. A non-nil `UpstreamTLS` requires verified upstream TLS; nil means plaintext. `UpstreamCertificate` names the exact certificate to accept instead. `CaptureDir` enables TDS wire capture. TLS configurations are cloned before use. Protocol errors are emitted as incomplete observations and close the affected connection. Callback errors stop the proxy.
 
 ## Compatibility and capture limits
 
-PostgreSQL supports password and SCRAM authentication with `channel_binding=disable`, simple and extended queries, pipelining, COPY, and cancellation. TDS supports version 7.4 SQL authentication without MARS; TDS 8, Windows/federated authentication, and channel-bound authentication are rejected. TDS captures SQL batches and RPC calls, including `sp_executesql`, prepare/execute/unprepare handles, nullable integers, floats, booleans, strings, binary values, and PLP strings. Other RPC parameter types fail explicitly.
+PostgreSQL supports password and SCRAM authentication with `channel_binding=disable`, simple and extended queries, pipelining, COPY, and cancellation. TDS supports version 7.4 SQL authentication without MARS; TDS 8, Windows/federated authentication, and channel-bound authentication are rejected. TDS captures SQL batches and RPC calls, including `sp_executesql`, prepare/execute/unprepare handles, nullable integers, floats, booleans, decimals, money, dates and times, GUIDs, strings, binary values, and PLP strings. Decimals, money, temporal values and GUIDs are reported as text. Other RPC parameter types fail explicitly.
 
-Rows are `-1` when unavailable. `incomplete` identifies missing completion metadata or bounded observations. TDS row counts come from the final DONE token; server failures without decoded details have a generic error. SQL parsing is not required, so unsupported SQL syntax still forwards. PostgreSQL observations above 1 MiB are reported and skipped while bytes continue forwarding; TDS messages above 1 MiB fail explicitly. Result rows and authentication messages are never included in capture output.
+Rows are `-1` when unavailable. `incomplete` identifies missing completion metadata or bounded observations. TDS row counts come from the final DONE token; server failures without decoded details have a generic error. SQL parsing is not required, so unsupported SQL syntax still forwards. PostgreSQL observations above 1 MiB are reported and skipped while bytes continue forwarding; TDS messages above 1 MiB fail explicitly. Result rows and authentication messages are never included in statement output.
 
 Run focused tests with `GOWORK=off go test -race ./proxy/...`. Real database tests are separate: provide disposable `SQLGLOT_PROXY_POSTGRES_URL` and `SQLGLOT_PROXY_SQLSERVER_URL` URLs and run `GOWORK=off go test -tags integration ./proxy -ginkgo.focus='Disposable database integration'`.

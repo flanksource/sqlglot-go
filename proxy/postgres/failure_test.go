@@ -52,6 +52,10 @@ var _ = Describe("TLS failures", func() {
 		Expect(err).To(MatchError(ContainSubstring("channel binding")))
 		Expect(rows).To(BeEmpty())
 	})
+	It("rejects wire capture, which only TDS supports", func(ctx SpecContext) {
+		_, err := Start(ctx, proxy.Options{Upstream: "localhost:5432", CaptureDir: GinkgoT().TempDir()})
+		Expect(err).To(MatchError(ContainSubstring("only supported by the TDS proxy")))
+	})
 	It("rejects invalid TLS configuration before listening", func(ctx SpecContext) {
 		_, err := Start(ctx, proxy.Options{Upstream: "localhost:5432", ClientTLSMode: "invalid"})
 		Expect(err).To(MatchError(ContainSubstring("client TLS mode")))

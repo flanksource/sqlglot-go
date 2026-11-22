@@ -61,6 +61,31 @@ func upgrade(ctx context.Context, conn net.Conn, config *tls.Config, server bool
 	return secured, nil
 }
 
+// packetConn writes exactly one TDS packet per Write. SQL Server resets encrypted
+// connections whose TLS records do not line up with TDS packets.
+type packetConn struct {
+	net.Conn
+	pending []byte
+}
+
+func (c *packetConn) Write(b []byte) (int, error) {
+	c.pending = append(c.pending, b...)
+	for len(c.pending) >= tdsHeaderSize {
+		size := int(binary.BigEndian.Uint16(c.pending[2:]))
+		if size < tdsHeaderSize {
+			return 0, errors.New("invalid TDS packet length")
+		}
+		if len(c.pending) < size {
+			break
+		}
+		if _, err := c.Conn.Write(c.pending[:size]); err != nil {
+			return 0, err
+		}
+		c.pending = c.pending[size:]
+	}
+	return len(b), nil
+}
+
 func option(payload []byte, kind byte) (int, error) {
 	for pos := 0; pos < len(payload); pos += 5 {
 		if payload[pos] == 0xff {
@@ -81,13 +106,16 @@ func option(payload []byte, kind byte) (int, error) {
 	return -1, errors.New("unterminated TDS PRELOGIN options")
 }
 
-func handshake(ctx context.Context, opts proxy.Options, client, server net.Conn) (net.Conn, net.Conn, error) {
+func handshake(ctx context.Context, opts proxy.Options, client, server net.Conn, capture *capture) (net.Conn, net.Conn, error) {
 	request, err := readMessage(client)
 	if err != nil {
 		return client, server, err
 	}
 	if request.kind != typePrelogin {
 		return client, server, errors.New("TDS 7.4 PRELOGIN required; TDS 8 is unsupported")
+	}
+	if err := capture.client(request.raw); err != nil {
+		return client, server, err
 	}
 	enc, err := option(request.payload, 1)
 	if err != nil || enc < 0 {
@@ -119,6 +147,9 @@ func handshake(ctx context.Context, opts proxy.Options, client, server net.Conn)
 	if err != nil {
 		return client, server, err
 	}
+	if err := capture.server(response.raw); err != nil {
+		return client, server, err
+	}
 	idx, err := option(response.payload, 1)
 	if err != nil || idx < 0 {
 		return client, server, errors.New("upstream PRELOGIN encryption option required")
@@ -128,10 +159,13 @@ func handshake(ctx context.Context, opts proxy.Options, client, server net.Conn)
 		if upstreamMode != 1 && upstreamMode != 3 {
 			return client, server, errors.New("upstream refused TDS TLS")
 		}
-		server, err = upgrade(ctx, server, opts.UpstreamTLS, false)
+		config := opts.UpstreamTLS.Clone()
+		config.DynamicRecordSizingDisabled = true
+		secured, err := upgrade(ctx, server, config, false)
 		if err != nil {
 			return client, server, fmt.Errorf("upstream TLS: %w", err)
 		}
+		server = &packetConn{Conn: secured}
 	} else if upstreamMode != 2 && upstreamMode != 0 {
 		return client, server, errors.New("upstream requires TLS; configure upstream TLS")
 	}

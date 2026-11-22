@@ -59,11 +59,15 @@ func decodeRPC(body []byte) (string, []any, error) {
 }
 
 func parameter(body []byte) (any, int, error) {
-	if len(body) < 2 {
+	if len(body) == 0 {
 		return nil, 0, errors.New("truncated RPC type")
 	}
 	kind := body[0]
 	switch kind {
+	case 0x1f: // NULLTYPE carries no length or value
+		return nil, 1, nil
+	case 0x24, 0x28, 0x29, 0x2a, 0x2b, 0x6a, 0x6c, 0x6e, 0x6f:
+		return scalarParameter(body)
 	case 0x26, 0x68, 0x6d:
 		if len(body) < 3 {
 			break
@@ -180,20 +184,4 @@ func plp(body []byte, offset int, kind byte) (any, int, error) {
 		offset += n
 	}
 	return nil, 0, errors.New("truncated PLP data")
-}
-func returnHandle(body []byte) (int32, bool) {
-	// sp_prepare returns RETURNSTATUS followed by the handle's RETURNVALUE.
-	if len(body) > 5 && body[0] == 0x79 {
-		body = body[5:]
-	}
-	if len(body) < 4 || body[0] != 0xac {
-		return 0, false
-	}
-	offset := 4 + int(body[3])*2 + 7
-	if len(body) < offset+7 || body[offset] != 0x26 || body[offset+2] != 4 {
-		return 0, false
-	}
-	var value int32
-	_, err := binary.Decode(body[offset+3:], binary.LittleEndian, &value)
-	return value, err == nil
 }

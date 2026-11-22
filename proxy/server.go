@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/microsoft/go-mssqldb/msdsn"
 )
 
 type Statement struct {
@@ -34,7 +36,13 @@ type Options struct {
 	ClientTLSMode string
 	ClientTLS     *tls.Config
 	UpstreamTLS   *tls.Config
-	OnStatement   func(Statement) error
+	// UpstreamCertificate is a .pem or .der file with the exact certificate the
+	// upstream must present. It replaces chain and hostname verification for
+	// self-signed servers and cannot be combined with UpstreamTLS.
+	UpstreamCertificate string
+	// CaptureDir receives one file of decrypted wire messages per connection.
+	CaptureDir  string
+	OnStatement func(Statement) error
 }
 
 // Handler serves an accepted connection. Dial must be used for tracked upstream connections.
@@ -87,7 +95,16 @@ func Start(ctx context.Context, opts Options, handler Handler) (*Server, error) 
 		opts.ClientTLS = opts.ClientTLS.Clone()
 		opts.ClientTLS.MinVersion = max(opts.ClientTLS.MinVersion, tls.VersionTLS12)
 	}
-	if opts.UpstreamTLS != nil {
+	if opts.UpstreamCertificate != "" {
+		if opts.UpstreamTLS != nil {
+			return nil, errors.New("upstream certificate cannot be combined with other upstream TLS settings")
+		}
+		// The driver's pin compares the presented certificate byte for byte.
+		opts.UpstreamTLS, err = msdsn.SetupTLS("", opts.UpstreamCertificate, false, "", "1.2")
+		if err != nil {
+			return nil, fmt.Errorf("upstream certificate: %w", err)
+		}
+	} else if opts.UpstreamTLS != nil {
 		opts.UpstreamTLS = opts.UpstreamTLS.Clone()
 		if opts.UpstreamTLS.InsecureSkipVerify {
 			return nil, errors.New("upstream TLS must verify certificates")

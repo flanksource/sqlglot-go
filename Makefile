@@ -73,6 +73,13 @@ ui: ## Rebuild the web UI into www/dist (needs node and pnpm)
 build-proxy-fixtures: build ## Build the proxy fixture client
 	go build -o .tmp/proxy-fixture-client ./proxy/testdata/client
 
+.PHONY: tds-fixtures
+tds-fixtures: ## Recapture proxy/tds fixtures through the CLI proxy; needs TDS_CONNECTION and TDS_UPSTREAM
+	@mkdir -p .tmp
+	go build -o .tmp/sqlglot-proxy ./cmd/sqlglot
+	go build -o .tmp/proxy-fixture-client ./proxy/testdata/client
+	.tmp/proxy-fixture-client --mode tds-fixtures --sqlglot .tmp/sqlglot-proxy --connection "$(TDS_CONNECTION)" --upstream "$(TDS_UPSTREAM)" --dir proxy/tds/testdata/captures
+
 build-database-tests: ## Build the disposable database integration suite
 	@mkdir -p .tmp
 	go test -c -tags integration -o .tmp/database-review.test ./database/migrate/review

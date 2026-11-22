@@ -37,6 +37,10 @@ func addProxyCommands(root *cobra.Command) {
 		f.StringVar(&flags.upstreamTLS, "upstream-tls", "disable", "Upstream TLS: disable, require (verified)")
 		f.StringVar(&flags.ca, "upstream-ca", "", "PEM CA bundle for upstream TLS")
 		f.StringVar(&flags.serverName, "upstream-server-name", "", "Upstream TLS certificate hostname")
+		f.StringVar(&flags.options.UpstreamCertificate, "upstream-cert", "", "Exact upstream certificate (.pem or .der) for self-signed servers; replaces CA and hostname verification")
+		if name == "tds" {
+			f.StringVar(&flags.options.CaptureDir, "capture", "", "Directory for decrypted TDS messages, one file per connection; credentials are removed, statements and rows are not")
+		}
 		parent.AddCommand(cmd)
 	}
 	root.AddCommand(parent)
@@ -54,6 +58,12 @@ func (f *proxyFlags) configureTLS() error {
 	}
 	switch f.upstreamTLS {
 	case "require":
+		if f.options.UpstreamCertificate != "" {
+			if f.ca != "" || f.serverName != "" {
+				return errors.New("upstream-cert cannot be combined with upstream-ca or upstream-server-name")
+			}
+			return nil
+		}
 		config := &tls.Config{ServerName: f.serverName, MinVersion: tls.VersionTLS12}
 		if f.ca != "" {
 			data, err := os.ReadFile(f.ca)
@@ -68,7 +78,7 @@ func (f *proxyFlags) configureTLS() error {
 		}
 		f.options.UpstreamTLS = config
 	case "disable":
-		if f.ca != "" || f.serverName != "" {
+		if f.ca != "" || f.serverName != "" || f.options.UpstreamCertificate != "" {
 			return errors.New("upstream TLS settings require --upstream-tls=require")
 		}
 	default:
