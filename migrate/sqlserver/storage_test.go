@@ -1,6 +1,8 @@
 package sqlserver_test
 
 import (
+	"strings"
+
 	"github.com/flanksource/sqlglot-go/migrate"
 	"github.com/flanksource/sqlglot-go/migrate/sqlserver"
 	. "github.com/onsi/ginkgo/v2"
@@ -111,10 +113,60 @@ var _ = Describe("Fill factor, ROWGUIDCOL, QUOTED_IDENTIFIER and sequences", fun
 		Expect(unchanged.Steps).To(BeEmpty())
 	})
 
-	It("names the routine whose definition does not parse", func() {
-		broken := migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "acme_broken"}, Kind: "PROCEDURE", SQL: "CREATE PROCEDURE dbo.acme_broken AS SELECT 1 +"}
-		_, err := sqlserver.Plan(migrate.Request{Current: migrate.Schema{Definitions: []migrate.Definition{broken}}})
-		Expect(err).To(MatchError(ContainSubstring("current snapshot: sqlserver: procedure dbo.acme_broken: sqlserver: parse routine")))
+	Describe("a definition whose body is not understood", func() {
+		const header, body = "CREATE PROCEDURE dbo.acme_purge AS ", "DELETE TOP (500) a FROM dbo.acme a; RAISERROR(N'it''s %d', 0, 1, 2) WITH NOWAIT;"
+		purge := func(sql string) migrate.Schema {
+			return migrate.Schema{Definitions: []migrate.Definition{{Name: migrate.Name{Schema: "dbo", Name: "acme_purge"}, Kind: "PROCEDURE", SQL: sql}}}
+		}
+		warning := ContainSubstring("procedure dbo.acme_purge is compared as written")
+
+		DescribeTable("is compared as written, with a warning",
+			func(current, desired string, steps ...string) {
+				plan, err := sqlserver.Plan(migrate.Request{Current: purge(current), Desired: purge(desired)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stepSQL(plan)).To(Equal(append([]string{}, steps...)))
+				Expect(plan.Warnings).To(ConsistOf(warning))
+			},
+			Entry("the same text", header+body, header+body),
+			Entry("another layout, comment and OR ALTER", header+body, "-- note\nCREATE OR ALTER PROCEDURE dbo.acme_purge AS\n\t/* purge */ "+body),
+			Entry("an unqualified name", header+body, "CREATE PROCEDURE acme_purge AS "+body),
+			Entry("another literal", header+body, header+strings.Replace(body, "it''s", "its", 1), "CREATE OR ALTER PROCEDURE dbo.acme_purge AS "+strings.Replace(body, "it''s", "its", 1)),
+			Entry("a body that is understood", header+body, header+"SELECT 1", "CREATE OR ALTER PROCEDURE dbo.acme_purge AS SELECT 1"),
+			Entry("one that was understood", header+"SELECT 1", header+body, "CREATE OR ALTER PROCEDURE dbo.acme_purge AS "+body),
+		)
+
+		It("is created as written", func() {
+			plan, err := sqlserver.Plan(migrate.Request{Desired: purge("CREATE PROCEDURE [dbo].[acme_purge] AS " + body)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stepSQL(plan)).To(Equal([]string{"CREATE OR ALTER PROCEDURE [dbo].[acme_purge] AS " + body}))
+		})
+
+		It("is kept for a function, a view and a trigger too", func() {
+			orders := migrate.Table{Name: migrate.Name{Schema: "dbo", Name: "acme"}, Columns: []migrate.Column{{Name: "id", Type: "int"}}}
+			named := func(kind, name, sql string) migrate.Definition {
+				return migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: name}, Kind: kind, SQL: sql}
+			}
+			trigger := named("TRIGGER", "acme_tr", "CREATE TRIGGER dbo.acme_tr ON dbo.acme AFTER INSERT AS "+body)
+			trigger.Parent = &orders.Name
+			snapshot := migrate.Schema{Tables: []migrate.Table{orders}, Definitions: []migrate.Definition{
+				named("FUNCTION", "acme_fn", "CREATE FUNCTION dbo.acme_fn() RETURNS int AS BEGIN SELECT 1 + ; RETURN 1 END"),
+				named("VIEW", "acme_v", "CREATE VIEW dbo.acme_v AS SELECT 1 +"), trigger}}
+			plan, err := sqlserver.Plan(migrate.Request{Current: snapshot, Desired: snapshot})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(plan.Steps).To(BeEmpty())
+			Expect(plan.Warnings).To(ConsistOf(ContainSubstring("function dbo.acme_fn"), ContainSubstring("view dbo.acme_v"), ContainSubstring("trigger dbo.acme_tr")))
+		})
+
+		It("is still refused when its header does not name the catalog's object", func() {
+			_, err := sqlserver.Plan(migrate.Request{Current: purge("CREATE PROCEDURE dbo.other AS " + body)})
+			Expect(err).To(MatchError(ContainSubstring("definition name or kind does not match")))
+		})
+
+		It("warns about nothing it understands", func() {
+			plan, err := sqlserver.Plan(migrate.Request{Current: purge(header + "SELECT 1")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(plan.Warnings).To(BeEmpty())
+		})
 	})
 
 	balance := func(name, expression string) migrate.Table {

@@ -6,7 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
@@ -157,6 +159,77 @@ INSERT dbo.ReadCodes VALUES ('Title','Mr'), ('Cause','Fire')`)).To(Succeed())
 		Expect(plan(ctx, opts).Actions[0].Reasons).To(ContainElement("retry-failed"))
 	})
 
+	DescribeTable("rolls back the record appended to a batch that runs on past a failed statement",
+		func(ctx SpecContext, id, sql, problem string) {
+			Expect(execSQL(ctx, db, "IF OBJECT_ID('dbo.AppendCodes') IS NULL CREATE TABLE dbo.AppendCodes (Code nvarchar(20) PRIMARY KEY);\nDELETE dbo.AppendCodes; INSERT dbo.AppendCodes VALUES (N'taken')")).To(Succeed())
+			opts := backend.Options{DB: db, Scope: id, Scripts: []scripts.Script{{ID: id, Phase: scripts.Post, SQL: sql}}}
+			result, err := backend.Apply(ctx, db, plan(ctx, opts))
+			Expect(err).To(MatchError(ContainSubstring(problem)))
+			Expect(result.Outcome).To(Equal("failed"))
+			var codes int
+			Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dbo.AppendCodes").Scan(&codes)).To(Succeed())
+			Expect(codes).To(Equal(1), "what ran after the failed statement is rolled back")
+			var attempts, recorded string
+			Expect(db.QueryRowContext(ctx, "SELECT STUFF((SELECT ','+outcome FROM dbo.sqlglot_migration_attempts WHERE scope=@p1 FOR XML PATH('')),1,1,'')", id).Scan(&attempts)).To(Succeed())
+			Expect(db.QueryRowContext(ctx, "SELECT JSON_VALUE(state,'$.outcome') FROM dbo.sqlglot_migrations WHERE scope=@p1", id).Scan(&recorded)).To(Succeed())
+			Expect([]string{attempts, recorded}).To(Equal([]string{"failed", "failed"}))
+		},
+		Entry("one failing", "append-one", "INSERT dbo.AppendCodes VALUES (N'taken');\nINSERT dbo.AppendCodes VALUES (N'after');", "Violation of PRIMARY KEY"),
+		Entry("two failing", "append-two", "INSERT dbo.AppendCodes VALUES (N'taken');\nINSERT dbo.AppendCodes VALUES (N'after');\nSELECT 1/0;", "Violation of PRIMARY KEY"),
+	)
+
+	It("appends its record without changing what a script means", func(ctx SpecContext) {
+		const definition = "CREATE PROCEDURE dbo.append_last AS\nSELECT 1 AS a -- it's last"
+		Expect(execSQL(ctx, db, "CREATE TABLE dbo.AppendSeen (Note nvarchar(40))")).To(Succeed())
+		opts := backend.Options{DB: db, Scope: "it's appended", Scripts: []scripts.Script{
+			{ID: "comment", Phase: scripts.Post, SQL: "INSERT dbo.AppendSeen VALUES (N'it''s here') -- it's a comment"},
+			{ID: "module", Phase: scripts.Post, SQL: definition},
+			{ID: "returns", Phase: scripts.Post, SQL: "INSERT dbo.AppendSeen VALUES (N'returned')\nIF 1 = 1 RETURN\nINSERT dbo.AppendSeen VALUES (N'unreachable')"},
+			{ID: "temp", Phase: scripts.Post, SQL: "CREATE TABLE #t (Note nvarchar(40));\nGO\nINSERT #t VALUES (N'temp');\nGO\nINSERT dbo.AppendSeen SELECT Note FROM #t"},
+			{ID: "timeout", Phase: scripts.Post, SQL: "SET LOCK_TIMEOUT 250;\nSET ROWCOUNT 1;"},
+			{ID: "uses", Phase: scripts.Post, SQL: "USE master;"},
+			{ID: "zz-after", Phase: scripts.Post, SQL: "INSERT dbo.AppendSeen SELECT N'timeout ' + CONVERT(nvarchar(10), @@LOCK_TIMEOUT)"},
+		}}
+		result := apply(ctx, db, plan(ctx, opts))
+		Expect(result.Applied).To(ConsistOf("comment", "module", "returns", "temp", "timeout", "uses", "zz-after"))
+		var stored, seen string
+		Expect(db.QueryRowContext(ctx, "SELECT definition FROM sys.sql_modules WHERE object_id=OBJECT_ID('dbo.append_last')").Scan(&stored)).To(Succeed())
+		Expect(stored).To(Equal(definition))
+		Expect(db.QueryRowContext(ctx, "SELECT STRING_AGG(Note, '|') WITHIN GROUP (ORDER BY Note) FROM dbo.AppendSeen").Scan(&seen)).To(Succeed())
+		Expect(seen).To(Equal("it's here|returned|temp|timeout 15000"))
+		var attempts int
+		Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dbo.sqlglot_migration_attempts WHERE scope=@p1 AND outcome=N'applied'", opts.Scope).Scan(&attempts)).To(Succeed())
+		Expect(attempts).To(Equal(len(opts.Scripts)))
+		Expect(apply(ctx, db, plan(ctx, opts)).Outcome).To(Equal("already-applied"))
+	})
+
+	DescribeTable("leaves the ledger and the data agreeing when the session is killed while a script runs",
+		func(ctx SpecContext, id, prefix string, selected, blocked []string) {
+			Expect(execSQL(ctx, db, "IF OBJECT_ID('dbo.LockGate') IS NULL BEGIN CREATE TABLE dbo.LockGate (Id int PRIMARY KEY); INSERT dbo.LockGate VALUES (1); CREATE TABLE dbo.KillSeen (Note nvarchar(40)); END")).To(Succeed())
+			opts := backend.Options{DB: db, Scope: id, Scripts: []scripts.Script{{ID: id, Phase: scripts.Post,
+				SQL: prefix + "INSERT dbo.KillSeen VALUES (N'landed');\nUPDATE dbo.LockGate SET Id=1 WHERE Id=1;"}}}
+			file := plan(ctx, opts)
+			lock := lockFixtureRow(ctx, db)
+			outcomes := beginApply(ctx, db, file)
+			var victim int
+			Eventually(func() error {
+				return db.QueryRowContext(ctx, "SELECT session_id FROM sys.dm_exec_requests WHERE wait_type LIKE N'LCK%' AND database_id=DB_ID()").Scan(&victim)
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+			Expect(execSQL(ctx, db, fmt.Sprintf("KILL %d", victim))).To(Succeed())
+			var killed applyOutcome
+			Eventually(outcomes).WithTimeout(30 * time.Second).Should(Receive(&killed))
+			Expect(killed.err).To(HaveOccurred())
+			Expect(lock.Rollback()).To(Succeed())
+			var landed int
+			Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dbo.KillSeen").Scan(&landed)).To(Succeed())
+			Expect(landed).To(BeZero())
+			after := plan(ctx, opts)
+			Expect([][]string{after.Selected(), after.Actions[0].Blocked}).To(Equal([][]string{selected, blocked}))
+		},
+		Entry("one that commits with its row, which the next plan runs again", "killed", "", []string{"killed"}, nil),
+		Entry("one that could have ended its transaction, which is blocked", "killed-dynamic", "DECLARE @q nvarchar(max) = N'SELECT 1'; EXEC(@q);\n", nil, []string{"reconciliation required: commit-unknown"}),
+	)
+
 	DescribeTable("runs a script that controls its own transaction inside the migration's",
 		func(ctx SpecContext, id, sql, outcome, problem string, rows int) {
 			after := id + "-after"
@@ -183,7 +256,7 @@ INSERT dbo.ReadCodes VALUES ('Title','Mr'), ('Cause','Fire')`)).To(Succeed())
 		Entry("committing it in a later batch", "own-batches", "BEGIN TRANSACTION\nGO\nINSERT dbo.ScriptRuns VALUES (N'own-batches', NULL);\nGO\nCOMMIT", "applied", "", 1),
 		Entry("failing after its own commit", "own-failure", "BEGIN TRANSACTION\nINSERT dbo.ScriptRuns VALUES (N'own-failure', NULL);\nCOMMIT\nGO\nTHROW 50001, 'own fixture failure', 1;", "failed", "own fixture failure", 0),
 		Entry("leaving it open", "own-open", "BEGIN TRANSACTION\nINSERT dbo.ScriptRuns VALUES (N'own-open', NULL);", "commit-unknown", "transaction count to 2", 0),
-		Entry("rolling it back", "own-rollback", "BEGIN TRANSACTION\nINSERT dbo.ScriptRuns VALUES (N'own-rollback', NULL);\nROLLBACK", "commit-unknown", "does not have an active transaction", 0),
+		Entry("rolling it back", "own-rollback", "BEGIN TRANSACTION\nINSERT dbo.ScriptRuns VALUES (N'own-rollback', NULL);\nROLLBACK", "commit-unknown", "transaction count to 0", 0),
 		Entry("rolling it back in its own CATCH", "own-catch", "BEGIN TRY\nBEGIN TRANSACTION;\nINSERT dbo.ScriptRuns VALUES (N'own-catch', NULL);\nTHROW 50001, 'catch fixture', 1;\nEND TRY\nBEGIN CATCH\nROLLBACK;\nTHROW;\nEND CATCH", "failed", "catch fixture", 0),
 		Entry("aborting it with XACT_ABORT", "own-abort", "SET XACT_ABORT ON;\nBEGIN TRANSACTION;\nINSERT dbo.ScriptRuns VALUES (N'own-abort', NULL);\nTHROW 50001, 'abort fixture', 1;", "failed", "abort fixture", 0),
 	)

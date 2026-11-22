@@ -97,11 +97,11 @@ func (s *state) planChange(c schema.Change) error {
 
 // createOrAlter runs the declared definition itself, as CREATE OR ALTER.
 func (s *state) createOrAlter(c schema.Change, name string, attrs []schema.Attr) error {
-	text, err := definitionOf(name, attrs)
+	definition, err := definitionOf(name, attrs)
 	if err != nil {
 		return err
 	}
-	cmd, err := CreateOrAlter(text)
+	cmd, err := CreateOrAlter(definition.Text)
 	if err != nil {
 		return fmt.Errorf("sqlserver: routine %s: %w", name, err)
 	}

@@ -62,7 +62,7 @@ func Apply(ctx context.Context, db *sql.DB, file PlanFile, options ...ApplyOptio
 
 func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Result, error) {
 	result := Result{Outcome: "failed", Applied: []string{}}
-	if err := cfg.report(ProgressCheck, "", func() error { _, err := s.verified(ctx, file); return err }); err != nil {
+	if err := cfg.report(ProgressCheck, "", func() error { return s.verify(ctx, file) }); err != nil {
 		return result, err
 	}
 	if err := s.absorb(ctx); err != nil {
@@ -80,6 +80,9 @@ func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Re
 		}
 		run.snapshot = newSnapshot(s.opts.Scope, file)
 		if err := run.snapshot.write(ctx, s.conn); err != nil {
+			return result, err
+		}
+		if _, err := s.conn.ExecContext(ctx, setLockTimeout); err != nil {
 			return result, err
 		}
 	}
@@ -267,6 +270,7 @@ func (r *applyRun) unpredicted(ctx context.Context, writer string, applied []str
 	if err != nil {
 		return err
 	}
+	r.s.states = fresh.Ledger
 	var moved []string
 	for _, item := range fresh.Actions {
 		planned := r.file.action(item.Script.ID)

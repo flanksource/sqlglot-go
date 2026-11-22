@@ -19,6 +19,11 @@ type session struct {
 	opts     Options
 	lockName string
 	closed   bool
+	// database is the target's database and states the scope's ledger, both as
+	// the plan verified under the migration lock read them; states then follows
+	// every row the session writes, so running a script never reads the ledger.
+	database string
+	states   map[string]scripts.State
 }
 
 // open locks the scope of prepared options on a dedicated connection.
@@ -63,21 +68,22 @@ func discardConnection(conn *sql.Conn) error {
 	return errors.Join(discardErr, closeErr)
 }
 
-// verified re-plans file's bundle on the session connection and returns that
-// fresh plan, refusing a file for another target or one the target moved
-// away from.
-func (s *session) verified(ctx context.Context, file PlanFile) (PlanFile, error) {
+// verify re-plans file's bundle on the session connection and keeps the target
+// it read, refusing a file for another target or one the target moved away
+// from.
+func (s *session) verify(ctx context.Context, file PlanFile) error {
 	fresh, err := plan(ctx, s.conn, s.opts)
 	if err != nil {
-		return fresh, err
+		return err
 	}
 	if fresh.Target != file.Target {
-		return fresh, fmt.Errorf("plan targets %s, but the connection is %s", file.Target, fresh.Target)
+		return fmt.Errorf("plan targets %s, but the connection is %s", file.Target, fresh.Target)
 	}
 	if moved := file.moved(fresh); len(moved) > 0 {
-		return fresh, &StalePlanError{Moved: moved}
+		return &StalePlanError{Moved: moved}
 	}
-	return fresh, nil
+	s.database, s.states = fresh.Target.Database, fresh.Ledger
+	return nil
 }
 
 // options are the prepared options of file's bundle on db.

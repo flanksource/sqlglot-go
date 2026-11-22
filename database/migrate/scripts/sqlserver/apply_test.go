@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strings"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	mssql "github.com/microsoft/go-mssqldb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -80,28 +82,80 @@ func expectInspection(mock sqlmock.Sqlmock, scope string, states map[string]scri
 // none expects no observation.
 func none() {}
 
-// expectRun expects one transactional script up to its after-check: the
-// in-progress marker, what the transaction observes before the body, the
-// body and what it observes after.
-func expectRun(mock sqlmock.Sqlmock, scope, id, body string, before, after func()) {
-	expectLedger(mock, scope, nil)
-	mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(scope, id, sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectBegin()
-	mock.ExpectExec("SET LOCK_TIMEOUT").WillReturnResult(sqlmock.NewResult(0, 0))
-	before()
-	mock.ExpectExec(regexp.QuoteMeta(body)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(`SELECT @@TRANCOUNT`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	after()
+// scriptRun is one transactional script's run: marked when it may end the
+// migration's transaction, with what the transaction observes before the body
+// and after it.
+type scriptRun struct {
+	scope, id, body string
+	marked          bool
+	before, after   func()
 }
 
-// expectTransaction expects one transactional script that commits: expectRun,
-// then the success record and attempt.
-func expectTransaction(mock sqlmock.Sqlmock, scope, id, body string, states *[]scripts.State, before, after func()) {
-	expectRun(mock, scope, id, body, before, after)
-	mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(scope, id, sqlmock.AnyArg(), recordedState{states}).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(scope, id, sqlmock.AnyArg(), "applied", "").WillReturnResult(sqlmock.NewResult(0, 1))
+// completionOf matches body followed, in the same request, by the transaction
+// count check, the ledger row and the attempt.
+func completionOf(body, id string) string {
+	return "^" + regexp.QuoteMeta(body) + ".*" + completionRecord(id)
 }
+
+func completionRecord(id string) string {
+	return regexp.QuoteMeta("IF @@TRANCOUNT<>1 RAISERROR(N'script changed the migration transaction count to %d',16,251,@@TRANCOUNT) ELSE BEGIN MERGE [disposable].dbo.sqlglot_migrations AS t USING (SELECT N'bundle' AS scope,N'"+id+"' AS path,0x") +
+		".*" + regexp.QuoteMeta("INSERT INTO [disposable].dbo.sqlglot_migration_attempts(scope,path,plan_hash,outcome,detail) VALUES(N'bundle',N'"+id+"',N'") + "[0-9a-f]{64}" + regexp.QuoteMeta("',N'applied',N'');")
+}
+
+// recordedOutcome matches id's outcome recorded outside its transaction.
+func recordedOutcome(id, outcome string) string {
+	return "^" + regexp.QuoteMeta("MERGE [disposable].dbo.sqlglot_migrations AS t USING (SELECT N'bundle' AS scope,N'"+id+"' AS path,0x") +
+		".*" + regexp.QuoteMeta(`"outcome":"`+outcome+`"`) + ".*" + regexp.QuoteMeta("',N'"+outcome+"',N'")
+}
+
+// expectBegin expects what a script's run does before its body. The ledger is
+// not among it: it was read once, when the plan was verified.
+func expectBegin(mock sqlmock.Sqlmock, run scriptRun) {
+	if run.marked {
+		mock.ExpectExec("^MERGE dbo.sqlglot_migrations").WithArgs(run.scope, run.id, sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectBegin()
+	if run.before != nil {
+		run.before()
+	}
+}
+
+// expectRun expects one transactional script up to its after-check.
+func expectRun(mock sqlmock.Sqlmock, run scriptRun) {
+	expectBegin(mock, run)
+	mock.ExpectExec(completionOf(run.body, run.id)).WillReturnResult(sqlmock.NewResult(0, 1))
+	if run.after != nil {
+		run.after()
+	}
+}
+
+// expectTransaction expects one transactional script that commits.
+func expectTransaction(mock sqlmock.Sqlmock, run scriptRun) {
+	expectRun(mock, run)
+	mock.ExpectCommit()
+}
+
+// appliedStates are the states recorded as applied by value, in order.
+var appliedStates []scripts.State
+
+var stateLiteral = regexp.MustCompile(`AS hash,N'((?:[^']|'')*)' AS state`)
+
+// captureStates matches as sqlmock does by default, keeping what is recorded.
+var captureStates = sqlmock.QueryMatcherFunc(func(expected, actual string) error {
+	if err := sqlmock.QueryMatcherRegexp.Match(expected, actual); err != nil {
+		return err
+	}
+	if found := stateLiteral.FindStringSubmatch(actual); found != nil {
+		var state scripts.State
+		if err := json.Unmarshal([]byte(strings.ReplaceAll(found[1], "''", "'")), &state); err != nil {
+			return err
+		}
+		if state.Outcome == "applied" {
+			appliedStates = append(appliedStates, state)
+		}
+	}
+	return nil
+})
 
 func expectLock(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery("sp_getapplock").WillReturnRows(sqlmock.NewRows([]string{"code"}).AddRow(0))
@@ -121,6 +175,7 @@ func expectRelease(mock sqlmock.Sqlmock) {
 func expectStore(mock sqlmock.Sqlmock) {
 	mock.ExpectExec("IF OBJECT_ID").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM dbo.sqlglot_observations").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("^SET LOCK_TIMEOUT 15000;$").WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
 // dynamicSQL runs SQL held in a variable, whose effects analysis cannot know.
@@ -146,12 +201,13 @@ var _ = Describe("Plan file apply", func() {
 	var db *sql.DB
 	// connect replaces the connection, which one Apply uses up.
 	connect := func() {
-		conn, m, err := sqlmock.New()
+		conn, m, err := sqlmock.New(sqlmock.QueryMatcherOption(captureStates))
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(m.ExpectationsWereMet()).To(Succeed()) })
 		db, mock, opts.DB = conn, m, conn
 	}
 	BeforeEach(func() {
+		appliedStates = nil
 		connect()
 		// w rewrites dbo.AsEnv; the catalog's dbo.country reads it; s, t and
 		// v call dbo.country. Their effects come from analysing their SQL.
@@ -196,15 +252,14 @@ var _ = Describe("Plan file apply", func() {
 			ContainSubstring("Plan: 3 to run, 1 to re-run, 0 blocked, 0 unchanged."),
 		))
 
-		var recorded []scripts.State
 		expectLock(mock)
 		expectInspection(mock, opts.Scope, ledger, "ZW")
 		expectStore(mock)
-		expectTransaction(mock, opts.Scope, "w", "UPDATE dbo.AsEnv", &recorded, none, none)
+		expectTransaction(mock, scriptRun{scope: opts.Scope, id: "w", body: "UPDATE dbo.AsEnv"})
 		probeCountry("MW")()
 		mock.ExpectExec("UPDATE dbo.sqlglot_observations").WithArgs(opts.Scope, file.Hash, "result:dbo.country", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 		for _, id := range []string{"s", "t", "v"} {
-			expectTransaction(mock, opts.Scope, id, "SELECT dbo.country() AS "+id, &recorded, none, none)
+			expectTransaction(mock, scriptRun{scope: opts.Scope, id: id, body: "SELECT dbo.country() AS " + id, marked: true})
 		}
 		expectRelease(mock)
 
@@ -212,29 +267,28 @@ var _ = Describe("Plan file apply", func() {
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"w", "s", "t", "v"}}))
-		malawi := recorded[1].Inputs["result:dbo.country"]
+		malawi := appliedStates[1].Inputs["result:dbo.country"]
 		Expect(malawi).NotTo(Equal(zimbabwe), "s records the country re-probed after w")
-		Expect([]string{recorded[2].Inputs["result:dbo.country"], recorded[3].Inputs["result:dbo.country"]}).To(Equal([]string{malawi, malawi}))
-		Expect(recorded[1].Hash).To(Equal(scripts.StateHash(recorded[1])))
-		Expect(recorded[1].Values).To(HaveKeyWithValue("result:dbo.country", HaveValue(Equal("MW"))), "s records the value it ran with, not the planned one")
+		Expect([]string{appliedStates[2].Inputs["result:dbo.country"], appliedStates[3].Inputs["result:dbo.country"]}).To(Equal([]string{malawi, malawi}))
+		Expect(appliedStates[1].Hash).To(Equal(scripts.StateHash(appliedStates[1])))
+		Expect(appliedStates[1].Values).To(HaveKeyWithValue("result:dbo.country", HaveValue(Equal("MW"))), "s records the value it ran with, not the planned one")
 	})
 
 	It("leaves to the next plan the callers of a function an upstream script changes", func(ctx SpecContext) {
 		ledger := baseline()
 		file := planned(ledger, "ZW")
 		Expect(file.Selected()).To(Equal([]string{"w"}))
-		var recorded []scripts.State
 		expectLock(mock)
 		expectInspection(mock, opts.Scope, ledger, "ZW")
 		expectStore(mock)
-		expectTransaction(mock, opts.Scope, "w", "UPDATE dbo.AsEnv", &recorded, none, none)
+		expectTransaction(mock, scriptRun{scope: opts.Scope, id: "w", body: "UPDATE dbo.AsEnv"})
 		expectRelease(mock)
 
 		result, err := Apply(ctx, db, file)
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"w"}}))
-		ledger["w"] = recorded[0]
+		ledger["w"] = appliedStates[0]
 		connect()
 		next := planned(ledger, "MW")
 		Expect(reasonsOf(next)).To(Equal(map[string][]string{"w": nil, "s": {"function-result-changed"}, "t": {"function-result-changed"}, "v": {"function-result-changed"}}))
@@ -266,12 +320,9 @@ var _ = Describe("Plan file apply", func() {
 			expectIdentity(mock)
 			expectLedger(mock, opts.Scope, nil)
 			expectStore(mock)
-			expectRun(mock, opts.Scope, "r", "IF NOT EXISTS", none, none)
-			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectCommit()
+			expectTransaction(mock, scriptRun{scope: opts.Scope, id: "r", body: "IF NOT EXISTS"})
 			answer()
 			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "r", sqlmock.AnyArg(), recordedState{&recorded}).WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WillReturnResult(sqlmock.NewResult(0, 1))
 			expectRelease(mock)
 			result, err := Apply(GinkgoT().Context(), db, file)
 			Expect(err).NotTo(HaveOccurred())
@@ -404,10 +455,9 @@ var _ = Describe("Plan file apply", func() {
 		expectLock(mock)
 		expectInspection(mock, opts.Scope, nil, "ZW")
 		expectStore(mock)
-		expectRun(mock, opts.Scope, "self", "UPDATE dbo.AsEnv", none, probeCountry("MW"))
+		expectRun(mock, scriptRun{scope: opts.Scope, id: "self", body: "UPDATE dbo.AsEnv", marked: true, after: probeCountry("MW")})
 		mock.ExpectRollback()
-		mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "self", sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "self", sqlmock.AnyArg(), "failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(recordedOutcome("self", "failed")).WillReturnResult(sqlmock.NewResult(0, 1))
 		expectSessionCheck(mock)
 		expectRelease(mock)
 
@@ -422,14 +472,10 @@ var _ = Describe("Plan file apply", func() {
 		const violation = "Violation of PRIMARY KEY constraint 'PK_ASCODE'"
 		// expectFailure expects id's body to fail and its failure to be recorded.
 		expectFailure := func(id, body string) {
-			expectLedger(mock, opts.Scope, nil)
-			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectBegin()
-			mock.ExpectExec("SET LOCK_TIMEOUT").WillReturnResult(sqlmock.NewResult(0, 0))
-			mock.ExpectExec(regexp.QuoteMeta(body)).WillReturnError(errors.New(violation))
+			expectBegin(mock, scriptRun{scope: opts.Scope, id: id})
+			mock.ExpectExec(completionOf(body, id)).WillReturnError(errors.New(violation))
 			mock.ExpectRollback()
-			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, id, sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, id, sqlmock.AnyArg(), "failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(recordedOutcome(id, "failed")).WillReturnResult(sqlmock.NewResult(0, 1))
 		}
 		insert := func(id string) string { return "INSERT dbo.AsCode VALUES (N'" + id + "')" }
 		failedWith := func(id string) ScriptFailure {
@@ -456,10 +502,9 @@ var _ = Describe("Plan file apply", func() {
 				scripts.Script{ID: "d", Phase: scripts.Post, SQL: "UPDATE dbo.AsCode SET Seen=(SELECT COUNT(*) FROM dbo.AsCode)"},
 			)
 			d := file.action("d")
-			var recorded []scripts.State
 			expectFailure("a", insert("a"))
 			expectSessionCheck(mock)
-			expectTransaction(mock, opts.Scope, "d", "UPDATE dbo.AsCode", &recorded, none, none)
+			expectTransaction(mock, scriptRun{scope: opts.Scope, id: "d", body: "UPDATE dbo.AsCode"})
 			expectRelease(mock)
 
 			var skipped []error
@@ -507,10 +552,9 @@ var _ = Describe("Plan file apply", func() {
 		It("runs the other pre scripts but never the barrier after a pre script failed", func(ctx SpecContext) {
 			file := start(scripts.Script{ID: "a", Phase: scripts.Pre, SQL: insert("a")}, scripts.Script{ID: "b", Phase: scripts.Pre, SQL: insert("b")},
 				scripts.Script{ID: "c", Phase: scripts.Post, SQL: insert("c")})
-			var recorded []scripts.State
 			expectFailure("a", insert("a"))
 			expectSessionCheck(mock)
-			expectTransaction(mock, opts.Scope, "b", insert("b"), &recorded, none, none)
+			expectTransaction(mock, scriptRun{scope: opts.Scope, id: "b", body: insert("b")})
 			expectRelease(mock)
 
 			result, err := Apply(ctx, db, file, WithBarrier(func(context.Context, Connection) error {
@@ -532,13 +576,12 @@ var _ = Describe("Plan file apply", func() {
 		Expect(file.Actions[0].EffectsUnknown).NotTo(BeEmpty())
 		Expect(file.Pretty().String()).To(ContainSubstring("? effects unknown "))
 
-		var recorded []scripts.State
 		expectLock(mock)
 		expectInspection(mock, opts.Scope, nil, "ZW")
 		expectStore(mock)
-		expectTransaction(mock, opts.Scope, "dynamic", "SELECT dbo.country() AS dynamic", &recorded, probeCountry("ZW"), probeCountry("ZW"))
+		expectTransaction(mock, scriptRun{scope: opts.Scope, id: "dynamic", body: dynamicSQL + " SELECT dbo.country() AS dynamic", marked: true, before: probeCountry("ZW"), after: probeCountry("ZW")})
 		expectInspection(mock, opts.Scope, nil, "ZW")
-		expectTransaction(mock, opts.Scope, "s", "SELECT dbo.country() AS s", &recorded, probeCountry("ZW"), probeCountry("ZW"))
+		expectTransaction(mock, scriptRun{scope: opts.Scope, id: "s", body: "SELECT dbo.country() AS s", marked: true, before: probeCountry("ZW"), after: probeCountry("ZW")})
 		expectRelease(mock)
 
 		var seen []Progress
@@ -575,11 +618,10 @@ var _ = Describe("Plan file apply", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(file.Warnings).To(HaveLen(1))
 
-		var recorded []scripts.State
 		expectLock(mock)
 		inspect(nil)
 		expectStore(mock)
-		expectTransaction(mock, opts.Scope, "dynamic", "EXEC sp_executesql", &recorded, none, none)
+		expectTransaction(mock, scriptRun{scope: opts.Scope, id: "dynamic", body: dynamicSQL, marked: true})
 		inspect(map[string]scripts.State{"late": late})
 		expectRelease(mock)
 
@@ -596,11 +638,7 @@ var _ = Describe("Plan file apply", func() {
 		expectLock(mock)
 		expectInspection(mock, opts.Scope, nil, "ZW")
 		expectStore(mock)
-		expectLedger(mock, opts.Scope, nil)
-		mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectBegin()
-		mock.ExpectExec("SET LOCK_TIMEOUT").WillReturnResult(sqlmock.NewResult(0, 0))
-		probeCountry("MW")()
+		expectBegin(mock, scriptRun{scope: opts.Scope, id: "s", marked: true, before: probeCountry("MW")})
 		mock.ExpectRollback()
 		mock.ExpectExec("DELETE FROM dbo.sqlglot_migrations").WithArgs(opts.Scope, "s").WillReturnResult(sqlmock.NewResult(0, 1))
 		expectRelease(mock)
@@ -620,22 +658,19 @@ var _ = Describe("Plan file apply", func() {
 		Expect(file.Warnings).To(Equal([]string{bundleWarning, "script s runs outside a transaction: a failure leaves it partial, blocked until reconciled"}))
 		Expect(file.Verify()).To(Succeed())
 
-		var recorded []scripts.State
 		expectLock(mock)
 		expectInspection(mock, opts.Scope, nil, "ZW")
 		expectStore(mock)
-		expectLedger(mock, opts.Scope, nil)
-		mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "s", sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(regexp.QuoteMeta("SELECT dbo.country() AS s")).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "s", sqlmock.AnyArg(), recordedState{&recorded}).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "s", sqlmock.AnyArg(), "applied", "").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("^MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "s", sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("^" + regexp.QuoteMeta("SELECT dbo.country() AS s") + "$").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(recordedOutcome("s", "applied")).WillReturnResult(sqlmock.NewResult(0, 1))
 		expectRelease(mock)
 
 		result, err := Apply(ctx, db, file)
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"s"}}))
-		Expect(recorded[0].Inputs).To(Equal(file.Actions[0].State.Inputs))
+		Expect(appliedStates[0].Inputs).To(Equal(file.Actions[0].State.Inputs))
 	})
 
 	DescribeTable("selects a script it can only warn about, naming it",
@@ -673,8 +708,67 @@ var _ = Describe("Plan file apply", func() {
 		Expect(file.Warnings).To(BeEmpty())
 	})
 
+	Describe("the requests one script takes", func() {
+		only := func(sql string) PlanFile {
+			opts.Functions, opts.Scripts = nil, []scripts.Script{{ID: "w", Phase: scripts.Post, SQL: sql}}
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			file, err := Plan(GinkgoT().Context(), opts)
+			Expect(err).NotTo(HaveOccurred())
+			expectLock(mock)
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			expectStore(mock)
+			expectBegin(mock, scriptRun{scope: opts.Scope, id: "w"})
+			return file
+		}
+		check := regexp.QuoteMeta("IF @@TRANCOUNT<1 RAISERROR(N'script changed the migration transaction count to %d',16,251,@@TRANCOUNT);")
+		alone := func(batch string) string { return "^" + regexp.QuoteMeta(batch) + "$" }
+
+		DescribeTable("append the check and the record to a batch that may run on into them",
+			func(ctx SpecContext, sql string, requests ...string) {
+				file := only(sql)
+				for _, request := range requests {
+					mock.ExpectExec(request).WillReturnResult(sqlmock.NewResult(0, 1))
+				}
+				mock.ExpectCommit()
+				expectRelease(mock)
+
+				result, err := Apply(ctx, db, file)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Applied).To(Equal([]string{"w"}))
+				Expect(appliedStates).To(HaveLen(1))
+			},
+			Entry("a statement", "INSERT dbo.AsCode VALUES (N'a')", completionOf("INSERT dbo.AsCode VALUES (N'a') ;", "w")),
+			Entry("a trailing comment", "INSERT dbo.AsCode VALUES (N'a') -- done", completionOf("INSERT dbo.AsCode VALUES (N'a') -- done ;", "w")),
+			Entry("a module, whose body they would join", "CREATE PROCEDURE dbo.p AS SELECT 1", alone("CREATE PROCEDURE dbo.p AS SELECT 1"), "^"+completionRecord("w")),
+			Entry("a batch that may return first", "IF 1 = 1 RETURN", alone("IF 1 = 1 RETURN"), "^"+completionRecord("w")),
+			Entry("a module before the last batch, which changes no transaction", "CREATE PROCEDURE dbo.p AS SELECT 1\nGO\nINSERT dbo.AsCode VALUES (N'a')",
+				alone("CREATE PROCEDURE dbo.p AS SELECT 1"), completionOf("INSERT dbo.AsCode VALUES (N'a') ;", "w")),
+			Entry("a batch that may return first, before the last batch", "IF 1 = 1 RETURN\nGO\nINSERT dbo.AsCode VALUES (N'a')",
+				alone("IF 1 = 1 RETURN"), "^"+check+"$", completionOf("INSERT dbo.AsCode VALUES (N'a') ;", "w")),
+			Entry("a statement before the last batch", "INSERT dbo.AsCode VALUES (N'a')\nGO\nINSERT dbo.AsCode VALUES (N'b')",
+				"^"+regexp.QuoteMeta("INSERT dbo.AsCode VALUES (N'a') ;")+check+"$", completionOf("INSERT dbo.AsCode VALUES (N'b') ;", "w")),
+		)
+
+		It("leave the ledger row, which commits with the script, to say whether it landed when the commit fails", func(ctx SpecContext) {
+			file := only("INSERT dbo.AsCode VALUES (N'a')")
+			mock.ExpectExec(completionOf("INSERT dbo.AsCode VALUES (N'a')", "w")).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit().WillReturnError(errors.New("connection reset"))
+			mock.ExpectExec("^INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "w", file.Hash, "commit-unknown", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectSessionCheck(mock)
+			expectRelease(mock)
+
+			result, err := Apply(ctx, db, file)
+
+			Expect(err).To(MatchError(ContainSubstring("script w commit: connection reset")))
+			Expect(result.Outcome).To(Equal("commit-unknown"))
+		})
+	})
+
 	DescribeTable("runs a script whose own transaction spans batches",
-		func(ctx SpecContext, committed bool, counts ...int) {
+		func(ctx SpecContext, committed bool) {
 			opts.Functions = nil
 			opts.Scripts = []scripts.Script{{ID: "w", Phase: scripts.Post, SQL: "BEGIN TRANSACTION\nGO\nCOMMIT"}}
 			expectIdentity(mock)
@@ -686,29 +780,25 @@ var _ = Describe("Plan file apply", func() {
 			expectIdentity(mock)
 			expectLedger(mock, opts.Scope, nil)
 			expectStore(mock)
-			expectLedger(mock, opts.Scope, nil)
-			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectBegin()
-			mock.ExpectExec("SET LOCK_TIMEOUT").WillReturnResult(sqlmock.NewResult(0, 0))
-			for i, batch := range []string{"BEGIN TRANSACTION", "COMMIT"} {
-				mock.ExpectExec(batch).WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectQuery(`SELECT @@TRANCOUNT`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(counts[i]))
-			}
+			expectBegin(mock, scriptRun{scope: opts.Scope, id: "w", marked: true})
+			mock.ExpectExec("^" + regexp.QuoteMeta("BEGIN TRANSACTION ;IF @@TRANCOUNT<1 RAISERROR(N'script changed the migration transaction count to %d',16,251,@@TRANCOUNT);") + "$").
+				WillReturnResult(sqlmock.NewResult(0, 0))
+			last := mock.ExpectExec(completionOf("COMMIT", "w"))
 			if committed {
-				mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
+				last.WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectCommit()
-				mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "w", sqlmock.AnyArg(), "applied", "").WillReturnResult(sqlmock.NewResult(0, 1))
 			} else {
+				last.WillReturnError(mssql.Error{Number: 50000, State: 251, Message: "script changed the migration transaction count to 2"})
 				mock.ExpectRollback()
-				mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "w", sqlmock.AnyArg(), "commit-unknown", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(recordedOutcome("w", "commit-unknown")).WillReturnResult(sqlmock.NewResult(0, 1))
 				expectSessionCheck(mock)
 			}
 			expectRelease(mock)
 
-			var last Progress
-			result, err := Apply(ctx, db, file, WithProgress(func(p Progress) { last = p }))
+			var ended Progress
+			result, err := Apply(ctx, db, file, WithProgress(func(p Progress) { ended = p }))
 
-			Expect([]any{last.Step, last.Script, last.Done, last.Err == nil}).To(Equal([]any{ProgressScript, "w", true, committed}))
+			Expect([]any{ended.Step, ended.Script, ended.Done, ended.Err == nil}).To(Equal([]any{ProgressScript, "w", true, committed}))
 			if committed {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Applied).To(Equal([]string{"w"}))
@@ -717,8 +807,8 @@ var _ = Describe("Plan file apply", func() {
 				Expect(result.Applied).To(BeEmpty())
 			}
 		},
-		Entry("committing what it began", true, 2, 1),
-		Entry("refusing one it leaves open", false, 2, 2),
+		Entry("committing what it began", true),
+		Entry("refusing one it leaves open", false),
 	)
 
 	It("selects a legacy content-only ledger row whose script now observes an input", func(ctx SpecContext) {

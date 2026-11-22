@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -11,7 +12,7 @@ import (
 	atlas "github.com/flanksource/sqlglot-go/migrate/atlas/sqlserver"
 )
 
-func realm(input migrate.Schema, namespaces []string) (*schema.Realm, error) {
+func realm(input migrate.Schema, namespaces []string, warn warnUnparsed) (*schema.Realm, error) {
 	if err := uniqueObjects(input); err != nil {
 		return nil, err
 	}
@@ -67,7 +68,7 @@ func realm(input migrate.Schema, namespaces []string) (*schema.Realm, error) {
 		}
 	}
 	for _, d := range input.Definitions {
-		if err := definition(r, d); err != nil {
+		if err := definition(r, d, warn); err != nil {
 			return nil, err
 		}
 	}
@@ -301,7 +302,10 @@ func referenceAction(value string) (schema.ReferenceOption, error) {
 	}
 }
 
-func definition(r *schema.Realm, input migrate.Definition) error {
+// warnUnparsed is told of each definition whose body is not understood.
+type warnUnparsed func(migrate.Definition, *atlas.UnparsedError)
+
+func definition(r *schema.Realm, input migrate.Definition, warn warnUnparsed) error {
 	s, ok := r.Schema(input.Name.Schema)
 	if !ok {
 		return fmt.Errorf("sqlserver: definition requires a schema: %+v", input.Name)
@@ -312,12 +316,17 @@ func definition(r *schema.Realm, input migrate.Definition) error {
 	}
 	input.SQL = qualified
 	if input.Kind == "VIEW" || input.Kind == "TRIGGER" {
-		return module(r, s, input)
+		return module(r, s, input, warn)
 	}
 	if input.Parent != nil || input.Disabled {
 		return fmt.Errorf("sqlserver: parent and disabled state only apply to triggers")
 	}
 	routine, err := atlas.ParseRoutine(input.SQL)
+	var unparsed *atlas.UnparsedError
+	if errors.As(err, &unparsed) {
+		warn(input, unparsed)
+		routine, err = atlas.UnparsedRoutine(input.SQL)
+	}
 	if err != nil {
 		return fmt.Errorf("sqlserver: %s %s.%s: %w", strings.ToLower(input.Kind), input.Name.Schema, input.Name.Name, err)
 	}
