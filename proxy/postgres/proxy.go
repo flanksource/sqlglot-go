@@ -17,6 +17,9 @@ import (
 const driver = "postgres"
 
 func Start(ctx context.Context, opts proxy.Options) (*proxy.Server, error) {
+	if opts.CaptureDir != "" {
+		return nil, errors.New("wire capture is only supported by the TDS proxy")
+	}
 	return proxy.Start(ctx, opts, handle)
 }
 

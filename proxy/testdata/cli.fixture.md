@@ -16,3 +16,5 @@ env:
 | TDS requires upstream | proxy tds | 1 | stdout == '' && stderr.contains('upstream') |
 | TDS requires certificate | proxy tds --upstream localhost:1 --client-tls require | 1 | stdout == '' && stderr.contains('certificate') |
 | TDS rejects invalid TLS | proxy tds --upstream-tls invalid | 1 | stdout == '' && stderr.contains('upstream-tls must') |
+| TDS pin needs upstream TLS | proxy tds --upstream localhost:1 --upstream-cert server.pem | 1 | stdout == '' && stderr.contains('upstream-tls=require') |
+| TDS pin must exist | proxy tds --upstream localhost:1 --upstream-tls require --upstream-cert missing.pem | 1 | stdout == '' && stderr.contains('upstream certificate') |

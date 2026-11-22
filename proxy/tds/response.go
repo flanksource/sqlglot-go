@@ -1,40 +1,64 @@
 package tds
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"errors"
+)
 
-// Inspect only token boundaries we can establish; row data is never searched for token bytes.
+var errFound = errors.New("token found")
+
+// responseError returns the first error message, or "" when the response has none
+// before a token that cannot be decoded.
 func responseError(body []byte) string {
-	for len(body) > 0 {
-		switch body[0] {
-		case 0x79:
-			if len(body) < 5 {
-				return ""
-			}
-			body = body[5:]
-		case tokenDone, tokenDoneProc, tokenDoneInProc:
-			if len(body) < 13 {
-				return ""
-			}
-			body = body[13:]
-		case tokenError, tokenInfo, tokenEnvChange, tokenLoginAck:
-			if len(body) < 3 {
-				return ""
-			}
-			n := int(binary.LittleEndian.Uint16(body[1:]))
-			if n > len(body)-3 {
-				return ""
-			}
-			if body[0] == tokenError && n >= 8 {
-				chars := int(binary.LittleEndian.Uint16(body[9:]))
-				if chars*2 > n-8 {
-					return ""
-				}
-				return decodeUTF16LE(body[11 : 11+chars*2])
-			}
-			body = body[n+3:]
-		default:
-			return ""
+	var detail string
+	_ = walkTokens(body, func(token byte, data []byte) error {
+		if token != tokenError {
+			return nil
 		}
+		message, _, err := tokenMessage(data)
+		if err != nil {
+			return err
+		}
+		detail = message
+		return errFound
+	})
+	return detail
+}
+
+// tokenMessage reads the text and server name of an ERROR or INFO token.
+func tokenMessage(data []byte) (message, server string, err error) {
+	if len(data) < 8 {
+		return "", "", errTruncatedToken
 	}
-	return ""
+	end := 8 + 2*int(binary.LittleEndian.Uint16(data[6:]))
+	if end > len(data) {
+		return "", "", errTruncatedToken
+	}
+	server, _, err = shortString(data[end:])
+	return decodeUTF16LE(data[8:end]), server, err
+}
+
+// returnHandle returns the prepared statement handle: the first output parameter,
+// which follows any result sets the statement produced.
+func returnHandle(body []byte) (int32, bool) {
+	var handle int32
+	err := walkTokens(body, func(token byte, data []byte) error {
+		if token != tokenReturnValue {
+			return nil
+		}
+		r := &tokenReader{data: data}
+		r.take(2)
+		r.byteString()
+		r.take(1 + 4 + 2)
+		info := r.typeInfo()
+		value := r.value(info)
+		if r.err != nil || info.kind != 0x26 || len(value) != 4 {
+			return errors.New("prepared statement handle is not an int")
+		}
+		if _, err := binary.Decode(value, binary.LittleEndian, &handle); err != nil {
+			return err
+		}
+		return errFound
+	})
+	return handle, errors.Is(err, errFound)
 }

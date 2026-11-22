@@ -24,6 +24,23 @@ var _ = Describe("proxy commands", func() {
 		root.SetArgs([]string{"proxy", "postgres"})
 		Expect(root.ExecuteContext(context.Background())).To(MatchError(ContainSubstring("upstream")))
 	})
+	It("offers wire capture only on the TDS proxy", func() {
+		root := newRootCommand(bytes.NewReader(nil))
+		for name, offered := range map[string]bool{"postgres": false, "tds": true} {
+			command, _, err := root.Find([]string{"proxy", name})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(command.Flags().Lookup("capture") != nil).To(Equal(offered), name)
+		}
+	})
+	DescribeTable("rejects ambiguous upstream certificate pins", func(expected string, args ...string) {
+		root := newRootCommand(bytes.NewReader(nil))
+		root.SetArgs(append([]string{"proxy", "tds", "--upstream", "localhost:1", "--upstream-cert", "server.pem"}, args...))
+		Expect(root.ExecuteContext(context.Background())).To(MatchError(ContainSubstring(expected)))
+	},
+		Entry("without TLS", "require --upstream-tls=require"),
+		Entry("with a CA", "cannot be combined", "--upstream-tls", "require", "--upstream-ca", "ca.pem"),
+		Entry("with a hostname", "cannot be combined", "--upstream-tls", "require", "--upstream-server-name", "db.example"),
+	)
 	It("reports the real address on stderr and exits on cancellation", func() {
 		var output, diagnostics bytes.Buffer
 		root := newRootCommand(bytes.NewReader(nil))
