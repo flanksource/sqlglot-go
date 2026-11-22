@@ -11,11 +11,9 @@ import (
 
 var routineKinds = []string{"FN", "IF", "TF", "P", "FS", "FT", "PC"}
 
-// moduleEffects is the effects of every routine the epoch loaded, by name:
-// what the analysis of its definition reads, writes and calls, and what the
-// catalog lists it referencing — the routines as calls, the tables and views
-// as reads. A procedure may also write what it references, so a procedure's
-// tables and views count as writes too; functions cannot write tables.
+// moduleEffects combines each loaded routine's parsed reads, writes and calls
+// with catalog references. For a table or view without a reliable classification,
+// the reference implies a possible read and, for a procedure, a possible write.
 func (e *observationEpoch) moduleEffects() map[scripts.ObjectName]scripts.Effects {
 	out := make(map[scripts.ObjectName]scripts.Effects, len(e.loaded))
 	for key, loaded := range e.loaded {
@@ -41,6 +39,7 @@ func prefixed(key string, lines []string) []string {
 func (e *observationEpoch) catalogEffects(key string, m catalog.Module, loaded loadedModule) scripts.Effects {
 	var effects scripts.Effects
 	procedure := m.Kind == "P" || m.Kind == "PC"
+	analysed := loaded.analysis.Analysis.Effects
 	for _, ref := range loaded.refs {
 		switch {
 		case strings.HasPrefix(ref.Name, "#"):
@@ -52,6 +51,9 @@ func (e *observationEpoch) catalogEffects(key string, m catalog.Module, loaded l
 			effects.Calls = append(effects.Calls, scripts.NewObjectName(ref.Schema, ref.Name))
 		default:
 			object := scripts.NewObjectName(ref.Schema, ref.Name)
+			if ref.Bound && len(analysed.Unknown) == 0 && (slices.Contains(analysed.Reads, object) || slices.Contains(analysed.Writes, object)) {
+				continue
+			}
 			effects.Reads = append(effects.Reads, object)
 			if procedure {
 				effects.Writes = append(effects.Writes, object)
