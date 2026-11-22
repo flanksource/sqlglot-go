@@ -73,7 +73,7 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 			continue
 		}
 		item.State.Inputs[key] = input.Hash
-		if old.Hash != "" && old.Inputs[key] != input.Hash {
+		if old.Hash != "" && !legacy && old.Inputs[key] != input.Hash {
 			item.Reasons = append(item.Reasons, input.Kind+"-changed")
 		}
 	}
@@ -109,7 +109,7 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 	case old.SourceHash != item.State.SourceHash:
 		item.Reasons = append(item.Reasons, "source-changed")
 	case legacy && len(observations) > 0:
-		item.Blocked = append(item.Blocked, "adoption-required")
+		item.Reasons = append(item.Reasons, "inputs-unrecorded")
 	case !legacy && old.Hash != item.State.Hash && len(item.Reasons) == 0:
 		item.Reasons = append(item.Reasons, "policy-changed")
 	}

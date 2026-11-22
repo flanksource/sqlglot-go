@@ -10,7 +10,7 @@ import (
 // Connection is the locked SQL session a barrier runs on.
 type Connection interface{ sessionDB }
 
-// ApplyOption configures Apply and Adopt.
+// ApplyOption configures Apply.
 type ApplyOption func(*applyConfig)
 
 type applyConfig struct {

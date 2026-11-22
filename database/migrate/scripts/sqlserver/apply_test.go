@@ -383,36 +383,19 @@ var _ = Describe("Plan file apply", func() {
 		Expect(recorded[0].Inputs).To(Equal(file.Actions[0].State.Inputs))
 	})
 
-	It("adopts a legacy ledger row from a plan file without running its body", func(ctx SpecContext) {
+	It("selects a legacy content-only ledger row whose script now observes an input", func(ctx SpecContext) {
 		opts.Scripts = opts.Scripts[1:2]
-		legacy := func() {
-			sum := sha256.Sum256([]byte(opts.Scripts[0].SQL))
-			expectIdentity(mock)
-			mock.ExpectQuery("SELECT CASE").WillReturnRows(sqlmock.NewRows([]string{"exists", "extended"}).AddRow(1, 0))
-			mock.ExpectQuery("SELECT path,hash,CAST").WithArgs(opts.Scope).WillReturnRows(sqlmock.NewRows([]string{"path", "hash", "state"}).AddRow("s", sum[:], nil))
-			probeCountry("ZW")()
-		}
-		legacy()
+		sum := sha256.Sum256([]byte(opts.Scripts[0].SQL))
+		expectIdentity(mock)
+		mock.ExpectQuery("SELECT CASE").WillReturnRows(sqlmock.NewRows([]string{"exists", "extended"}).AddRow(1, 0))
+		mock.ExpectQuery("SELECT path,hash,CAST").WithArgs(opts.Scope).WillReturnRows(sqlmock.NewRows([]string{"path", "hash", "state"}).AddRow("s", sum[:], nil))
+		probeCountry("ZW")()
+
 		file, err := Plan(ctx, opts)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(file.Actions[0].Blocked).To(Equal([]string{"adoption-required"}))
-		adoption, err := AdoptionPlan(file, []AdoptionEvidence{{ID: "s", SourceHash: file.Actions[0].State.SourceHash, Provenance: "seeded by hand", Query: "SELECT N'ZW'", Expected: "ZW"}})
-		Expect(err).NotTo(HaveOccurred())
 
-		var recorded []scripts.State
-		expectLock(mock)
-		legacy()
-		mock.ExpectExec("IF OBJECT_ID").WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectBegin()
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT N'ZW'")).WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("ZW"))
-		mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "s", sqlmock.AnyArg(), recordedState{&recorded}).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
-		expectRelease(mock)
-
-		Expect(Adopt(ctx, db, AdoptionOptions{Adoption: adoption})).To(Succeed())
-		Expect(recorded).To(HaveLen(1))
-		Expect([]string{recorded[0].Outcome, recorded[0].Provenance}).To(Equal([]string{"adopted", "seeded by hand"}))
-		Expect(recorded[0].Inputs).To(Equal(file.Actions[0].State.Inputs))
+		Expect(err).NotTo(HaveOccurred())
+		action := file.Actions[0]
+		Expect([]any{action.Selected, action.Reasons, action.Blocked}).To(Equal([]any{true, []string{"inputs-unrecorded"}, []string(nil)}))
 	})
 
 	It("reads a version 2 ledger row as current", func(ctx SpecContext) {
