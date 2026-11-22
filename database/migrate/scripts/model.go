@@ -47,13 +47,11 @@ type State struct {
 	// EffectsHash identifies the effects the script was planned with. It is
 	// audit evidence only: Hash excludes it, so a changed analysis never
 	// selects a script by itself.
-	EffectsHash  string            `json:"effectsHash,omitempty"`
-	Hash         string            `json:"hash"`
-	Inputs       map[string]string `json:"inputs"`
-	Outcome      string            `json:"outcome,omitempty"`
-	EvidenceHash string            `json:"evidenceHash,omitempty"`
-	Provenance   string            `json:"provenance,omitempty"`
-	LastSuccess  *State            `json:"lastSuccess,omitempty"`
+	EffectsHash string            `json:"effectsHash,omitempty"`
+	Hash        string            `json:"hash"`
+	Inputs      map[string]string `json:"inputs"`
+	Outcome     string            `json:"outcome,omitempty"`
+	LastSuccess *State            `json:"lastSuccess,omitempty"`
 }
 
 type Observation struct {

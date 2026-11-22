@@ -123,7 +123,7 @@ func (s *session) inProgressState(ctx context.Context, item scripts.Pending, out
 	previous := recorded[item.Script.ID]
 	state.LastSuccess = previous.LastSuccess
 	if previous.LastSuccess == nil && previous.Hash != "" &&
-		(previous.Outcome == "applied" || previous.Outcome == "adopted" || previous.Version == 1) {
+		(previous.Outcome == "applied" || previous.Version == 1) {
 		state.LastSuccess = &previous
 	}
 	return state, previous, err
