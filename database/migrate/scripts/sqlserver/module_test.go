@@ -36,3 +36,35 @@ var _ = Describe("Tracked function closure validation", func() {
 		Expect(validateProbe(function, modules)).To(MatchError(ContainSubstring("dbo.helper")))
 	})
 })
+
+var _ = Describe("Catalog routine effects", func() {
+	const (
+		procedure = "dbo.copy_codes"
+		copyCodes = "CREATE PROCEDURE " + procedure + " AS\nINSERT dbo.CodeCopy SELECT Code FROM dbo.Codes"
+	)
+	codes := catalog.ModuleReference{Schema: "dbo", Name: "Codes", Kind: "U", Bound: true}
+	codeCopy := catalog.ModuleReference{Schema: "dbo", Name: "CodeCopy", Kind: "U", Bound: true}
+
+	DescribeTable("classifies references using the procedure body when its effects are known",
+		func(definition string, refs []catalog.ModuleReference, want scripts.Effects) {
+			epoch := newObservationEpoch(nil)
+			epoch.names[procedure] = catalog.Module{Kind: "P"}
+			epoch.loaded[procedure] = loadedModule{refs: refs, analysis: scripts.CachedAnalysis{
+				Analysis: scripts.Analyze(scripts.AnalysisOptions{SQL: definition, InvokedModule: true}),
+			}}
+			Expect(epoch.moduleEffects()).To(Equal(map[scripts.ObjectName]scripts.Effects{procedure: want}))
+		},
+		Entry("separate read and write targets", copyCodes, []catalog.ModuleReference{codes, codeCopy},
+			scripts.Effects{Reads: []scripts.ObjectName{"dbo.codes"}, Writes: []scripts.ObjectName{"dbo.codecopy"}}),
+		Entry("an object used in both roles", "CREATE PROCEDURE "+procedure+" AS INSERT dbo.Codes SELECT Code FROM dbo.Codes",
+			[]catalog.ModuleReference{codes}, scripts.Effects{Reads: []scripts.ObjectName{"dbo.codes"}, Writes: []scripts.ObjectName{"dbo.codes"}}),
+		Entry("a reference found only in the catalog", copyCodes,
+			[]catalog.ModuleReference{codes, codeCopy, {Schema: "legacy", Name: "Codes", Kind: "V", Bound: true}},
+			scripts.Effects{Reads: []scripts.ObjectName{"dbo.codes", "legacy.codes"}, Writes: []scripts.ObjectName{"dbo.codecopy", "legacy.codes"}}),
+		Entry("a body with unknown effects", "CREATE PROCEDURE "+procedure+" @sql nvarchar(max) AS\nINSERT dbo.CodeCopy SELECT Code FROM dbo.Codes\nEXEC (@sql)",
+			[]catalog.ModuleReference{codes, codeCopy}, scripts.Effects{
+				Reads: []scripts.ObjectName{"dbo.codecopy", "dbo.codes"}, Writes: []scripts.ObjectName{"dbo.codecopy", "dbo.codes"},
+				Unknown: []string{"dbo.copy_codes: line 3: unsupported SQL statement: dynamic SQL"},
+			}),
+	)
+})
