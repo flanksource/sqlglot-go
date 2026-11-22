@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -17,15 +18,16 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// fakeModule is one scalar function the mocked catalog holds; refs are the
+// fakeModule is one routine the mocked catalog holds; refs are the
 // routines sys.sql_expression_dependencies lists for it.
 type fakeModule struct {
 	name, definition string
+	kind             string
 	refs             []string
 }
 
 func function(name string, body string, refs ...string) fakeModule {
-	return fakeModule{name: name, refs: refs, definition: "CREATE FUNCTION " + name + "() RETURNS nvarchar(40) AS BEGIN RETURN " + body + " END"}
+	return fakeModule{name: name, kind: "FN", refs: refs, definition: "CREATE FUNCTION " + name + "() RETURNS nvarchar(40) AS BEGIN RETURN " + body + " END"}
 }
 
 func quote(name string) string {
@@ -60,7 +62,7 @@ func expectLevel(mock sqlmock.Sqlmock, requested []string, found ...fakeModule) 
 	var names []string
 	for _, m := range found {
 		schema, name, _ := strings.Cut(m.name, ".")
-		modules.AddRow(quote(m.name), schema, name, "FN", m.definition, true, true, "nvarchar", 80, 0, 0, 0)
+		modules.AddRow(quote(m.name), schema, name, m.kind, m.definition, true, true, "nvarchar", 80, 0, 0, 0)
 		for _, ref := range m.refs {
 			refSchema, refName, _ := strings.Cut(ref, ".")
 			refs.AddRow(quote(m.name), "", "", refSchema, refName, "FN", true)
@@ -226,6 +228,80 @@ var _ = Describe("Batched module observation", func() {
 			"error:dbo.retired: module [dbo].[retired] not found or not visible",
 		}}))
 	})
+
+	It("warns about a script calling a module that controls its own transaction or runs dynamic SQL", func(ctx SpecContext) {
+		procedure := func(name, body string) fakeModule {
+			m := function(name, "N'ZW'")
+			m.kind, m.definition = "P", "CREATE PROCEDURE "+name+" AS "+body
+			return m
+		}
+		db.Functions = []Function{{Name: "dbo.country", Type: "nvarchar"}}
+		db.Scripts = []scripts.Script{{ID: "caller", Name: "PostDeployment_Caller", SQL: "EXEC dbo.load_codes; EXEC dbo.run_sql;", Phase: scripts.Post}}
+		expectTarget(mock)
+		expectLevel(mock, []string{"dbo.country", "dbo.load_codes", "dbo.run_sql"}, function("dbo.country", "N'ZW'"),
+			procedure("dbo.load_codes", "BEGIN BEGIN TRANSACTION; UPDATE dbo.AsCode SET CodeValue = '1'; COMMIT; END"),
+			procedure("dbo.run_sql", "BEGIN DECLARE @sql nvarchar(max) = N'SELECT 1'; EXEC(@sql); END"))
+
+		file, err := Plan(ctx, db)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]any{file.Selected(), file.Actions[0].Blocked}).To(Equal([]any{[]string{"caller"}, []string(nil)}))
+		Expect(file.Warnings).To(ContainElements(
+			"script PostDeployment_Caller (caller) calls dbo.load_codes, which controls its own transaction inside the migration's: if it ends that transaction, or leaves one open, it is commit-unknown and blocked until reconciled",
+			"script PostDeployment_Caller (caller) calls dbo.run_sql, which runs dynamic SQL: what it reads is not tracked, so a change to it does not run the script again",
+		))
+	})
+
+	It("tracks DB_NAME() through a module a script calls, but not through a registered function, whose result stands for it", func(ctx SpecContext) {
+		db.Functions = []Function{{Name: "dbo.country", Type: "nvarchar"}}
+		db.Scripts = []scripts.Script{
+			{ID: "module", SQL: "SELECT dbo.region()", Phase: scripts.Post},
+			{ID: "registered", SQL: "SELECT dbo.country()", Phase: scripts.Post},
+		}
+		expectTarget(mock)
+		expectLevel(mock, []string{"dbo.country", "dbo.region"}, function("dbo.country", "DB_NAME()"), function("dbo.region", "DB_NAME()"))
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT CONVERT(nvarchar(4000), DB_NAME())")).WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("ExampleUAT"))
+		expectProbe(mock, "ZW")
+
+		file, err := Plan(ctx, db)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]any{file.Actions[0].Blocked, file.Actions[1].Blocked}).To(Equal([]any{[]string(nil), []string(nil)}))
+		tracked := map[string][]string{}
+		for _, f := range file.Functions() {
+			for _, use := range f.Uses {
+				tracked[f.Display()] = append(tracked[f.Display()], use.Script)
+			}
+		}
+		Expect(tracked).To(Equal(map[string][]string{"DB_NAME()": {"module"}, "dbo.region()": {"module"}, "dbo.country()": {"registered"}}))
+	})
+
+	DescribeTable("selects the caller of a registered function by its result alone",
+		func(ctx SpecContext, body, result string, dependencies []scripts.Dependency, reasons []string) {
+			db.Functions = []Function{{Name: "dbo.country", Type: "nvarchar"}}
+			db.Scripts = []scripts.Script{{ID: "caller", SQL: "SELECT dbo.country()", Phase: scripts.Post, Dependencies: dependencies}}
+			observe := func(body, result string) {
+				expectLevel(mock, []string{"dbo.country"}, function("dbo.country", body, "dbo.region"))
+				expectLevel(mock, []string{"dbo.region"}, function("dbo.region", body))
+				expectProbe(mock, result)
+			}
+			expectTarget(mock)
+			observe("N'ZW'", "ZW")
+			before, err := Plan(ctx, db)
+			Expect(err).NotTo(HaveOccurred())
+			expectIdentity(mock)
+			expectLedger(mock, db.Scope, map[string]scripts.State{"caller": before.Actions[0].State})
+			observe(body, result)
+
+			file, err := Plan(ctx, db)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(file.Actions[0].Reasons).To(Equal(reasons))
+		},
+		Entry("its body and callee changed, its result did not", "UPPER(N'zw')", "ZW", nil, nil),
+		Entry("its result changed", "N'MW'", "MW", nil, []string{"function-result-changed"}),
+		Entry("its body changed and the script declares that", "UPPER(N'zw')", "ZW", definitionDependencies("dbo.country"), []string{"function-definition-changed"}),
+	)
 
 	It("loads a reference chain one level per edge, following catalog references and definition calls", func(ctx SpecContext) {
 		db.Scripts = []scripts.Script{{ID: "chain", SQL: "SELECT dbo.a()", Phase: scripts.Post, Dependencies: definitionDependencies("dbo.a")}}

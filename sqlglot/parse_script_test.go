@@ -114,6 +114,45 @@ var _ = Describe("ParseScript", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
+	DescribeTable("ends DDL at a semicolon or at the next statement",
+		func(sql string, classes ...string) {
+			result, err := ParseScript(sql, "tsql")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Diagnostics).To(BeEmpty())
+			Expect(result.Complete).To(BeTrue())
+			statements := []*Expression{result.Tree}
+			if result.Tree.Class == "Block" {
+				statements = result.Tree.Args["expressions"].([]*Expression)
+			}
+			found := make([]string, len(statements))
+			for i, statement := range statements {
+				found[i] = statement.Class
+			}
+			Expect(found).To(Equal(classes))
+		},
+		Entry("ALTER TABLE ADD before a semicolon", "ALTER TABLE dbo.T ADD A VARCHAR(2) NULL;", "Alter"),
+		Entry("ALTER TABLE ADD in an IF before a semicolon and an EXEC",
+			"IF NOT EXISTS (SELECT 1 FROM sys.columns)\n    ALTER TABLE dbo.T ADD A VARCHAR(2) NULL;\n\nEXEC('SELECT 1');", "IfBlock", "Execute"),
+		Entry("ALTER TABLE ADD before an EXEC without a semicolon", "ALTER TABLE dbo.T ADD A VARCHAR(2) NULL\nEXEC dbo.P", "Alter", "Execute"),
+		Entry("CREATE INDEX before a semicolon", "CREATE NONCLUSTERED INDEX IX ON dbo.T (A, B);", "Create"),
+		Entry("CREATE INDEX before a statement without a semicolon", "CREATE INDEX IX ON dbo.T (A)\nSELECT 1", "Create", "Select"),
+		Entry("CREATE INDEX in an ELSE", "IF 1 = 1\n    PRINT 'x';\nELSE\n    CREATE NONCLUSTERED INDEX IX ON dbo.T (A, B);", "IfBlock"),
+		Entry("CREATE TYPE AS TABLE before a semicolon", "CREATE TYPE dbo.L AS TABLE (Name INT);\nSELECT 1", "Create", "Select"),
+		Entry("CREATE TYPE AS TABLE in an IF", "IF TYPE_ID(N'dbo.L') IS NULL\n    CREATE TYPE dbo.L AS TABLE (Name INT);\nGO\nSELECT 1", "IfBlock", "Select"),
+	)
+
+	It("parses a table type with its constraints and writes it back as a table type in T-SQL only", func() {
+		sql := "CREATE TYPE dbo.FieldList AS TABLE (Name NVARCHAR(50) NOT NULL PRIMARY KEY, Type VARCHAR(10) NOT NULL CHECK (Type IN ('Text', 'Date')), Value SQL_VARIANT NULL)"
+		tree, err := ParseOne(sql, "tsql")
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]any{tree.Class, tree.Args["kind"]}).To(Equal([]any{"Create", "TYPE"}))
+		written, err := Generate(tree, "tsql")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(written).To(Equal(sql))
+		_, err = Generate(tree, "postgres")
+		Expect(err).To(MatchError(ContainSubstring("table type")))
+	})
+
 	It("parses WHILE with a block or a single statement", func() {
 		for _, sql := range []string{
 			"WHILE @i < 3 PRINT @i",

@@ -36,25 +36,86 @@ var _ = Describe("Effect propagation in one bundle plan", func() {
 		opts.Recorded = recorded(Must(scripts.Build(opts)))
 	})
 
-	It("selects every script whose call graph reaches what a selected script writes, naming the writer", func() {
+	It("selects only the writer, marking what its readers observe as known after it", func() {
 		opts.Scripts[index("w")].SQL = "UPDATE dbo.AsEnv SET Country=N'MW'"
 
 		plan := Must(scripts.Build(opts))
 
-		Expect(propagation(plan)).To(Equal(map[string]propagated{
-			"w":  {Reasons: []string{"source-changed"}},
-			"s":  {Reasons: []string{"upstream-write:dbo.asenv"}, Upstream: []scripts.UpstreamWrite{{Object: asEnv, Script: "w"}}, AfterApply: []scripts.AfterApplyInput{{Key: "result:dbo.country", Writers: []string{"w"}}}},
-			"s2": {Reasons: []string{"upstream-write:dbo.report"}, Upstream: []scripts.UpstreamWrite{{Object: report, Script: "s"}}},
-		}))
+		Expect(selected(plan)).To(Equal([]string{"w"}))
+		Expect(plan.Scripts[index("s")].AfterApply).To(Equal([]scripts.AfterApplyInput{{Key: "result:dbo.country", Writers: []string{"w"}}}))
 	})
 
-	It("selects a post script reaching an object the schema step changes, naming the schema step as its writer", func() {
-		opts.SchemaWrites = []scripts.ObjectName{unrelated}
+	It("selects no post script for what the schema step changes", func() {
+		opts.SchemaWrites = []scripts.ObjectName{unrelated, asEnv}
 
 		plan := Must(scripts.Build(opts))
 
-		schema := propagated{Reasons: []string{"upstream-write:dbo.unrelated"}, Upstream: []scripts.UpstreamWrite{{Object: unrelated, Script: scripts.SchemaWriter}}}
-		Expect(propagation(plan)).To(Equal(map[string]propagated{"u": schema, "s2": schema}), "s2 reaches it through the dbo.report s defines")
+		Expect(selected(plan)).To(BeEmpty())
+		Expect(plan.Scripts[index("s")].AfterApply).To(Equal([]scripts.AfterApplyInput{{Key: "result:dbo.country", Writers: []string{scripts.SchemaWriter}}}))
+	})
+
+	Describe("a script's reads", func() {
+		read := scripts.Read{SQL: "SELECT * FROM dbo.unrelated WHERE id = 1", Objects: []scripts.ObjectName{unrelated}}
+		answer := func(digest string) scripts.ReadAnswer { return scripts.ReadAnswer{Digest: digest, Rows: 1} }
+		record := func(reads map[string]scripts.ReadAnswer) {
+			u := opts.Recorded["u"]
+			u.Reads = reads
+			opts.Recorded["u"] = u
+		}
+		BeforeEach(func() {
+			opts.Reads = map[string][]scripts.Read{"u": {read}}
+			opts.Scripts = append(opts.Scripts, scripts.Script{ID: "v", SQL: "SELECT 1", Phase: scripts.Post, DependsOn: []string{"u"}})
+			opts.Recorded = recorded(Must(scripts.Build(opts)))
+			record(map[string]scripts.ReadAnswer{read.Key(): answer("before")})
+		})
+		DescribeTable("select it when their answer changed since it ran",
+			func(now scripts.ReadAnswer, want []string, changed bool) {
+				opts.Answers = map[string]scripts.ReadAnswer{read.SQL: now}
+
+				plan := Must(scripts.Build(opts))
+
+				before := answer("before")
+				Expect(selected(plan)).To(Equal(want), "never a script depending on it")
+				u := plan.Scripts[index("u")]
+				Expect(u.Reads).To(Equal([]scripts.PlannedRead{{Read: read, Recorded: &before, Answer: &now, Changed: changed}}))
+				Expect(u.State.Hash).To(Equal(opts.Recorded["u"].Hash))
+				if changed {
+					Expect(u.Reasons).To(Equal([]string{scripts.ReadChanged}))
+				}
+			},
+			Entry("the same answer", answer("before"), []string{}, false),
+			Entry("another answer", answer("after"), []string{"u"}, true),
+			Entry("a failed query", scripts.ReadAnswer{Error: "Invalid object name"}, []string{}, false),
+		)
+		DescribeTable("are not compared",
+			func(change func()) {
+				change()
+				for _, item := range Must(scripts.Build(opts)).Scripts {
+					if item.Script.ID == "u" {
+						Expect(item.Reads).To(Equal([]scripts.PlannedRead{{Read: read}}))
+						Expect(item.Reasons).NotTo(ContainElement(scripts.ReadChanged))
+					}
+				}
+			},
+			Entry("with no recorded answer", func() { record(nil) }),
+			Entry("once its source changed", func() { opts.Scripts[index("u")].SQL += " WHERE 1=1" }),
+		)
+		DescribeTable("show both answers",
+			func(before, after scripts.ReadAnswer, want string) {
+				Expect(scripts.PlannedRead{Recorded: &before, Answer: &after}.Change()).To(Equal(want))
+			},
+			Entry("a value", scripts.ReadAnswer{Rows: 1, Value: new("ZW")}, scripts.ReadAnswer{Rows: 0}, `"ZW" → 0 rows`),
+			Entry("as many rows", scripts.ReadAnswer{Rows: 1}, scripts.ReadAnswer{Rows: 1}, "1 row → 1 row with other values"),
+		)
+		It("list what it reads outside a query, or through a routine, as untracked", func() {
+			opts.UntrackedReads = map[string][]scripts.ObjectName{"s": {unrelated}}
+			untracked := map[string][]scripts.ObjectName{}
+			for _, item := range Must(scripts.Build(opts)).Scripts {
+				untracked[item.Script.ID] = item.UntrackedReads
+			}
+			Expect(untracked).To(Equal(map[string][]scripts.ObjectName{"w": nil, "s": {unrelated}, "s2": {unrelated}, "u": nil, "v": nil}),
+				"s calls dbo.country, tracked by its result")
+		})
 	})
 
 	It("cascades nothing while the writer is unchanged", func() {
@@ -120,19 +181,3 @@ var _ = Describe("Effect propagation in one bundle plan", func() {
 		Expect(after.Scripts[index("u")].State.EffectsHash).NotTo(Equal(before.Scripts[index("u")].State.EffectsHash))
 	})
 })
-
-type propagated struct {
-	Reasons    []string
-	Upstream   []scripts.UpstreamWrite
-	AfterApply []scripts.AfterApplyInput
-}
-
-func propagation(plan scripts.Plan) map[string]propagated {
-	out := map[string]propagated{}
-	for _, item := range plan.Scripts {
-		if item.Selected {
-			out[item.Script.ID] = propagated{Reasons: item.Reasons, Upstream: item.Upstream, AfterApply: item.AfterApply}
-		}
-	}
-	return out
-}

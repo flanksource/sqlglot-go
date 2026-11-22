@@ -38,7 +38,7 @@ var _ = Describe("migration command help", func() {
 		Entry("migrate", []string{}, []string{
 			"Migration sources", "schema \"public\" {}", "-- phase: post", "-- dependsOn:", "runs: always",
 			"-- transaction: true", "Parsed dependency invalidation", "sqlglot migrate review .sqlglot-go/plan.json",
-			"sqlServerArtifact", "scriptPlan", "upstream-write: dbo.asenv", "plan is stale", "--ack", "SQL Server CSV imports", "AS.csv.yaml", "both phases", "csv-delete:", "Available Commands:",
+			"sqlServerArtifact", "scriptPlan", "read-changed", "plan is stale", "--ack", "SQL Server CSV imports", "AS.csv.yaml", "both phases", "csv-delete:", "Available Commands:",
 		}),
 		Entry("plan", []string{"plan"}, []string{"--out", ".sqlglot-go/plan.json", "stderr", "--csv-root", "sqlglot migrate --help"}),
 		Entry("review", []string{"review"}, []string{"offline", "sqlglot migrate review .sqlglot-go/plan.json", "sqlglot migrate --help"}),

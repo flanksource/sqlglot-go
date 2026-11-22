@@ -43,6 +43,8 @@ END`
 		Entry("DDL writes the table, an index its table, a foreign key reads its table",
 			"IF OBJECT_ID('dbo.AsEnv', 'U') IS NULL\nCREATE TABLE dbo.AsEnv (Id int REFERENCES dbo.AsCountry (Id))\nCREATE INDEX IX_AsEnv ON dbo.AsEnv (Id)",
 			scripts.Effects{Reads: names("dbo.ascountry"), Writes: names("dbo.asenv")}),
+		Entry("a table type is written as the type it creates",
+			"CREATE TYPE dbo.FieldList AS TABLE (Name int NOT NULL PRIMARY KEY)", scripts.Effects{Writes: names("dbo.fieldlist")}),
 		Entry("a CREATE FUNCTION writes the function, not what its body reads",
 			getCountry, scripts.Effects{Writes: names("dbo.get_country")}),
 		Entry("a script that touches no data has no effects", "SET NOCOUNT ON\nPRINT 'done'", scripts.Effects{}),

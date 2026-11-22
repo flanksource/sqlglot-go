@@ -94,8 +94,7 @@ var _ = Describe("Dependency observation contracts", func() {
 		}
 		Expect(selected).To(Equal(map[scripts.Phase][]string{scripts.Pre: {"seed"}, scripts.Post: {"report"}}))
 		Expect(file.Observations).To(Equal(map[string]string{
-			"definition:dbo.country": file.Actions[0].State.Inputs["definition:dbo.country"],
-			"result:dbo.country":     file.Actions[0].State.Inputs["result:dbo.country"],
+			"result:dbo.country": file.Actions[0].State.Inputs["result:dbo.country"],
 		}))
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})

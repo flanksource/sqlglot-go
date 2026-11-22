@@ -97,13 +97,15 @@ func (p PlanFile) Verify() error {
 	return nil
 }
 
-// action is the planned action of the script id.
-func (p PlanFile) action(id string) (scripts.Pending, bool) {
-	index := slices.IndexFunc(p.Actions, func(item scripts.Pending) bool { return item.Script.ID == id })
-	if index < 0 {
-		return scripts.Pending{}, false
-	}
-	return p.Actions[index], true
+// Functions are the functions and built-ins the plan selects scripts by.
+func (p PlanFile) Functions() []scripts.FunctionInput {
+	return scripts.FunctionInputs(p.Actions, p.Ledger)
+}
+
+// action is the planned action of the script id; every script of the bundle
+// has one.
+func (p PlanFile) action(id string) scripts.Pending {
+	return p.Actions[slices.IndexFunc(p.Actions, func(item scripts.Pending) bool { return item.Script.ID == id })]
 }
 
 // moved lists what differs between p and fresh, a plan of the same bundle
@@ -143,6 +145,8 @@ func actionChange(before, after scripts.Pending) string {
 		return "action " + before.Script.ID + " source, policy or inputs changed"
 	case before.State.EffectsHash != after.State.EffectsHash || !slices.Equal(before.EffectsUnknown, after.EffectsUnknown):
 		return "action " + before.Script.ID + " effects changed"
+	case !slices.EqualFunc(before.Reads, after.Reads, func(a, b scripts.PlannedRead) bool { return a.SQL == b.SQL }):
+		return "action " + before.Script.ID + " reads changed"
 	}
 	return ""
 }

@@ -136,7 +136,7 @@ sqlglot migrate review .sqlglot-go/plan.json
 sqlglot migrate apply --dsn connection://inventory-target .sqlglot-go/plan.json
 ```
 
-`plan` prints what will change to stderr, terraform-style: `+ run` for new scripts, `~ re-run` with the reason (for example `upstream-write: dbo.asenv ← PreDeployment_0_AsEnv`), `! blocked`, `? effects unknown`, the schema statements with destructive ones marked, warnings and totals. The plan file's hash only guards its integrity; there is nothing else to approve. If the database changed after the plan, `apply` stops with `plan is stale: <what moved>; run sqlglot migrate plan again` and runs nothing. See the [CLI guide](./cli.md#migrate) for every source and flag.
+`plan` prints what will change to stderr, terraform-style: `+ run` for new scripts, `~ re-run` with the reason (for example `read-changed`, with the query and its answer then and now), `! blocked`, `? effects unknown`, the schema statements with destructive ones marked, warnings and totals. The plan file's hash only guards its integrity; there is nothing else to approve. If the database changed after the plan, `apply` stops with `plan is stale: <what moved>; run sqlglot migrate plan again` and runs nothing. See the [CLI guide](./cli.md#migrate) for every source and flag.
 
 ## If something goes wrong
 

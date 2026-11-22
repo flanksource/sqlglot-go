@@ -15,6 +15,15 @@ type Analysis struct {
 	Blocked            []string                  `json:"blocked,omitempty"`
 	Unresolved         []string                  `json:"unresolved,omitempty"`
 	TransactionControl bool                      `json:"transactionControl,omitempty"`
+	// Dynamic reports SQL known only at run time, whose calls analysis cannot list.
+	Dynamic bool `json:"dynamic,omitempty"`
+	// Environment are the calls whose value depends only on the target, as SQL:
+	// what is tracked is their value, not that of the built-in inside.
+	Environment []string `json:"environment,omitempty"`
+	// Reads are the queries answering what running the body reads, and
+	// UntrackedReads the tables it reads in no such query (see analyzeReads).
+	Reads          []Read       `json:"reads,omitempty"`
+	UntrackedReads []ObjectName `json:"untrackedReads,omitempty"`
 	// Effects is what running the body does (see analyzeEffects); Defines
 	// holds the body effects of each routine a script creates or alters.
 	Effects Effects                `json:"effects"`
@@ -28,7 +37,7 @@ type AnalysisOptions struct {
 
 // AnalysisVersion versions every cached analysis. Bump it whenever the
 // analyser, the batch splitter or canonicalisation changes what it produces.
-const AnalysisVersion = "2"
+const AnalysisVersion = "6"
 
 // CachedAnalysis is what a backend stores for one body: its analysis, the
 // canonical text of a module definition, and the batch error of a script body
@@ -49,6 +58,9 @@ func AnalysisKey(sql string, invokedModule bool) string {
 func Analyze(opts AnalysisOptions) Analysis {
 	a := analyze(opts, 0)
 	a.Effects, a.Defines = analyzeEffects(opts.SQL, opts.InvokedModule)
+	if !opts.InvokedModule {
+		a.Reads, a.UntrackedReads = analyzeReads(opts.SQL)
+	}
 	return a
 }
 
@@ -80,6 +92,14 @@ func analyze(opts AnalysisOptions, depth int) Analysis {
 		}
 		if builtin, ok := e.Builtin("tsql"); ok {
 			a.Builtins = append(a.Builtins, builtin)
+			if slices.Contains(environmentBuiltins, builtin.Name) {
+				expression, err := environmentExpression(e)
+				if err != nil {
+					a.Blocked = append(a.Blocked, err.Error())
+				} else if expression != "" {
+					a.Environment = append(a.Environment, expression)
+				}
+			}
 		} else if e.Class == "Parameter" && e.This() != nil && e.This().Class == "Parameter" && e.This().This() != nil && e.This().This().Class == "Var" {
 			a.Unresolved = append(a.Unresolved, "@@"+e.This().This().Name())
 		}
@@ -113,9 +133,11 @@ func analyze(opts AnalysisOptions, depth int) Analysis {
 				nested := analyze(AnalysisOptions{SQL: child.Name(), InvokedModule: opts.InvokedModule}, depth+1)
 				a.Calls = append(a.Calls, nested.Calls...)
 				a.Builtins = append(a.Builtins, nested.Builtins...)
+				a.Environment = append(a.Environment, nested.Environment...)
 				a.Blocked = append(a.Blocked, nested.Blocked...)
 				a.Unresolved = append(a.Unresolved, nested.Unresolved...)
 				a.TransactionControl = a.TransactionControl || nested.TransactionControl
+				a.Dynamic = a.Dynamic || nested.Dynamic
 			} else if child != nil && child.Class == "Table" {
 				db, _ := child.Args["db"].(*sqlglot.Expression)
 				if db == nil {
@@ -124,13 +146,15 @@ func analyze(opts AnalysisOptions, depth int) Analysis {
 					a.Calls = append(a.Calls, db.Name()+"."+child.Name())
 				}
 			} else {
-				a.Blocked = append(a.Blocked, "EXEC requires explicit runtime dependencies")
+				a.Dynamic = true
 			}
 		}
 		return true
 	})
 	slices.Sort(a.Calls)
 	a.Calls = slices.Compact(a.Calls)
+	slices.Sort(a.Environment)
+	a.Environment = slices.Compact(a.Environment)
 	slices.Sort(a.Unresolved)
 	a.Unresolved = slices.Compact(a.Unresolved)
 	return a

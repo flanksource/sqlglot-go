@@ -1709,7 +1709,7 @@ func (p *parser) parseColumnConstraints() ([]*Expression, error) {
 			// A `>` ends the list too: the fields of a STRUCT are column
 			// definitions, and what closes them is the angle bracket the
 			// type was opened with rather than a parenthesis.
-			if p.curr() != nil && !p.at(TokCOMMA) && !p.at(TokR_PAREN) && !p.at(TokGT) {
+			if !p.atStatementEnd() && !p.at(TokCOMMA) && !p.at(TokR_PAREN) && !p.at(TokGT) {
 				return nil, p.unsupported("a column constraint this port does not read")
 			}
 			return out, nil
@@ -3884,7 +3884,7 @@ func (p *parser) parseIndexRest(replace, unique, temporary bool, kind string, cl
 		return nil, err
 	}
 	index.Set("params", params)
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return nil, p.unsupported("CREATE INDEX with more than this port reads")
 	}
 
@@ -7323,6 +7323,7 @@ func (p *parser) parseTypeRest(start Token, table *Expression, replace bool) (*E
 		return p.parseAsCommand(start), nil
 	}
 	var expression *Expression
+	tableType := false
 	switch {
 	case p.match(TokENUM):
 		expression = New("DataType", Arg{"this", DataTypeKind("ENUM")})
@@ -7350,13 +7351,23 @@ func (p *parser) parseTypeRest(start Token, table *Expression, replace bool) (*E
 		// A Schema with no `this`: the fields belong to the type being made,
 		// which is already named on the statement.
 		expression = New("Schema", Arg{"expressions", columns})
+	// T-SQL's table type, which the reference keeps as text: the columns and
+	// constraints of a table, named by the type.
+	case p.dialect == "tsql" && p.at(TokTABLE) && p.next() != nil && p.next().Type == TokL_PAREN:
+		p.advance()
+		columns, err := p.parseColumnDefs()
+		if err != nil {
+			return nil, err
+		}
+		expression = New("Schema", Arg{"expressions", columns})
+		tableType = true
 	default:
 		return p.parseAsCommand(start), nil
 	}
-	if p.curr() != nil {
+	if !p.atStatementEnd() {
 		return p.parseAsCommand(start), nil
 	}
-	return New("Create",
+	node := New("Create",
 		Arg{"this", table},
 		Arg{"kind", "TYPE"},
 		Arg{"replace", replace},
@@ -7371,7 +7382,11 @@ func (p *parser) parseTypeRest(start Token, table *Expression, replace bool) (*E
 		Arg{"clone", nil},
 		Arg{"concurrently", false},
 		Arg{"clustered", nil},
-	), nil
+	)
+	if tableType {
+		node.Set("tsql_table_type", true)
+	}
+	return node, nil
 }
 
 // parseTypeMember reads one value an ENUM may take. They are strings, and a

@@ -1,6 +1,8 @@
 // Package scripts owns migration source identity, dependencies and consumed fingerprints.
 package scripts
 
+import "strconv"
+
 type Phase string
 
 const (
@@ -50,21 +52,73 @@ type State struct {
 	EffectsHash string            `json:"effectsHash,omitempty"`
 	Hash        string            `json:"hash"`
 	Inputs      map[string]string `json:"inputs"`
-	Outcome     string            `json:"outcome,omitempty"`
-	LastSuccess *State            `json:"lastSuccess,omitempty"`
+	// Values are the values of the function inputs: those of Inputs with a
+	// sampled result, and the built-ins, which only Values tracks. Hash excludes
+	// them, so a row that predates a built-in's tracking never runs again for it.
+	// A script:<id> value identifies the built-ins of that prerequisite.
+	Values map[string]*string `json:"values,omitempty"`
+	// Reads are the answers of the script's reads right after it ran, by
+	// Read.Key. Hash excludes them, as it does Values.
+	Reads       map[string]ReadAnswer `json:"reads,omitempty"`
+	Outcome     string                `json:"outcome,omitempty"`
+	LastSuccess *State                `json:"lastSuccess,omitempty"`
 }
+
+// The kinds of observed input.
+const (
+	KindResult     = "function-result"
+	KindDefinition = "function-definition"
+	KindSchema     = "schema-dependency"
+	// KindBuiltin is a call of server built-ins alone, such as
+	// SUBSTRING(DB_NAME(), 5, 3), tracked by value.
+	KindBuiltin = "builtin"
+)
 
 type Observation struct {
 	Kind  string `json:"kind"`
 	Hash  string `json:"hash"`
 	Error string `json:"error,omitempty"`
+	// Value is the observed value of a result or built-in, nil for NULL.
+	Value *string `json:"value,omitempty"`
 }
 
-// UpstreamWrite is an object a script's dependency closure reaches that an
-// earlier selected script in the same plan writes.
-type UpstreamWrite struct {
-	Object ObjectName `json:"object"`
-	Script string     `json:"script"`
+// ReadAnswer is what a read query answered: Digest identifies its columns and
+// rows in any order, and Value is the value when there is only one.
+type ReadAnswer struct {
+	Digest string  `json:"digest,omitempty"`
+	Rows   int     `json:"rows"`
+	Value  *string `json:"value,omitempty"`
+	Error  string  `json:"error,omitempty"`
+}
+
+func (a ReadAnswer) String() string {
+	switch {
+	case a.Error != "":
+		return a.Error
+	case a.Value != nil:
+		return strconv.Quote(*a.Value)
+	case a.Rows == 1:
+		return "1 row"
+	}
+	return strconv.Itoa(a.Rows) + " rows"
+}
+
+// PlannedRead is a read of a script: what it answered when the script last ran,
+// and now. A read with no recorded answer is not run.
+type PlannedRead struct {
+	Read
+	Recorded *ReadAnswer `json:"recorded,omitempty"`
+	Answer   *ReadAnswer `json:"answer,omitempty"`
+	Changed  bool        `json:"changed,omitempty"`
+}
+
+// Change is a changed read's answer when the script ran, and now.
+func (r PlannedRead) Change() string {
+	before, after := r.Recorded.String(), r.Answer.String()
+	if before == after {
+		after += " with other values"
+	}
+	return before + " → " + after
 }
 
 // AfterApplyInput is an input whose value is known only after Writers, the
@@ -76,13 +130,17 @@ type AfterApplyInput struct {
 }
 
 type Pending struct {
-	Script     Script            `json:"script"`
-	State      State             `json:"state"`
-	Selected   bool              `json:"selected"`
-	Reasons    []string          `json:"reasons,omitempty"`
-	Blocked    []string          `json:"blocked,omitempty"`
-	Upstream   []UpstreamWrite   `json:"upstream,omitempty"`
-	AfterApply []AfterApplyInput `json:"afterApply,omitempty"`
+	Script   Script   `json:"script"`
+	State    State    `json:"state"`
+	Selected bool     `json:"selected"`
+	Reasons  []string `json:"reasons,omitempty"`
+	Blocked  []string `json:"blocked,omitempty"`
+	// Reads are the queries answering what the script reads; one whose answer
+	// changed since its last run selects it. UntrackedReads are the tables it
+	// reads in no query of its own, or through a routine: they never select it.
+	Reads          []PlannedRead     `json:"reads,omitempty"`
+	UntrackedReads []ObjectName      `json:"untrackedReads,omitempty"`
+	AfterApply     []AfterApplyInput `json:"afterApply,omitempty"`
 	// SelfWritten lists the input keys whose observed objects the script's
 	// own writes reach: apply observes exactly these again after the script
 	// runs, since a script must not change its own inputs.
@@ -123,9 +181,13 @@ type PlanOptions struct {
 	// the catalog reaches what that routine reads and calls.
 	Modules map[ObjectName]Effects
 	// SchemaWrites are the declared objects the schema step between the pre
-	// and post scripts changes; a post script reaching one is selected as an
-	// upstream write of SchemaWriter.
+	// and post scripts changes.
 	SchemaWrites []ObjectName
+	// Reads and UntrackedReads are what each script reads, by script ID, and
+	// Answers what the reads with a recorded answer answer now, by SQL.
+	Reads          map[string][]Read
+	UntrackedReads map[string][]ObjectName
+	Answers        map[string]ReadAnswer
 }
 
 // SchemaWriter is the writer the schema step is planned as.

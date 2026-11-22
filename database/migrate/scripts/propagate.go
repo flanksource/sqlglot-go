@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// propagation walks a bundle in order, terraform style: dirty holds every
-// object written by a script selected so far, with its latest writer, so a
-// script whose dependency closure reaches one is selected as well.
+// propagation walks a bundle in order: dirty holds every object written by a
+// script selected so far, with its latest writer, so the inputs of the scripts
+// after it that observe one are known only after apply.
 type propagation struct {
 	modules map[ObjectName]Effects
 	defined map[ObjectName]Effects
@@ -90,14 +90,9 @@ func inputObject(key string) (string, ObjectName) {
 func (p *propagation) visit(item *Pending) {
 	closure := p.closure(seed(item.Script, item.State.Inputs))
 	item.EffectsUnknown = closure.Unknown
-	reached := append(slices.Clone(closure.Reads), closure.Calls...)
-	slices.Sort(reached)
-	for _, object := range slices.Compact(reached) {
-		if writer, ok := p.dirty[object]; ok {
-			item.Reasons = append(item.Reasons, "upstream-write:"+string(object))
-			item.Upstream = append(item.Upstream, UpstreamWrite{Object: object, Script: writer})
-		}
-	}
+	item.UntrackedReads = append(slices.Clone(item.UntrackedReads), p.routineReads(*item)...)
+	slices.Sort(item.UntrackedReads)
+	item.UntrackedReads = slices.Compact(item.UntrackedReads)
 	for _, key := range slices.Sorted(maps.Keys(item.State.Inputs)) {
 		objects := p.observedObjects(key)
 		if writers := p.writersOf(objects); len(writers) > 0 {
@@ -114,6 +109,27 @@ func (p *propagation) visit(item *Pending) {
 	for name, effects := range item.Script.Defines {
 		p.defined[name] = effects.Normalized()
 	}
+}
+
+// routineReads is what the routines item calls read. A function whose result is
+// an input is tracked by it.
+func (p *propagation) routineReads(item Pending) []ObjectName {
+	if item.Script.Effects == nil {
+		return nil
+	}
+	sampled := map[ObjectName]bool{}
+	for key := range item.State.Inputs {
+		if kind, object := inputObject(key); kind == "result" {
+			sampled[object] = true
+		}
+	}
+	var calls []ObjectName
+	for _, call := range item.Script.Effects.Calls {
+		if !sampled[call] {
+			calls = append(calls, call)
+		}
+	}
+	return p.closure(Effects{Calls: calls}).Reads
 }
 
 // write marks objects as written by writer for every script after it.

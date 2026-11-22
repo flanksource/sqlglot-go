@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
@@ -106,6 +107,11 @@ func expectLock(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery("sp_getapplock").WillReturnRows(sqlmock.NewRows([]string{"code"}).AddRow(0))
 }
 
+// expectSessionCheck expects the check that the session survived a failure.
+func expectSessionCheck(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("IF @").WillReturnResult(sqlmock.NewResult(0, 0))
+}
+
 func expectRelease(mock sqlmock.Sqlmock) {
 	mock.ExpectExec("sp_releaseapplock").WillReturnResult(sqlmock.NewResult(0, 0))
 }
@@ -120,6 +126,11 @@ func expectStore(mock sqlmock.Sqlmock) {
 // dynamicSQL runs SQL held in a variable, whose effects analysis cannot know.
 const dynamicSQL = "DECLARE @sql nvarchar(max) = N'SELECT 1'; EXEC sp_executesql @sql;"
 
+const (
+	dynamicUnknownWarning = "script w has unknown effects (line 1: unsupported SQL statement: dynamic SQL); apply re-inspects the plan after it runs"
+	ownTransactionWarning = "script PostDeployment_W (w) controls its own transaction inside the migration's: if it ends that transaction, or leaves one open, it is commit-unknown and blocked until reconciled"
+)
+
 func reasonsOf(file PlanFile) map[string][]string {
 	reasons := map[string][]string{}
 	for _, item := range file.Actions {
@@ -133,11 +144,15 @@ var _ = Describe("Plan file apply", func() {
 	var opts Options
 	var mock sqlmock.Sqlmock
 	var db *sql.DB
-	BeforeEach(func() {
+	// connect replaces the connection, which one Apply uses up.
+	connect := func() {
 		conn, m, err := sqlmock.New()
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(m.ExpectationsWereMet()).To(Succeed()) })
-		db, mock = conn, m
+		db, mock, opts.DB = conn, m, conn
+	}
+	BeforeEach(func() {
+		connect()
 		// w rewrites dbo.AsEnv; the catalog's dbo.country reads it; s, t and
 		// v call dbo.country. Their effects come from analysing their SQL.
 		opts = Options{DB: db, Scope: "bundle", Functions: []Function{{Name: "dbo.country", Type: "nvarchar"}}, Scripts: []scripts.Script{
@@ -170,15 +185,15 @@ var _ = Describe("Plan file apply", func() {
 		return func() { expectCountryLevel(mock); expectProbe(mock, value) }
 	}
 
-	It("re-runs every caller of a function an upstream script writes, re-probing it once after the writer and never inside the callers' transactions", func(ctx SpecContext) {
-		ledger := baseline()
+	It("re-probes a function an upstream script writes once after the writer, and never inside its callers' transactions", func(ctx SpecContext) {
+		zimbabwe := baseline()["s"].Inputs["result:dbo.country"]
+		ledger := map[string]scripts.State{"w": baseline()["w"]}
 		file := planned(ledger, "ZW")
-		upstream := []string{"upstream-write:dbo.asenv"}
-		Expect(reasonsOf(file)).To(Equal(map[string][]string{"w": {"source-changed"}, "s": upstream, "t": upstream, "v": upstream}))
+		Expect(reasonsOf(file)).To(Equal(map[string][]string{"w": {"source-changed"}, "s": {"new"}, "t": {"new"}, "v": {"new"}}))
 		Expect(file.Pretty().String()).To(SatisfyAll(
-			ContainSubstring("~ re-run   s  upstream-write: dbo.asenv ← PreDeployment_0_AsEnv"),
+			ContainSubstring("+ run      s  new"),
 			ContainSubstring("~ re-run   w  source-changed"),
-			ContainSubstring("Plan: 0 to run, 4 to re-run, 0 blocked, 0 unchanged."),
+			ContainSubstring("Plan: 3 to run, 1 to re-run, 0 blocked, 0 unchanged."),
 		))
 
 		var recorded []scripts.State
@@ -198,10 +213,134 @@ var _ = Describe("Plan file apply", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"w", "s", "t", "v"}}))
 		malawi := recorded[1].Inputs["result:dbo.country"]
-		Expect(malawi).NotTo(Equal(ledger["s"].Inputs["result:dbo.country"]), "s records the country re-probed after w")
+		Expect(malawi).NotTo(Equal(zimbabwe), "s records the country re-probed after w")
 		Expect([]string{recorded[2].Inputs["result:dbo.country"], recorded[3].Inputs["result:dbo.country"]}).To(Equal([]string{malawi, malawi}))
 		Expect(recorded[1].Hash).To(Equal(scripts.StateHash(recorded[1])))
+		Expect(recorded[1].Values).To(HaveKeyWithValue("result:dbo.country", HaveValue(Equal("MW"))), "s records the value it ran with, not the planned one")
 	})
+
+	It("leaves to the next plan the callers of a function an upstream script changes", func(ctx SpecContext) {
+		ledger := baseline()
+		file := planned(ledger, "ZW")
+		Expect(file.Selected()).To(Equal([]string{"w"}))
+		var recorded []scripts.State
+		expectLock(mock)
+		expectInspection(mock, opts.Scope, ledger, "ZW")
+		expectStore(mock)
+		expectTransaction(mock, opts.Scope, "w", "UPDATE dbo.AsEnv", &recorded, none, none)
+		expectRelease(mock)
+
+		result, err := Apply(ctx, db, file)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"w"}}))
+		ledger["w"] = recorded[0]
+		connect()
+		next := planned(ledger, "MW")
+		Expect(reasonsOf(next)).To(Equal(map[string][]string{"w": nil, "s": {"function-result-changed"}, "t": {"function-result-changed"}, "v": {"function-result-changed"}}))
+	})
+
+	Describe("the reads of a script", func() {
+		const condition = "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM dbo.AsCode WHERE CodeName='A') THEN 1 ELSE 0 END"
+		batch := regexp.QuoteMeta("SET NOCOUNT ON;\nSELECT 0 AS sqlglot_read;\nBEGIN TRY EXEC sys.sp_executesql N'" +
+			"SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM dbo.AsCode WHERE CodeName=''A'') THEN 1 ELSE 0 END' END TRY BEGIN CATCH SELECT ERROR_MESSAGE() AS sqlglot_error END CATCH;")
+		answered := func(column string, value any) {
+			mock.ExpectQuery(batch).WillReturnRows(sqlmock.NewRows([]string{"sqlglot_read"}).AddRow(0), sqlmock.NewRows([]string{column}).AddRow(value))
+		}
+		plan := func(states map[string]scripts.State, answer func()) PlanFile {
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, states)
+			answer()
+			file, err := Plan(GinkgoT().Context(), opts)
+			Expect(err).NotTo(HaveOccurred())
+			return file
+		}
+		// ran is the state r records once it ran and its read answered.
+		ran := func(answer func()) scripts.State {
+			opts.Functions = nil
+			opts.Scripts = []scripts.Script{{ID: "r", SQL: "IF NOT EXISTS (SELECT 1 FROM dbo.AsCode WHERE CodeName='A')\nINSERT dbo.AsCode VALUES ('A')", Phase: scripts.Post}}
+			file := plan(nil, none)
+			Expect(file.Actions[0].Reads).To(Equal([]scripts.PlannedRead{{Read: scripts.Read{SQL: condition, Objects: []scripts.ObjectName{scripts.NewObjectName("dbo", "AsCode")}}}}))
+			var recorded []scripts.State
+			expectLock(mock)
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			expectStore(mock)
+			expectRun(mock, opts.Scope, "r", "IF NOT EXISTS", none, none)
+			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+			answer()
+			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "r", sqlmock.AnyArg(), recordedState{&recorded}).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WillReturnResult(sqlmock.NewResult(0, 1))
+			expectRelease(mock)
+			result, err := Apply(GinkgoT().Context(), db, file)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Outcome).To(Equal("applied"))
+			connect()
+			return recorded[0]
+		}
+
+		DescribeTable("select it when they answer differently than after it ran, showing both answers in the plan",
+			func(column string, value any, reasons []string, want func() *scripts.ReadAnswer, shown string) {
+				ledger := map[string]scripts.State{"r": ran(func() { answered("", int64(0)) })}
+				file := plan(ledger, func() { answered(column, value) })
+
+				Expect(file.Actions[0].Reasons).To(Equal(reasons))
+				Expect(file.Actions[0].Reads[0].Recorded).To(HaveField("Value", HaveValue(Equal("0"))))
+				Expect(file.Actions[0].Reads[0].Answer).To(HaveField("Value", want().Value))
+				Expect(file.Actions[0].Reads[0].Answer.Error).To(Equal(want().Error))
+				Expect(file.Pretty().String()).To(ContainSubstring(shown))
+				Expect(file.Verify()).To(Succeed())
+			},
+			Entry("the same answer", "", int64(0), nil, func() *scripts.ReadAnswer { return &scripts.ReadAnswer{Value: new("0")} }, "0 to re-run, 0 blocked, 1 unchanged"),
+			Entry("another answer", "", int64(1), []string{"read-changed"}, func() *scripts.ReadAnswer { return &scripts.ReadAnswer{Value: new("1")} }, `~ reads `+condition+`  "0" → "1"`),
+			Entry("an error", "sqlglot_error", "Invalid object name 'dbo.AsCode'.", nil, func() *scripts.ReadAnswer { return &scripts.ReadAnswer{Error: "Invalid object name 'dbo.AsCode'."} }, "1 unchanged"),
+		)
+
+		It("fail the plan when the batch answering them stops early", func(ctx SpecContext) {
+			ledger := map[string]scripts.State{"r": ran(func() { answered("", int64(0)) })}
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, ledger)
+			mock.ExpectQuery(batch).WillReturnRows(sqlmock.NewRows([]string{"sqlglot_read"}).AddRow(0))
+			_, err := Plan(ctx, opts)
+			Expect(err).To(MatchError("answer what the scripts read: read 0 answered no result set"))
+		})
+
+		It("are not compared again once one could not be answered after its run", func() {
+			ledger := map[string]scripts.State{"r": ran(func() { answered("sqlglot_error", "Permission denied") })}
+			Expect(plan(ledger, none).Selected()).To(BeEmpty())
+		})
+	})
+
+	DescribeTable("re-runs a script reading the environment only when the call's value changes",
+		func(ctx SpecContext, database, country string, reasons []string, shown string) {
+			opts.Functions = nil
+			opts.Scripts = []scripts.Script{
+				{ID: "country", SQL: "IF (SELECT SUBSTRING((SELECT DB_NAME()),5,3)) = N'ZIM' UPDATE dbo.AsEnv SET Country=N'ZW'", Phase: scripts.Post},
+				{ID: "other", SQL: "UPDATE dbo.AsCode SET CodeValue=N'1'", Phase: scripts.Post},
+			}
+			plan := func(database, country string, states map[string]scripts.State) PlanFile {
+				mock.ExpectQuery("SELECT CONVERT").WillReturnRows(sqlmock.NewRows([]string{"server", "database"}).AddRow("example", database))
+				expectLedger(mock, opts.Scope, states)
+				mock.ExpectQuery(regexp.QuoteMeta("SELECT CONVERT(nvarchar(4000), SUBSTRING(DB_NAME(), 5, 3))")).
+					WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(country))
+				file, err := Plan(ctx, opts)
+				Expect(err).NotTo(HaveOccurred())
+				return file
+			}
+			states := map[string]scripts.State{}
+			for _, item := range plan("LAB_ZIM_OIPA_QA", "ZIM", nil).Actions {
+				states[item.Script.ID] = item.State
+			}
+
+			file := plan(database, country, states)
+
+			Expect(reasonsOf(file)).To(Equal(map[string][]string{"country": reasons, "other": nil}))
+			Expect(file.Pretty().String()).To(ContainSubstring(shown))
+		},
+		Entry("another database, the same value", "LAB_ZIM_OIPA_UAT", "ZIM", nil, `= SUBSTRING(DB_NAME(), 5, 3) = "ZIM"  used by 1`),
+		Entry("another value", "LAB_MWI_OIPA_QA", "MWI", []string{"builtin-changed"}, `~ SUBSTRING(DB_NAME(), 5, 3) = "MWI" (was "ZIM")  used by 1, changed for 1`),
+	)
 
 	DescribeTable("refuses a plan the target moved away from before anything runs",
 		func(ctx SpecContext, move func(ledger map[string]scripts.State) (map[string]scripts.State, string), moved string) {
@@ -269,12 +408,119 @@ var _ = Describe("Plan file apply", func() {
 		mock.ExpectRollback()
 		mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, "self", sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "self", sqlmock.AnyArg(), "failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		expectSessionCheck(mock)
 		expectRelease(mock)
 
 		result, err := Apply(ctx, db, file)
 
-		Expect(err).To(MatchError("script self dependency drift: observed inputs changed (result:dbo.country)"))
-		Expect(result).To(Equal(Result{Outcome: "failed", Applied: []string{}}))
+		const drift = "script self dependency drift: observed inputs changed (result:dbo.country)"
+		Expect(err).To(MatchError(drift))
+		Expect(result).To(Equal(Result{Outcome: "failed", Applied: []string{}, Failed: []ScriptFailure{{Script: "self", Outcome: "failed", Error: drift}}}))
+	})
+
+	Describe("a script that fails", func() {
+		const violation = "Violation of PRIMARY KEY constraint 'PK_ASCODE'"
+		// expectFailure expects id's body to fail and its failure to be recorded.
+		expectFailure := func(id, body string) {
+			expectLedger(mock, opts.Scope, nil)
+			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectBegin()
+			mock.ExpectExec("SET LOCK_TIMEOUT").WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectExec(regexp.QuoteMeta(body)).WillReturnError(errors.New(violation))
+			mock.ExpectRollback()
+			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WithArgs(opts.Scope, id, sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, id, sqlmock.AnyArg(), "failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		}
+		insert := func(id string) string { return "INSERT dbo.AsCode VALUES (N'" + id + "')" }
+		failedWith := func(id string) ScriptFailure {
+			return ScriptFailure{Script: id, Outcome: "failed", Error: "script " + id + " batch 1: " + violation}
+		}
+		start := func(bundle ...scripts.Script) PlanFile {
+			opts.Functions, opts.Scripts = nil, bundle
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			file, err := Plan(GinkgoT().Context(), opts)
+			Expect(err).NotTo(HaveOccurred())
+			expectLock(mock)
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			expectStore(mock)
+			return file
+		}
+
+		It("skips only the scripts that depend on it, reporting each, and runs the rest", func(ctx SpecContext) {
+			file := start(
+				scripts.Script{ID: "a", Phase: scripts.Post, SQL: insert("a")},
+				scripts.Script{ID: "b", Phase: scripts.Post, SQL: insert("b"), DependsOn: []string{"a"}},
+				scripts.Script{ID: "c", Phase: scripts.Post, SQL: insert("c"), DependsOn: []string{"b"}},
+				scripts.Script{ID: "d", Phase: scripts.Post, SQL: "UPDATE dbo.AsCode SET Seen=(SELECT COUNT(*) FROM dbo.AsCode)"},
+			)
+			d := file.action("d")
+			var recorded []scripts.State
+			expectFailure("a", insert("a"))
+			expectSessionCheck(mock)
+			expectTransaction(mock, opts.Scope, "d", "UPDATE dbo.AsCode", &recorded, none, none)
+			expectRelease(mock)
+
+			var skipped []error
+			result, err := Apply(ctx, db, file, WithProgress(func(p Progress) {
+				var dependency *DependencyError
+				if errors.As(p.Err, &dependency) {
+					skipped = append(skipped, dependency)
+				}
+			}))
+
+			Expect(d.UntrackedReads).To(Equal([]scripts.ObjectName{scripts.NewObjectName("dbo", "AsCode")}), "reading a table a failed script writes is no dependency")
+			Expect(err).To(MatchError(failedWith("a").Error))
+			Expect(result).To(Equal(Result{Outcome: "failed", Applied: []string{"d"}, Failed: []ScriptFailure{failedWith("a")},
+				Skipped: []SkippedScript{{Script: "b", Dependency: "a"}, {Script: "c", Dependency: "b"}}}))
+			Expect(skipped).To(HaveExactElements(MatchError("script b was not run: it depends on a, which failed or was skipped"), HaveOccurred()))
+		})
+
+		It("returns every failure", func(ctx SpecContext) {
+			file := start(scripts.Script{ID: "a", Phase: scripts.Post, SQL: insert("a")}, scripts.Script{ID: "b", Phase: scripts.Post, SQL: insert("b")})
+			for _, id := range []string{"a", "b"} {
+				expectFailure(id, insert(id))
+				expectSessionCheck(mock)
+			}
+			expectRelease(mock)
+
+			result, err := Apply(ctx, db, file)
+
+			Expect(err).To(MatchError(SatisfyAll(ContainSubstring(failedWith("a").Error), ContainSubstring(failedWith("b").Error))))
+			Expect(result.Failed).To(Equal([]ScriptFailure{failedWith("a"), failedWith("b")}))
+		})
+
+		It("stops the apply when the session did not survive it", func(ctx SpecContext) {
+			file := start(scripts.Script{ID: "a", Phase: scripts.Post, SQL: insert("a")}, scripts.Script{ID: "b", Phase: scripts.Post, SQL: insert("b")})
+			expectFailure("a", insert("a"))
+			mock.ExpectExec("IF @@TRANCOUNT").WillReturnError(errors.New("connection reset"))
+			expectRelease(mock)
+
+			result, err := Apply(ctx, db, file)
+
+			Expect(err).To(MatchError(ContainSubstring("the session did not survive script a: connection reset")))
+			Expect(result.Failed).To(Equal([]ScriptFailure{failedWith("a")}))
+			Expect(result.Applied).To(BeEmpty())
+		})
+
+		It("runs the other pre scripts but never the barrier after a pre script failed", func(ctx SpecContext) {
+			file := start(scripts.Script{ID: "a", Phase: scripts.Pre, SQL: insert("a")}, scripts.Script{ID: "b", Phase: scripts.Pre, SQL: insert("b")},
+				scripts.Script{ID: "c", Phase: scripts.Post, SQL: insert("c")})
+			var recorded []scripts.State
+			expectFailure("a", insert("a"))
+			expectSessionCheck(mock)
+			expectTransaction(mock, opts.Scope, "b", insert("b"), &recorded, none, none)
+			expectRelease(mock)
+
+			result, err := Apply(ctx, db, file, WithBarrier(func(context.Context, Connection) error {
+				Fail("the barrier ran after a pre script failed")
+				return nil
+			}))
+
+			Expect(err).To(MatchError(failedWith("a").Error))
+			Expect(result.Applied).To(Equal([]string{"b"}))
+		})
 	})
 
 	It("re-plans after a script with unknown effects and observes every input of the scripts after it", func(ctx SpecContext) {
@@ -295,13 +541,20 @@ var _ = Describe("Plan file apply", func() {
 		expectTransaction(mock, opts.Scope, "s", "SELECT dbo.country() AS s", &recorded, probeCountry("ZW"), probeCountry("ZW"))
 		expectRelease(mock)
 
-		result, err := Apply(ctx, db, file)
+		var seen []Progress
+		result, err := Apply(ctx, db, file, WithProgress(func(p Progress) { seen = append(seen, p) }))
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"dynamic", "s"}}))
+		Expect(seen).To(Equal([]Progress{
+			{Step: ProgressCheck}, {Step: ProgressCheck, Done: true},
+			{Step: ProgressScript, Script: "dynamic"}, {Step: ProgressScript, Script: "dynamic", Done: true},
+			{Step: ProgressCheck, Script: "dynamic"}, {Step: ProgressCheck, Script: "dynamic", Done: true},
+			{Step: ProgressScript, Script: "s"}, {Step: ProgressScript, Script: "s", Done: true},
+		}))
 	})
 
-	It("stops as stale after a script with unknown effects whose re-plan selects work the file did not", func(ctx SpecContext) {
+	It("stops as stale after a script with unknown effects whose re-plan blocks a script the file did not", func(ctx SpecContext) {
 		opts.Functions = nil
 		opts.Scripts = []scripts.Script{
 			{ID: "dynamic", SQL: dynamicSQL, Phase: scripts.Pre},
@@ -315,25 +568,24 @@ var _ = Describe("Plan file apply", func() {
 		inspect(nil)
 		first, err := Plan(ctx, opts)
 		Expect(err).NotTo(HaveOccurred())
-		late := map[string]scripts.State{"late": first.Actions[2].State}
-		inspect(late)
+		late := first.Actions[2].State
+		late.Outcome = "partial"
+		inspect(nil)
 		file, err := Plan(ctx, opts)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(file.Warnings).To(HaveLen(1))
 
 		var recorded []scripts.State
 		expectLock(mock)
-		inspect(late)
+		inspect(nil)
 		expectStore(mock)
 		expectTransaction(mock, opts.Scope, "dynamic", "EXEC sp_executesql", &recorded, none, none)
-		// The re-plan finds late's record gone, so late is new work the file
-		// never selected.
-		inspect(nil)
+		inspect(map[string]scripts.State{"late": late})
 		expectRelease(mock)
 
 		result, err := Apply(ctx, db, file)
 
-		Expect(err).To(MatchError("plan is stale: script dynamic with unknown effects changed the plan; late now runs for new; run sqlglot migrate plan again"))
+		Expect(err).To(MatchError("plan is stale: script dynamic with unknown effects changed the plan; late is now blocked by reconciliation required: partial; run sqlglot migrate plan again"))
 		Expect(result).To(Equal(Result{Outcome: "stale", Applied: []string{"dynamic"}}))
 	})
 
@@ -362,8 +614,11 @@ var _ = Describe("Plan file apply", func() {
 	It("runs a nontransactional caller of a function without observing it again, warning in the plan", func(ctx SpecContext) {
 		opts.Scripts = opts.Scripts[1:2]
 		opts.Scripts[0].NonTransactional = true
+		const bundleWarning = "script t is left out of the bundle"
+		opts.Warnings = []string{bundleWarning}
 		file := planned(nil, "ZW")
-		Expect(file.Warnings).To(Equal([]string{"script s runs outside a transaction: a failure leaves it partial, blocked until reconciled"}))
+		Expect(file.Warnings).To(Equal([]string{bundleWarning, "script s runs outside a transaction: a failure leaves it partial, blocked until reconciled"}))
+		Expect(file.Verify()).To(Succeed())
 
 		var recorded []scripts.State
 		expectLock(mock)
@@ -382,6 +637,89 @@ var _ = Describe("Plan file apply", func() {
 		Expect(result).To(Equal(Result{Outcome: "applied", Applied: []string{"s"}}))
 		Expect(recorded[0].Inputs).To(Equal(file.Actions[0].State.Inputs))
 	})
+
+	DescribeTable("selects a script it can only warn about, naming it",
+		func(script scripts.Script, warnings ...string) {
+			script.ID, script.Name, script.Phase = "w", "PostDeployment_W", scripts.Post
+			opts.Scripts = []scripts.Script{script}
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			expectCountryLevel(mock)
+
+			file, err := Plan(GinkgoT().Context(), opts)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect([]any{file.Selected(), file.Actions[0].Blocked}).To(Equal([]any{[]string{"w"}, []string(nil)}))
+			Expect(file.Warnings).To(Equal(warnings))
+		},
+		Entry("it controls its own transaction", scripts.Script{SQL: "BEGIN TRANSACTION\nUPDATE dbo.AsFund SET Code = 'x'\nCOMMIT"}, ownTransactionWarning),
+		Entry("it is not transactional", scripts.Script{SQL: "BEGIN TRANSACTION\nUPDATE dbo.AsFund SET Code = 'x'\nCOMMIT", NonTransactional: true},
+			"script w runs outside a transaction: a failure leaves it partial, blocked until reconciled"),
+		Entry("it runs dynamic SQL", scripts.Script{SQL: dynamicSQL}, dynamicUnknownWarning,
+			"script PostDeployment_W (w) runs dynamic SQL: what it reads is not tracked, so a change to it does not run the script again"),
+		Entry("it runs dynamic SQL whose dependencies are declared", scripts.Script{SQL: dynamicSQL, ExplicitDependencies: true}, dynamicUnknownWarning),
+	)
+
+	It("leaves a blocked script out of the warnings", func(ctx SpecContext) {
+		opts.Scripts = []scripts.Script{{ID: "w", Phase: scripts.Post, SQL: "BEGIN TRANSACTION\nSELECT dbo.retired()\nCOMMIT"}}
+		expectIdentity(mock)
+		expectLedger(mock, opts.Scope, nil)
+		expectLevel(mock, []string{"dbo.country", "dbo.retired"}, function("dbo.country", "N'ZW'"))
+
+		file, err := Plan(ctx, opts)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(file.Actions[0].Blocked).NotTo(BeEmpty())
+		Expect(file.Warnings).To(BeEmpty())
+	})
+
+	DescribeTable("runs a script whose own transaction spans batches",
+		func(ctx SpecContext, committed bool, counts ...int) {
+			opts.Functions = nil
+			opts.Scripts = []scripts.Script{{ID: "w", Phase: scripts.Post, SQL: "BEGIN TRANSACTION\nGO\nCOMMIT"}}
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			file, err := Plan(ctx, opts)
+			Expect(err).NotTo(HaveOccurred())
+
+			expectLock(mock)
+			expectIdentity(mock)
+			expectLedger(mock, opts.Scope, nil)
+			expectStore(mock)
+			expectLedger(mock, opts.Scope, nil)
+			mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectBegin()
+			mock.ExpectExec("SET LOCK_TIMEOUT").WillReturnResult(sqlmock.NewResult(0, 0))
+			for i, batch := range []string{"BEGIN TRANSACTION", "COMMIT"} {
+				mock.ExpectExec(batch).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT @@TRANCOUNT`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(counts[i]))
+			}
+			if committed {
+				mock.ExpectExec("MERGE dbo.sqlglot_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+				mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "w", sqlmock.AnyArg(), "applied", "").WillReturnResult(sqlmock.NewResult(0, 1))
+			} else {
+				mock.ExpectRollback()
+				mock.ExpectExec("INSERT INTO dbo.sqlglot_migration_attempts").WithArgs(opts.Scope, "w", sqlmock.AnyArg(), "commit-unknown", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+				expectSessionCheck(mock)
+			}
+			expectRelease(mock)
+
+			var last Progress
+			result, err := Apply(ctx, db, file, WithProgress(func(p Progress) { last = p }))
+
+			Expect([]any{last.Step, last.Script, last.Done, last.Err == nil}).To(Equal([]any{ProgressScript, "w", true, committed}))
+			if committed {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Applied).To(Equal([]string{"w"}))
+			} else {
+				Expect(err).To(MatchError(ContainSubstring("script changed the migration transaction count to 2")))
+				Expect(result.Applied).To(BeEmpty())
+			}
+		},
+		Entry("committing what it began", true, 2, 1),
+		Entry("refusing one it leaves open", false, 2, 2),
+	)
 
 	It("selects a legacy content-only ledger row whose script now observes an input", func(ctx SpecContext) {
 		opts.Scripts = opts.Scripts[1:2]

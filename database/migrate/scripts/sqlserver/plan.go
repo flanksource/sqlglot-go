@@ -99,8 +99,9 @@ func (opts Options) prepareScript(s *scripts.Script, contextPolicy string) {
 // Plan observes the target once, without creating metadata or running
 // anything, and returns the plan file Apply runs: every script of the bundle,
 // pre scripts before post scripts, planned in one pass, and the schema step
-// between them. A script reaching what an earlier selected script, or the
-// schema step, writes is selected as an upstream write.
+// between them. What runs is decided here and nowhere else: a script is selected
+// for its own source, inputs and reads as they are now, never for what an
+// earlier script in the plan will write.
 func Plan(ctx context.Context, opts Options) (PlanFile, error) {
 	for _, s := range opts.Scripts {
 		if s.Effects != nil || len(s.Defines) > 0 {
@@ -130,7 +131,8 @@ func plan(ctx context.Context, q queryer, opts Options) (PlanFile, error) {
 		Target: PlanTarget{Server: target.server, Database: target.database, Scope: opts.Scope},
 		Bundle: PlanBundle{Scripts: opts.Scripts, Functions: opts.Functions, Schema: opts.Schema}}
 	built, err := scripts.Build(scripts.PlanOptions{Target: file.Target.String(), Scripts: opts.Scripts, Recorded: target.states,
-		Observations: target.observations, Modules: target.modules, SchemaWrites: opts.Schema.writes()})
+		Observations: target.observations, Modules: target.modules, SchemaWrites: opts.Schema.writes(),
+		Reads: target.reads, UntrackedReads: target.untracked, Answers: target.answers})
 	if err != nil {
 		return PlanFile{}, err
 	}
@@ -140,7 +142,7 @@ func plan(ctx context.Context, q queryer, opts Options) (PlanFile, error) {
 			return PlanFile{}, err
 		}
 	}
-	file.Warnings = append(built.Warnings, planWarnings(file)...)
+	file.Warnings = slices.Concat(opts.Warnings, built.Warnings, planWarnings(file, target.warnings))
 	return file.seal()
 }
 
@@ -158,12 +160,17 @@ func observedInputs(actions []scripts.Pending) map[string]string {
 	return values
 }
 
-func planWarnings(file PlanFile) []string {
+// planWarnings warns about each selected script; observed are the warnings its
+// observation found, by script ID.
+func planWarnings(file PlanFile, observed map[string][]string) []string {
 	var out []string
 	declared := file.Bundle.Schema.writes()
 	for _, item := range file.Actions {
 		if !item.Selected {
 			continue
+		}
+		for _, warning := range observed[item.Script.ID] {
+			out = append(out, fmt.Sprintf("script %s (%s) %s", item.Script.Name, item.Script.ID, warning))
 		}
 		if item.Script.NonTransactional {
 			out = append(out, fmt.Sprintf("script %s runs outside a transaction: a failure leaves it partial, blocked until reconciled", item.Script.ID))
@@ -181,12 +188,16 @@ func planWarnings(file PlanFile) []string {
 }
 
 // observedTarget is what one observation read from the target: its identity,
-// the ledger of the scope and every script's observed inputs.
+// the ledger of the scope and every script's observed inputs and warnings.
 type observedTarget struct {
 	server, database string
 	states           map[string]scripts.State
 	observations     map[string]map[string]scripts.Observation
+	warnings         map[string][]string
 	modules          map[scripts.ObjectName]scripts.Effects
+	reads            map[string][]scripts.Read
+	untracked        map[string][]scripts.ObjectName
+	answers          map[string]scripts.ReadAnswer
 }
 
 func observeTarget(ctx context.Context, q queryer, opts Options) (observedTarget, error) {
@@ -199,6 +210,7 @@ func observeTarget(ctx context.Context, q queryer, opts Options) (observedTarget
 		return t, err
 	}
 	t.observations = map[string]map[string]scripts.Observation{}
+	t.warnings = map[string][]string{}
 	epoch := newObservationEpoch(q)
 	var modules []string
 	for _, s := range opts.Scripts {
@@ -208,10 +220,19 @@ func observeTarget(ctx context.Context, q queryer, opts Options) (observedTarget
 		return t, err
 	}
 	for _, s := range opts.Scripts {
-		t.observations[s.ID] = opts.observe(ctx, epoch, s)
+		o := opts.observe(ctx, epoch, s)
+		t.observations[s.ID], t.warnings[s.ID] = o.inputs, o.warnings
+		for _, expression := range o.environment {
+			o.inputs[scripts.KindBuiltin+":"+expression] = epoch.observeEnvironment(ctx, expression)
+		}
 	}
 	t.modules = epoch.moduleEffects()
-	return t, nil
+	t.reads, t.untracked = map[string][]scripts.Read{}, map[string][]scripts.ObjectName{}
+	for id, analysis := range opts.analysis {
+		t.reads[id], t.untracked[id] = analysis.Reads, analysis.UntrackedReads
+	}
+	t.answers, err = answerReads(ctx, q, opts.comparableReads(t.states))
+	return t, err
 }
 
 func readIdentity(ctx context.Context, q queryer) (server, database string, err error) {
