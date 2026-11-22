@@ -143,7 +143,7 @@ func (o *observer) readSchema(ctx context.Context, name string) (string, scripts
 	if err != nil {
 		return "", scripts.Observation{}, err
 	}
-	return "schema:" + name, scripts.Observation{Kind: "schema-dependency", Hash: scripts.SourceHash(string(value))}, nil
+	return "schema:" + name, scripts.Observation{Kind: scripts.KindSchema, Hash: scripts.SourceHash(string(value))}, nil
 }
 
 // readSnapshot reads the tables of scope; a scope naming no visible table

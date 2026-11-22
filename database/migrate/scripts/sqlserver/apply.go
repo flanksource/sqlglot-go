@@ -13,14 +13,18 @@ import (
 )
 
 type Result struct {
-	// Outcome is applied, already-applied, stale, failed, or the outcome of the
-	// script that failed (partial or commit-unknown).
+	// Outcome is applied, already-applied, stale, or the worst outcome of the
+	// scripts that failed (failed, partial or commit-unknown).
 	Outcome string   `json:"outcome"`
 	Applied []string `json:"applied"`
 	// Schema is applied when the schema step ran statements.
 	Schema string `json:"schema,omitempty"`
 	// Blocked lists the scripts the plan left blocked.
 	Blocked []string `json:"blocked,omitempty"`
+	// Failed are the scripts that failed; Skipped the selected ones that did
+	// not run because of them.
+	Failed  []ScriptFailure `json:"failed,omitempty"`
+	Skipped []SkippedScript `json:"skipped,omitempty"`
 }
 
 // Apply runs file on db: it verifies the file's integrity and target, re-plans
@@ -32,7 +36,10 @@ type Result struct {
 // that writer; every other input holds its planned value. A script with
 // unknown effects is followed by a re-plan, and work the file did not plan
 // stops the apply with a StalePlanError: the scripts it already committed stay
-// recorded, and a new plan covers the rest.
+// recorded, and a new plan covers the rest. A script that fails does not stop
+// the apply: the scripts that directly depend on it are skipped, the rest run,
+// and Apply returns every failure. It does stop when the session is lost
+// and, after a pre script failed, before the schema step or a barrier.
 func Apply(ctx context.Context, db *sql.DB, file PlanFile, options ...ApplyOption) (result Result, returnErr error) {
 	result = Result{Outcome: "failed", Applied: []string{}}
 	cfg := resolveApply(options)
@@ -55,13 +62,13 @@ func Apply(ctx context.Context, db *sql.DB, file PlanFile, options ...ApplyOptio
 
 func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Result, error) {
 	result := Result{Outcome: "failed", Applied: []string{}}
-	if _, err := s.verified(ctx, file); err != nil {
+	if err := cfg.report(ProgressCheck, "", func() error { _, err := s.verified(ctx, file); return err }); err != nil {
 		return result, err
 	}
 	if err := s.absorb(ctx); err != nil {
 		return result, err
 	}
-	run := applyRun{s: s, file: file, stale: map[string]bool{}, recorded: map[string]string{}}
+	run := applyRun{s: s, file: file, cfg: cfg, stale: map[string]bool{}, recorded: map[string]string{}, unmet: map[string]bool{}, values: map[string]*string{}}
 	for _, item := range file.Actions {
 		if len(item.Blocked) > 0 {
 			result.Blocked = append(result.Blocked, item.Script.ID)
@@ -79,6 +86,9 @@ func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Re
 	if err := run.phase(ctx, &result, scripts.Pre); err != nil {
 		return result, err
 	}
+	if len(run.failures) > 0 && (cfg.barrier != nil || file.Bundle.Schema != nil) {
+		return result, errors.Join(run.failures...)
+	}
 	if err := run.schema(ctx, &result); err != nil {
 		return result, err
 	}
@@ -89,6 +99,9 @@ func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Re
 	}
 	if err := run.phase(ctx, &result, scripts.Post); err != nil {
 		return result, err
+	}
+	if len(run.failures) > 0 {
+		return result, errors.Join(run.failures...)
 	}
 	result.Outcome = "applied"
 	if len(result.Applied) == 0 && result.Schema == "" {
@@ -101,15 +114,21 @@ func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Re
 type applyRun struct {
 	s        *session
 	file     PlanFile
+	cfg      applyConfig
 	snapshot observationSnapshot
 	// stale holds the after-apply inputs a writer has changed since they
 	// were last observed.
 	stale map[string]bool
 	// recorded is the ledger hash each script applied in this run recorded.
 	recorded map[string]string
+	// values are the function values re-observed in this run, by input key.
+	values map[string]*string
 	// unverified is set once a script with unknown effects ran: the snapshot
 	// no longer predicts the inputs of the scripts after it.
 	unverified bool
+	// unmet are the scripts that failed, or were skipped after one that did.
+	unmet    map[string]bool
+	failures []error
 }
 
 // check is how item's run verifies its inputs: every input before and after
@@ -129,7 +148,7 @@ func (r *applyRun) schema(ctx context.Context, result *Result) error {
 	if step == nil {
 		return nil
 	}
-	if err := step.run(ctx, r.s.conn, r.file.Observations[declaredSchemaKey]); err != nil {
+	if err := r.cfg.report(ProgressSchema, "", func() error { return step.run(ctx, r.s.conn, r.file.Observations[declaredSchemaKey]) }); err != nil {
 		return err
 	}
 	if len(step.Statements) > 0 {
@@ -145,42 +164,36 @@ func (r *applyRun) phase(ctx context.Context, result *Result, phase scripts.Phas
 		if !planned.Selected || planned.Script.Phase != phase {
 			continue
 		}
-		item, err := r.settle(ctx, planned)
-		if err == nil {
-			err = r.s.execute(ctx, item, r.file.Hash, r.check(item))
+		if dependency := r.unmetDependency(planned); dependency != "" {
+			r.skip(result, planned.Script.ID, dependency)
+			continue
 		}
-		if err != nil {
-			return r.failed(result, item.Script.ID, err)
+		item := planned
+		if err := r.cfg.report(ProgressScript, planned.Script.ID, func() (err error) {
+			if item, err = r.settle(ctx, planned); err != nil {
+				return err
+			}
+			if err = r.s.execute(ctx, item, r.file.Hash, r.check(item)); err != nil {
+				return &scriptError{err}
+			}
+			return nil
+		}); err != nil {
+			if err := r.failed(ctx, result, item.Script.ID, err); err != nil {
+				return errors.Join(append(r.failures, err)...)
+			}
+			continue
 		}
 		result.Applied = append(result.Applied, item.Script.ID)
 		r.recorded[item.Script.ID] = item.State.Hash
 		r.markStale(item.Script.ID)
 		if len(item.EffectsUnknown) > 0 {
 			r.unverified = true
-			if err := r.unpredicted(ctx, item.Script.ID, result.Applied); err != nil {
-				return err
+			if err := r.cfg.report(ProgressCheck, item.Script.ID, func() error { return r.unpredicted(ctx, item.Script.ID, result.Applied) }); err != nil {
+				return errors.Join(append(r.failures, err)...)
 			}
 		}
 	}
 	return nil
-}
-
-// failed records the outcome of id's failure: an input that drifted before
-// its body ran makes the plan stale.
-func (r *applyRun) failed(result *Result, id string, err error) error {
-	var drift *inputDrift
-	if errors.As(err, &drift) {
-		return &StalePlanError{Moved: []string{drift.Error()}}
-	}
-	var execution *ExecutionError
-	result.Outcome = "failed"
-	if errors.As(err, &execution) {
-		result.Outcome = execution.Outcome
-		if execution.Outcome == "applied" {
-			result.Applied = append(result.Applied, id)
-		}
-	}
-	return err
 }
 
 // settle is planned as it will run: its inputs at their snapshot values,
@@ -203,6 +216,7 @@ func (r *applyRun) settle(ctx context.Context, planned scripts.Pending) (scripts
 				return planned, &StalePlanError{Moved: []string{fmt.Sprintf("input %s of %s cannot be observed after its writers: %s", key, planned.Script.ID, observed[key].Error)}}
 			}
 			delete(r.stale, key)
+			r.values[key] = observed[key].Value
 		}
 		if err := r.snapshot.update(ctx, r.s.conn, observed); err != nil {
 			return planned, err
@@ -224,6 +238,12 @@ func (r *applyRun) settle(ctx context.Context, planned scripts.Pending) (scripts
 		}
 		item.State.Inputs[key] = value
 	}
+	item.State.Values = maps.Clone(planned.State.Values)
+	for key := range item.State.Values {
+		if value, ok := r.values[key]; ok {
+			item.State.Values[key] = value
+		}
+	}
 	item.State.Hash = scripts.StateHash(item.State)
 	return item, nil
 }
@@ -240,8 +260,8 @@ func (r *applyRun) markStale(writer string) {
 }
 
 // unpredicted re-plans after writer, a script with unknown effects, and
-// refuses the rest of the plan when that selects or blocks a script the file
-// did not.
+// refuses the rest of the plan when that blocks a script the file did not. What
+// it would newly select is the next plan's work.
 func (r *applyRun) unpredicted(ctx context.Context, writer string, applied []string) error {
 	fresh, err := plan(ctx, r.s.conn, r.s.opts)
 	if err != nil {
@@ -249,13 +269,11 @@ func (r *applyRun) unpredicted(ctx context.Context, writer string, applied []str
 	}
 	var moved []string
 	for _, item := range fresh.Actions {
-		planned, _ := r.file.action(item.Script.ID)
+		planned := r.file.action(item.Script.ID)
 		switch {
-		case slices.Contains(applied, item.Script.ID):
+		case slices.Contains(applied, item.Script.ID), r.unmet[item.Script.ID]:
 		case len(item.Blocked) > 0 && len(planned.Blocked) == 0:
 			moved = append(moved, fmt.Sprintf("%s is now blocked by %s", item.Script.ID, strings.Join(item.Blocked, ", ")))
-		case item.Selected && !planned.Selected:
-			moved = append(moved, fmt.Sprintf("%s now runs for %s", item.Script.ID, strings.Join(item.Reasons, ", ")))
 		}
 	}
 	if len(moved) == 0 {

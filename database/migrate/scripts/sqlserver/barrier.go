@@ -17,6 +17,7 @@ type applyConfig struct {
 	barrier     func(context.Context, Connection) error
 	analysis    cache.Store
 	analysisTTL time.Duration
+	progress    func(Progress)
 }
 
 // WithBarrier runs fn on the locked apply connection after the schema step

@@ -4331,6 +4331,13 @@ func (g *generator) writeCreate(e *Expression) string {
 	out += afterSchema
 	if expression := g.child(e, "expression"); expression != "" {
 		out += " AS "
+		// A T-SQL table type; another dialect's type of fields is not one.
+		if e.Args["tsql_table_type"] == true {
+			if g.dialect != "tsql" {
+				return g.fail(e.Class + " of a table type, which this dialect does not have")
+			}
+			out += "TABLE "
+		}
 		// Teradata's own LOCKING stands where the query does, before it
 		// rather than after: it says how the query behind the view takes
 		// its lock, not anything about the view itself.

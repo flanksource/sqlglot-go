@@ -23,39 +23,54 @@ type observationEpoch struct {
 	definitions map[string]moduleSnapshot
 	schemas     map[string]schemaObservation
 	results     map[string]scripts.Observation
+	// environments are the environment expressions observed, by SQL.
+	environments map[string]scripts.Observation
 }
 
 func newObservationEpoch(q queryer) *observationEpoch {
 	return &observationEpoch{q: q, names: map[string]catalog.Module{}, missing: map[string]error{}, loaded: map[string]loadedModule{},
-		definitions: map[string]moduleSnapshot{}, schemas: map[string]schemaObservation{}, results: map[string]scripts.Observation{}}
+		definitions: map[string]moduleSnapshot{}, schemas: map[string]schemaObservation{}, results: map[string]scripts.Observation{}, environments: map[string]scripts.Observation{}}
 }
+
+const (
+	ownTransaction   = "its own transaction inside the migration's: if it ends that transaction, or leaves one open, it is commit-unknown and blocked until reconciled"
+	untrackedDynamic = "dynamic SQL: what it reads is not tracked, so a change to it does not run the script again"
+)
 
 type observer struct {
 	*observationEpoch
 	visited          map[string]bool
 	inputs           map[string]scripts.Observation
 	modules          map[string]moduleSnapshot
+	warnings         []string
+	environment      []string
 	explicit         bool
 	nonTransactional bool
 }
 
-func (opts Options) observe(ctx context.Context, epoch *observationEpoch, s scripts.Script) map[string]scripts.Observation {
-	o := observer{observationEpoch: epoch, visited: map[string]bool{}, inputs: map[string]scripts.Observation{},
+// observe is what s depends on, observed in epoch: its inputs, and warnings
+// about what running it does that no input shows.
+func (opts Options) observe(ctx context.Context, epoch *observationEpoch, s scripts.Script) *observer {
+	o := &observer{observationEpoch: epoch, visited: map[string]bool{}, inputs: map[string]scripts.Observation{},
 		modules: map[string]moduleSnapshot{}, explicit: s.ExplicitDependencies, nonTransactional: s.NonTransactional}
 	a := opts.analysis[s.ID]
 	registry := opts.Functions
+	defer func() { o.reduce(s, a) }()
 	if a.TransactionControl && !s.NonTransactional {
-		o.fail("transaction", fmt.Errorf("script controls its own transaction; mark it nontransactional and review the acknowledgement"))
+		o.warnings = append(o.warnings, "controls "+ownTransaction)
 	}
 	if len(registry) == 0 && len(s.Dependencies) == 0 {
-		return o.inputs
+		return o
 	}
 	if !s.ExplicitDependencies && len(a.Blocked) > 0 {
 		o.fail("analysis", fmt.Errorf("explicit dependencies required: %s", strings.Join(a.Blocked, "; ")))
 	}
+	if !s.ExplicitDependencies && a.Dynamic {
+		o.warnings = append(o.warnings, "runs "+untrackedDynamic)
+	}
 	if err := epoch.load(ctx, opts, opts.modulesOf(s)); err != nil {
 		o.fail("catalog", err)
-		return o.inputs
+		return o
 	}
 	for _, name := range a.Calls {
 		if err := o.module(name); err != nil {
@@ -100,7 +115,7 @@ func (opts Options) observe(ctx context.Context, epoch *observationEpoch, s scri
 			o.fail(key, err)
 		}
 	}
-	return o.inputs
+	return o
 }
 
 // result observes registered function f, resolved to the catalog name key,
@@ -175,6 +190,76 @@ func (o *observer) observeKey(ctx context.Context, registry []Function, key stri
 	return fmt.Errorf("input %s cannot be re-observed", key)
 }
 
+// reduce keeps the inputs s's calls depend on. The sampled result of a
+// registered function stands for everything inside it, so neither its
+// definition, nor its callees, nor the environment they read is an input; a
+// definition s declares always is.
+func (o *observer) reduce(s scripts.Script, a scripts.Analysis) {
+	kept := map[string]bool{}
+	var keep func(name string, declared bool)
+	keep = func(name string, declared bool) {
+		m, ok := o.names[name]
+		if !ok {
+			return
+		}
+		key := m.Schema + "." + m.Name
+		if _, sampled := o.inputs["result:"+key]; kept[key] || sampled && !declared {
+			return
+		}
+		kept[key] = true
+		snapshot := o.modules[key]
+		if !declared {
+			o.environment = append(o.environment, snapshot.Analysis.Environment...)
+		}
+		for _, ref := range snapshot.References {
+			keep(ref, declared)
+		}
+	}
+	o.environment = append(o.environment, a.Environment...)
+	for _, call := range a.Calls {
+		keep(call, false)
+	}
+	for _, d := range s.Dependencies {
+		if d.Kind == "function-definition" {
+			keep(d.Name, true)
+		}
+	}
+	maps.DeleteFunc(o.inputs, func(key string, _ scripts.Observation) bool {
+		name, definition := strings.CutPrefix(key, "definition:")
+		return definition && !kept[name]
+	})
+}
+
+// observeEnvironment observes expression, a constant call of environment
+// built-ins, once per epoch.
+func (e *observationEpoch) observeEnvironment(ctx context.Context, expression string) scripts.Observation {
+	if observed, ok := e.environments[expression]; ok {
+		return observed
+	}
+	observed := scripts.Observation{Kind: scripts.KindBuiltin}
+	var value sql.NullString
+	if err := scanOne(ctx, e.q, "SELECT CONVERT(nvarchar(4000), "+expression+")", &value); err != nil {
+		observed.Error = err.Error()
+	} else if value.Valid {
+		observed.Value = &value.String
+	}
+	e.environments[expression] = observed
+	return observed
+}
+
+// scanOne scans the one row query answers.
+func scanOne(ctx context.Context, q queryer, query string, value any) (cause error) {
+	rows, err := q.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer func() { cause = errors.Join(cause, rows.Close()) }()
+	if !rows.Next() {
+		return errors.Join(fmt.Errorf("%s returned no row", query), rows.Err())
+	}
+	return rows.Scan(value)
+}
+
 func (o *observer) fail(name string, err error) {
 	o.inputs["error:"+name] = scripts.Observation{Kind: "blocked", Error: err.Error()}
 }
@@ -213,6 +298,10 @@ func (o *observer) probe(ctx context.Context, quoted, key string, m catalog.Modu
 	if err != nil {
 		return err
 	}
-	o.inputs["result:"+key] = scripts.Observation{Kind: "function-result", Hash: hash}
+	observed := scripts.Observation{Kind: scripts.KindResult, Hash: hash}
+	if value.Valid {
+		observed.Value = &value.String
+	}
+	o.inputs["result:"+key] = observed
 	return nil
 }

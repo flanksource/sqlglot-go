@@ -24,6 +24,7 @@ func (p PlanFile) Pretty() api.Text {
 	if len(p.Absorbed) > 0 {
 		out = out.Append(" absorbing "+strings.Join(p.Absorbed, ", "), "text-gray-500")
 	}
+	out = p.prettyFunctions(out)
 	out = p.prettyPhase(out, scripts.Pre, "Pre-deployment scripts", &totals)
 	out = p.prettySchema(out, &totals)
 	out = p.prettyPhase(out, scripts.Post, "Post-deployment scripts", &totals)
@@ -34,6 +35,54 @@ func (p PlanFile) Pretty() api.Text {
 		}
 	}
 	return out.NewLine().NewLine().Append(totals.String(), "font-bold")
+}
+
+// prettyFunctions renders each function the plan selects scripts by: its value,
+// what it was and how many of its scripts that change selects.
+func (p PlanFile) prettyFunctions(out api.Text) api.Text {
+	functions := p.Functions()
+	if len(functions) == 0 {
+		return out
+	}
+	out = out.NewLine().NewLine().Append("Functions", "font-bold")
+	for _, f := range functions {
+		changed := 0
+		var previous []string
+		for _, use := range f.Uses {
+			if !use.ValueChanged && !use.DefinitionChanged {
+				continue
+			}
+			changed++
+			if use.ValueChanged && use.Recorded {
+				previous = append(previous, displayValue(use.Previous))
+			}
+		}
+		marker, style := "  = ", "text-gray-500"
+		if changed > 0 {
+			marker, style = "  ~ ", "text-yellow-600"
+		}
+		out = out.NewLine().Append(marker, style).Append(f.Display())
+		if f.Sampled {
+			out = out.Append(" = " + displayValue(f.Value))
+		}
+		slices.Sort(previous)
+		if previous = slices.Compact(previous); len(previous) > 0 {
+			out = out.Append(" (was "+strings.Join(previous, ", ")+")", "text-yellow-600")
+		}
+		detail := fmt.Sprintf("  used by %d", len(f.Uses))
+		if changed > 0 {
+			detail += fmt.Sprintf(", changed for %d", changed)
+		}
+		out = out.Append(detail, "text-gray-500")
+	}
+	return out
+}
+
+func displayValue(value *string) string {
+	if value == nil {
+		return "NULL"
+	}
+	return fmt.Sprintf("%q", *value)
 }
 
 func (t planTotals) String() string {
@@ -69,44 +118,24 @@ func (p PlanFile) prettyAction(out api.Text, item scripts.Pending, totals *planT
 		out = out.Append("  ! blocked  ", "text-red-600").Append(item.Script.ID).Append("  "+strings.Join(item.Blocked, "; "), "text-gray-500")
 	case slices.Contains(item.Reasons, "new"):
 		totals.run++
-		out = out.Append("  + run      ", "text-green-600").Append(item.Script.ID).Append("  "+strings.Join(p.reasons(item), ", "), "text-gray-500")
+		out = out.Append("  + run      ", "text-green-600").Append(item.Script.ID).Append("  "+strings.Join(item.Reasons, ", "), "text-gray-500")
 	default:
 		totals.rerun++
-		out = out.Append("  ~ re-run   ", "text-yellow-600").Append(item.Script.ID).Append("  "+strings.Join(p.reasons(item), ", "), "text-gray-500")
+		out = out.Append("  ~ re-run   ", "text-yellow-600").Append(item.Script.ID).Append("  "+strings.Join(item.Reasons, ", "), "text-gray-500")
 	}
 	if item.Script.NonTransactional && item.Selected {
 		out = out.Append("  (nontransactional)", "text-yellow-600")
+	}
+	for _, read := range item.Reads {
+		if read.Changed {
+			out = out.NewLine().Append("      ~ reads ", "text-yellow-600").Append(strings.Join(strings.Fields(read.SQL), " ")).
+				Append("  "+read.Change(), "text-yellow-600")
+		}
 	}
 	for _, unknown := range item.EffectsUnknown {
 		out = out.NewLine().Append("      ? effects unknown ", "text-purple-600").Append(unknown, "text-gray-500")
 	}
 	return out
-}
-
-// reasons spells out each selection reason, naming the writer of an
-// upstream write.
-func (p PlanFile) reasons(item scripts.Pending) []string {
-	out := make([]string, 0, len(item.Reasons))
-	for _, reason := range item.Reasons {
-		object, upstream := strings.CutPrefix(reason, "upstream-write:")
-		if !upstream {
-			out = append(out, reason)
-			continue
-		}
-		for _, write := range item.Upstream {
-			if string(write.Object) == object {
-				out = append(out, fmt.Sprintf("upstream-write: %s ← %s", object, p.writerName(write.Script)))
-			}
-		}
-	}
-	return out
-}
-
-func (p PlanFile) writerName(id string) string {
-	if writer, ok := p.action(id); ok && writer.Script.Name != "" {
-		return writer.Script.Name
-	}
-	return id
 }
 
 func (p PlanFile) prettySchema(out api.Text, totals *planTotals) api.Text {

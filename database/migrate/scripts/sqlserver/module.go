@@ -43,6 +43,9 @@ func validateProbe(f Function, modules map[string]moduleSnapshot) error {
 		if len(snapshot.Analysis.Blocked) > 0 {
 			return fmt.Errorf("function %s: cannot analyze %s: %v", f.Name, key, snapshot.Analysis.Blocked)
 		}
+		if snapshot.Analysis.Dynamic {
+			return fmt.Errorf("function %s: %s runs dynamic SQL", f.Name, key)
+		}
 		if len(snapshot.Analysis.Unresolved) > 0 {
 			return fmt.Errorf("function %s has unclassified calls in %s: %v", f.Name, key, snapshot.Analysis.Unresolved)
 		}
@@ -90,10 +93,13 @@ func (o *observer) module(name string) error {
 	if !o.explicit && len(snapshot.Analysis.Blocked) > 0 {
 		return fmt.Errorf("module %s requires explicit runtime dependencies: %v", name, snapshot.Analysis.Blocked)
 	}
-	if !o.nonTransactional && snapshot.Analysis.TransactionControl {
-		return fmt.Errorf("module %s controls its own transaction; review this script as nontransactional", key)
+	if !o.explicit && snapshot.Analysis.Dynamic {
+		o.warnings = append(o.warnings, "calls "+key+", which runs "+untrackedDynamic)
 	}
-	o.inputs["definition:"+key] = scripts.Observation{Kind: "function-definition", Hash: snapshot.Hash}
+	if !o.nonTransactional && snapshot.Analysis.TransactionControl {
+		o.warnings = append(o.warnings, "calls "+key+", which controls "+ownTransaction)
+	}
+	o.inputs["definition:"+key] = scripts.Observation{Kind: scripts.KindDefinition, Hash: snapshot.Hash}
 	o.modules[key] = snapshot
 	for _, ref := range snapshot.References {
 		if err := o.module(ref); err != nil {

@@ -33,6 +33,9 @@ type Options struct {
 	// Schema is the declared-schema reconciliation that runs between the pre
 	// and post scripts; nil when the bundle declares no objects.
 	Schema *SchemaStep
+	// Warnings are the caller's own warnings about the bundle; the plan file
+	// carries them before the plan's.
+	Warnings []string
 	// Analysis caches script and module-definition analyses by content
 	// (scripts.AnalysisKey); nil analyses every body on every call.
 	Analysis cache.Store

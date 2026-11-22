@@ -146,7 +146,7 @@ var _ = Describe("SQL Server migrations", Ordered, Label("integration"), func() 
 		pending, err := PendingSQLServer(ctx, db, bundle, opts...)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(pending.Statements).ToNot(BeEmpty())
-		Expect(pendingReasons(pending)).To(Equal([]string{"post/seed_orders.sql post new [new upstream-write:dbo.acme_orders]"}), "the schema step creates the table the script reads")
+		Expect(pendingReasons(pending)).To(Equal([]string{"post/seed_orders.sql post new [new]"}))
 
 		Expect(Apply(ctx, "", bundle, opts...)).To(Succeed())
 		count, total := orders()

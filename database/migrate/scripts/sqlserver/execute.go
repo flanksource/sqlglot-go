@@ -28,7 +28,7 @@ func (c inputCheck) before(ctx context.Context, opts Options, q queryer, item sc
 	if !c.full {
 		return nil
 	}
-	if err := validateInputs(item, opts.observe(ctx, newObservationEpoch(q), item.Script)); err != nil {
+	if err := validateInputs(item, opts.observe(ctx, newObservationEpoch(q), item.Script).inputs); err != nil {
 		return &inputDrift{err}
 	}
 	return nil
@@ -37,7 +37,7 @@ func (c inputCheck) before(ctx context.Context, opts Options, q queryer, item sc
 // afterRun observes what c checks once item's body ran on q.
 func (c inputCheck) afterRun(ctx context.Context, opts Options, q queryer, item scripts.Pending) error {
 	if c.full {
-		return validateInputs(item, opts.observe(ctx, newObservationEpoch(q), item.Script))
+		return validateInputs(item, opts.observe(ctx, newObservationEpoch(q), item.Script).inputs)
 	}
 	if len(c.after) == 0 {
 		return nil
@@ -77,6 +77,9 @@ func (s *session) execute(ctx context.Context, item scripts.Pending, planHash st
 			return errors.Join(err, restoreState(after, s.conn, s.opts.Scope, item.Script.ID, previous))
 		}
 		if err == nil {
+			if err := s.recordReads(ctx, item); err != nil {
+				return &ExecutionError{Outcome: "applied", Err: err}
+			}
 			if err := s.attempt(ctx, item.Script.ID, planHash, "applied", ""); err != nil {
 				return &ExecutionError{Outcome: "applied", Err: err}
 			}
@@ -107,6 +110,31 @@ func (s *session) execute(ctx context.Context, item scripts.Pending, planHash st
 		return errors.Join(err, s.attempt(after, item.Script.ID, planHash, "failed", err.Error()))
 	}
 	return fmt.Errorf("migration retries exhausted")
+}
+
+// recordReads adds what the reads of item answer, now that it ran, to its
+// record: what a later plan compares. One that fails is not recorded.
+func (s *session) recordReads(ctx context.Context, item scripts.Pending) error {
+	reads := s.opts.analysis[item.Script.ID].Reads
+	if len(reads) == 0 {
+		return nil
+	}
+	queries := make([]string, len(reads))
+	for i, read := range reads {
+		queries[i] = read.SQL
+	}
+	answers, err := answerReads(ctx, s.conn, queries)
+	if err != nil {
+		return fmt.Errorf("record what script %s reads: %w", item.Script.ID, err)
+	}
+	state := item.State
+	state.Outcome, state.Reads = "applied", map[string]scripts.ReadAnswer{}
+	for _, read := range reads {
+		if answer := answers[read.SQL]; answer.Error == "" {
+			state.Reads[read.Key()] = answer
+		}
+	}
+	return recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, state)
 }
 
 type ExecutionError struct {
@@ -160,12 +188,12 @@ func (s *session) transaction(ctx context.Context, item scripts.Pending, check i
 	if err = check.before(ctx, s.opts, tx, item); err != nil {
 		return err
 	}
-	if err = runBatches(ctx, tx, item.Script, func(ctx context.Context) error {
+	if err = runBatches(ctx, tx, item.Script, func(ctx context.Context, last bool) error {
 		var count int
 		if err := tx.QueryRowContext(ctx, "SELECT @@TRANCOUNT").Scan(&count); err != nil {
 			return &ExecutionError{Outcome: "commit-unknown", Err: fmt.Errorf("check script transaction: %w", err)}
 		}
-		if count != 1 {
+		if count < 1 || (last && count != 1) {
 			return &ExecutionError{Outcome: "commit-unknown", Err: fmt.Errorf("script changed the migration transaction count to %d", count)}
 		}
 		return nil
@@ -208,7 +236,8 @@ func validateInputs(item scripts.Pending, observed map[string]scripts.Observatio
 	return nil
 }
 
-func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(context.Context) error) error {
+// runBatches runs each batch of s on db, then check, told whether it was the last.
+func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(ctx context.Context, last bool) error) error {
 	batches, err := Batches(s.ID, s.SQL)
 	if err != nil {
 		return err
@@ -218,7 +247,7 @@ func runBatches(ctx context.Context, db sessionDB, s scripts.Script, check func(
 			return fmt.Errorf("script %s batch %d: %w", s.ID, i+1, err)
 		}
 		if check != nil {
-			if err := check(ctx); err != nil {
+			if err := check(ctx, i == len(batches)-1); err != nil {
 				return err
 			}
 		}
@@ -247,6 +276,9 @@ func (s *session) nonTransactional(ctx context.Context, item scripts.Pending, pl
 	state.LastSuccess = nil
 	if err := recordState(ctx, s.conn, s.opts.Scope, item.Script.ID, state); err != nil {
 		return &ExecutionError{Outcome: "partial", Err: err}
+	}
+	if err := s.recordReads(ctx, item); err != nil {
+		return &ExecutionError{Outcome: "applied", Err: err}
 	}
 	if err := s.attempt(ctx, item.Script.ID, planHash, "applied", ""); err != nil {
 		return &ExecutionError{Outcome: "applied", Err: err}
