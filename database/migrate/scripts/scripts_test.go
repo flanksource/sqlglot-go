@@ -74,13 +74,15 @@ var _ = Describe("Consumed migration dependencies", func() {
 		opts.Scripts[0].SQL = "SELECT 10"
 		Expect(selected(Must(scripts.Build(opts)))).To(Equal([]string{"a", "b", "c"}))
 	})
-	It("requires explicit adoption when a legacy success gains a result dependency", func() {
-		hash := scripts.SourceHash(bundle[1].SQL)
-		opts.Recorded = map[string]scripts.State{"b": {Version: 1, SourceHash: hash, Hash: hash}}
+	It("reruns a legacy success that now observes inputs its ledger row never recorded", func() {
+		opts.Recorded = map[string]scripts.State{}
+		for _, script := range bundle {
+			hash := scripts.SourceHash(script.SQL)
+			opts.Recorded[script.ID] = scripts.State{Version: 1, SourceHash: hash, Hash: hash}
+		}
 		opts.Observations = map[string]map[string]scripts.Observation{"b": {"result:dbo.country": {Kind: "function-result", Hash: "current"}}}
-		plan := Must(scripts.Build(opts))
-		Expect(plan.Scripts[1].Blocked).To(ContainElement("adoption-required"))
-		Expect(plan.Scripts[1].Selected).To(BeFalse())
+		item := Must(scripts.Build(opts)).Scripts[1]
+		Expect([]any{item.Selected, item.Reasons, item.Blocked}).To(Equal([]any{true, []string{"inputs-unrecorded"}, []string(nil)}))
 	})
 	It("invalidates only callers and dependents when a function result changes", func() {
 		opts.Observations = map[string]map[string]scripts.Observation{"b": {"result:dbo.country": {Kind: "function-result", Hash: "ZW"}}}

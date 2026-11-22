@@ -12,7 +12,7 @@ import (
 	mssql "github.com/microsoft/go-mssqldb"
 )
 
-// session is one apply or adoption: a dedicated connection holding the
+// session is one apply: a dedicated connection holding the
 // scope's migration lock for its whole run.
 type session struct {
 	conn     *sql.Conn
