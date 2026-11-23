@@ -15,12 +15,22 @@ import (
 // SplitBatches splits a script into its batches at each GO that stands alone
 // on its line, as sqlcmd and SSMS do. A GO inside a string or a comment is
 // text, not a separator, because the script is tokenized rather than scanned
-// by line. Batches holding nothing but whitespace and comments are dropped.
+// by line. Batches holding only whitespace, comments or empty statements are dropped.
 //
 // `GO <count>`, which runs the batch before it that many times, is refused:
 // a definition run twice is not a definition. So is anything else after GO on
 // its line.
 func SplitBatches(script, dialect string) ([]string, error) {
+	return splitBatches(script, dialect, false)
+}
+
+// SplitSQLServerScript splits T-SQL batches and rejects active sqlcmd commands
+// and variables, which the SQL Server driver does not interpret.
+func SplitSQLServerScript(script string) ([]string, error) {
+	return splitBatches(script, "tsql", true)
+}
+
+func splitBatches(script, dialect string, validateSQLCMD bool) ([]string, error) {
 	tk, err := NewTokenizer(dialect)
 	if err != nil {
 		return nil, err
@@ -31,21 +41,27 @@ func SplitBatches(script, dialect string) ([]string, error) {
 		return nil, fmt.Errorf("split batches: %w", err)
 	}
 	src := []rune(script)
+	if validateSQLCMD {
+		if err := checkSQLCMD(src, tokens); err != nil {
+			return nil, err
+		}
+	}
 	var batches []string
-	start, first := 0, 0
+	start, hasStatements := 0, false
 	for i, token := range tokens {
 		if !separatesBatches(tokens, i) {
+			hasStatements = hasStatements || token.Type != TokSEMICOLON
 			continue
 		}
 		if next := i + 1; next < len(tokens) && tokens[next].Line == token.Line {
 			return nil, fmt.Errorf("split batches: line %d: GO must stand alone on its line, found %q after it", token.Line, tokens[next].Text)
 		}
-		if i > first {
+		if hasStatements {
 			batches = append(batches, strings.TrimSpace(string(src[start:token.Start])))
 		}
-		start, first = token.End+1, i+1
+		start, hasStatements = token.End+1, false
 	}
-	if len(tokens) > first {
+	if hasStatements {
 		batches = append(batches, strings.TrimSpace(string(src[start:])))
 	}
 	return batches, nil
@@ -54,7 +70,7 @@ func SplitBatches(script, dialect string) ([]string, error) {
 // separatesBatches reports whether token i is a GO that begins its line.
 func separatesBatches(tokens []Token, i int) bool {
 	token := tokens[i]
-	if token.Type == TokIDENTIFIER || !strings.EqualFold(token.Text, "GO") {
+	if token.Type == TokIDENTIFIER || stringTokens[token.Type] || !strings.EqualFold(token.Text, "GO") {
 		return false
 	}
 	return i == 0 || tokens[i-1].Line < token.Line
