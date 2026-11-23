@@ -2,7 +2,6 @@ package sqlserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/flanksource/sqlglot-go/sqlglot"
 )
@@ -16,28 +15,15 @@ func Batches(name, content string) ([]string, error) {
 	return batches, nil
 }
 
-// splitBatches is Batches without the script name: problem is the text that
-// follows the name in the error, so it can be cached per body.
+// splitBatches keeps the error independent of the source path for caching.
 func splitBatches(content string) ([]string, string) {
-	for i, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, ":") || strings.HasPrefix(trimmed, "!!") {
-			return nil, fmt.Sprintf(" line %d: sqlcmd command %q is not supported; scripts are plain T-SQL batches separated by GO", i+1, trimmed)
-		}
-		if strings.Contains(line, "$(") {
-			return nil, fmt.Sprintf(" line %d: sqlcmd scripting variables ($(...)) are not supported; sqlcmd would substitute them", i+1)
-		}
-	}
-	batches, err := sqlglot.SplitBatches(content, "tsql")
+	batches, err := sqlglot.SplitSQLServerScript(content)
 	if err != nil {
-		return nil, ": " + err.Error()
-	}
-	if len(batches) == 0 {
-		return nil, " has no statements"
+		return nil, err.Error()
 	}
 	return batches, ""
 }
 
 func batchError(name, problem string) error {
-	return fmt.Errorf("SQL script %s%s", name, problem)
+	return fmt.Errorf("SQL script %s: %s", name, problem)
 }

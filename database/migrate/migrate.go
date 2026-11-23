@@ -18,6 +18,7 @@ import (
 	"ariga.io/atlas/sql/schema"
 	"ariga.io/atlas/sql/sqlclient"
 	"github.com/flanksource/commons/logger"
+	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	"github.com/flanksource/sqlglot-go/database/target"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/lib/pq"
@@ -38,6 +39,7 @@ type options struct {
 	input         map[string]cty.Value
 	db            *sql.DB
 	scriptPolicy  *ScriptPolicy
+	scriptSources map[string]scripts.Source
 }
 
 // Option configures an HCL migration.
@@ -251,7 +253,7 @@ func applyPostgres(ctx context.Context, connection string, schemaFS fs.FS, cfg o
 		return err
 	}
 
-	scripts, err := loadScripts(schemaFS, cfg.dir)
+	scripts, err := loadScripts(schemaFS, cfg)
 	if err != nil {
 		return err
 	}

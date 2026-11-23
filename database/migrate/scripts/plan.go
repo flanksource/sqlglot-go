@@ -3,6 +3,7 @@ package scripts
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Build plans the bundle in Ordered order. With an empty phase it plans both
@@ -24,6 +25,9 @@ func Build(opts PlanOptions) (Plan, error) {
 	walk := newPropagation(opts.Modules)
 	schemaWritten := false
 	for _, script := range ordered {
+		if !script.NoStatements && strings.TrimSpace(script.SQL) == "" {
+			return Plan{}, fmt.Errorf("script requires nonempty SQL: %q", script.Path)
+		}
 		if script.Phase == Post && !schemaWritten {
 			walk.write(SchemaWriter, opts.SchemaWrites)
 			schemaWritten = true
@@ -114,7 +118,7 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 			item.Blocked = append(item.Blocked, "pending pre-deployment prerequisite "+dep)
 		}
 		hash := input.State.Hash
-		if recorded := opts.Recorded[dep]; !input.Selected && len(input.Blocked) == 0 && recorded.Version != legacyVersion && recorded.Hash != "" {
+		if recorded := opts.Recorded[dep]; !input.Selected && !input.Script.NoStatements && len(input.Blocked) == 0 && recorded.Version != legacyVersion && recorded.Hash != "" {
 			// A prerequisite that does not run stays what it last ran as.
 			hash = recorded.Hash
 		}
@@ -152,6 +156,9 @@ func pending(script Script, opts PlanOptions, current map[string]Pending) Pendin
 	}
 	if script.Always {
 		item.Reasons = append(item.Reasons, "always")
+	}
+	if script.NoStatements {
+		item.Reasons = nil
 	}
 	item.settle()
 	return item

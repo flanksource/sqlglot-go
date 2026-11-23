@@ -168,7 +168,22 @@ func (r *applyRun) schema(ctx context.Context, result *Result) error {
 // phase runs the selected scripts of phase in plan order.
 func (r *applyRun) phase(ctx context.Context, result *Result, phase scripts.Phase) error {
 	for _, planned := range r.file.Actions {
-		if !planned.Selected || planned.Script.Phase != phase {
+		if planned.Script.Phase != phase {
+			continue
+		}
+		if planned.Script.NoStatements {
+			if len(planned.Blocked) != 0 || r.unmetDependency(planned) != "" {
+				r.unmet[planned.Script.ID] = true
+				continue
+			}
+			item, err := r.settle(ctx, planned)
+			if err != nil {
+				return err
+			}
+			r.recorded[item.Script.ID] = item.State.Hash
+			continue
+		}
+		if !planned.Selected {
 			continue
 		}
 		if dependency := r.unmetDependency(planned); dependency != "" {

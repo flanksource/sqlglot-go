@@ -56,7 +56,7 @@ func sqliteTables(schemaFS fs.FS, config options) ([]*schema.Table, error) {
 	if err := refuseScriptPolicy(config, "SQLite"); err != nil {
 		return nil, err
 	}
-	scripts, err := loadScripts(schemaFS, config.dir)
+	scripts, err := loadScripts(schemaFS, config)
 	if err != nil {
 		return nil, err
 	}

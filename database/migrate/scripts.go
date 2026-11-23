@@ -37,6 +37,8 @@ const (
 )
 
 type script struct {
+	id            string
+	name          string
 	path          string
 	content       string
 	phase         scriptPhase
@@ -46,10 +48,15 @@ type script struct {
 	hash          []byte
 }
 
-// loadScripts reads the hash-gated SQL scripts under dir, skipping the
-// directories in skip (the WithRoutines directory).
-func loadScripts(schemaFS fs.FS, dir string, skip ...string) (map[string]*script, error) {
-	loaded, err := sharedscripts.Load(sharedscripts.LoadOptions{FS: schemaFS, Dir: dir, Skip: skip})
+// WithScriptSources sets the metadata for scripts keyed by bundle-relative SQL path.
+func WithScriptSources(sources map[string]sharedscripts.Source) Option {
+	return func(o *options) { o.scriptSources = sources }
+}
+
+func loadScripts(schemaFS fs.FS, cfg options) (map[string]*script, error) {
+	loaded, err := sharedscripts.Load(sharedscripts.LoadOptions{
+		FS: schemaFS, Dir: cfg.dir, Skip: []string{cfg.routines}, Sources: cfg.scriptSources,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +76,7 @@ func parseScript(name, content string) (*script, error) {
 }
 
 func projectScript(parsed sharedscripts.Script) *script {
-	s := &script{path: parsed.Path, content: parsed.SQL, phase: scriptPhase(parsed.Phase), transactional: !parsed.NonTransactional, dependsOn: parsed.DependsOn, always: parsed.Always}
+	s := &script{id: parsed.ID, name: parsed.Name, path: parsed.Path, content: parsed.SQL, phase: scriptPhase(parsed.Phase), transactional: !parsed.NonTransactional, dependsOn: parsed.DependsOn, always: parsed.Always}
 	sum := sha256.Sum256([]byte(parsed.SQL))
 	s.hash = sum[:]
 	return s
@@ -290,7 +297,7 @@ func recordScript(ctx context.Context, db execer, scope string, s *script) error
 	_, err := db.ExecContext(ctx, `
 INSERT INTO schema_migration_scripts(scope, path, hash, updated_at)
 VALUES ($1, $2, $3, now())
-ON CONFLICT (scope, path) DO UPDATE SET hash = EXCLUDED.hash, updated_at = now()`, scope, s.path, s.hash)
+ON CONFLICT (scope, path) DO UPDATE SET hash = EXCLUDED.hash, updated_at = now()`, scope, s.id, s.hash)
 	if err != nil {
 		return fmt.Errorf("record SQL migration %s: %w", s.path, err)
 	}

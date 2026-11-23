@@ -28,25 +28,28 @@ func refuseScriptPolicy(cfg options, dialect string) error {
 }
 
 func scriptOptions(db *sql.DB, bundle sqlServerBundle, cfg options) (backend.Options, error) {
-	items := scriptBundle(bundle.scripts)
+	items := bundle.scripts
 	opts := backend.Options{DB: db, Scope: migrationScope(sqlServerSchema, cfg.name), Scripts: items}
 	if cfg.scriptPolicy == nil {
 		return opts, nil
 	}
 	opts.Functions = cfg.scriptPolicy.Functions
+	declared := make(map[string]bool, len(items))
+	for i := range items {
+		id := items[i].ID
+		declared[id] = true
+		items[i].Dependencies = cfg.scriptPolicy.Dependencies[id]
+		items[i].ExplicitDependencies = slices.Contains(cfg.scriptPolicy.ExplicitDependencies, id)
+	}
 	for id := range cfg.scriptPolicy.Dependencies {
-		if _, ok := bundle.scripts[id]; !ok {
+		if !declared[id] {
 			return opts, fmt.Errorf("script policy references missing script %s", id)
 		}
 	}
 	for _, id := range cfg.scriptPolicy.ExplicitDependencies {
-		if _, ok := bundle.scripts[id]; !ok {
+		if !declared[id] {
 			return opts, fmt.Errorf("explicit policy references missing script %s", id)
 		}
-	}
-	for i := range items {
-		items[i].Dependencies = cfg.scriptPolicy.Dependencies[items[i].ID]
-		items[i].ExplicitDependencies = slices.Contains(cfg.scriptPolicy.ExplicitDependencies, items[i].ID)
 	}
 	return opts, nil
 }

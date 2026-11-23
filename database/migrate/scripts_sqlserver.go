@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"ariga.io/atlas/sql/schema"
+	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 )
 
@@ -16,30 +17,31 @@ import (
 // tables and routines, and the hash-gated scripts.
 type sqlServerBundle struct {
 	realm   *schema.Realm
-	scripts map[string]*script
+	scripts []scripts.Script
 }
 
-// loadSQLServerBundle loads the realm and the scripts, splitting each script
-// into the batches sqlcmd would send.
+// loadSQLServerBundle loads the realm and the scripts for SQL Server planning.
 func loadSQLServerBundle(schemaFS fs.FS, cfg options) (sqlServerBundle, error) {
 	realm, err := sqlServerDesired(schemaFS, cfg)
 	if err != nil {
 		return sqlServerBundle{}, err
 	}
-	scripts, err := loadScripts(schemaFS, cfg.dir, cfg.routines)
+	items, err := scripts.Load(scripts.LoadOptions{
+		FS: schemaFS, Dir: cfg.dir, Skip: []string{cfg.routines}, Sources: cfg.scriptSources, AllowEmpty: true,
+	})
 	if err != nil {
 		return sqlServerBundle{}, err
 	}
-	for _, s := range scripts {
-		if _, err = backend.Batches(s.path, s.content); err != nil {
+	for _, item := range items {
+		if _, err := backend.Batches(item.Path, item.SQL); err != nil {
 			return sqlServerBundle{}, err
 		}
 	}
 	target := realm.Schemas[0]
-	if len(target.Tables)+len(target.Procs)+len(target.Funcs)+len(scripts) == 0 {
+	if len(target.Tables)+len(target.Procs)+len(target.Funcs)+len(items) == 0 {
 		return sqlServerBundle{}, fmt.Errorf("SQL Server migration bundle %q declares no tables, routines or scripts", cfg.name)
 	}
-	return sqlServerBundle{realm: realm, scripts: scripts}, nil
+	return sqlServerBundle{realm: realm, scripts: items}, nil
 }
 
 func (b sqlServerBundle) declaresObjects() bool {
