@@ -1,0 +1,20 @@
+version: 1
+
+mappings:
+  - match: 'scripts/{PreDeployment_*,PostDeployment_*}/data.xml'
+    transform: >-
+      {
+        "sql": read(xmlpath(file.content, "/root/entry[@name='SQLDATA']/@file")),
+        "id": xmlpath(file.content, "/root/entry[@name='SQLSCRIPTGUID']").trim().lower(),
+        "name": xmlpath(file.content, "/root/entry[@name='SCRIPTNAME']").trim(),
+        "phase": file.path.startsWith("scripts/PreDeployment_") ? "pre" : "post",
+        "labels": {
+          "country": file.path.startsWith("scripts/PostDeployment_")
+            ? file.path.find(r"(_(BW|MW|ZW|UG|SZ|KE))+/data\.xml$")
+                .trimSuffix("/data.xml").split("_").filter(code, code != "")
+            : []
+        }
+      }
+
+ignore:
+  - 'scripts/PostDeployment_QA_investmentScaleUpdate_InvestmentProduct/data.xml'

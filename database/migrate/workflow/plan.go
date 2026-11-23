@@ -24,13 +24,13 @@ func Plan(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
 	if opts.Source.Kind != "bundle" && len(opts.Source.Files) > 0 {
 		return PlanResult{}, fmt.Errorf("files require a bundle source")
 	}
-	if opts.Source.Kind != "bundle" && opts.Bundle == nil && (len(opts.Variables) > 0 || opts.Routines != "" || opts.AllowDrops) {
+	if opts.Source.Kind != "bundle" && opts.Bundle == nil && opts.Project == nil && (len(opts.Variables) > 0 || opts.Routines != "" || opts.AllowDrops) {
 		return PlanResult{}, fmt.Errorf("variables, routines and allow-drops require a bundle")
 	}
 	if opts.Source.Kind == "artifact" {
 		return Review([]byte(opts.Source.Content), opts.Dialect, opts.Schema)
 	}
-	if opts.Source.Kind == "bundle" || opts.Bundle != nil {
+	if opts.Source.Kind == "bundle" || opts.Bundle != nil || opts.Project != nil {
 		return planBundle(ctx, db, opts)
 	}
 	if opts.Source.Kind != "hcl" && opts.Source.Kind != "snapshot" {
@@ -67,20 +67,42 @@ func Plan(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
 	return Review(data, opts.Dialect, opts.Schema)
 }
 
+type planPreview struct {
+	bundle.Preview
+	Sources []ProjectSource `json:"sources,omitempty"`
+}
+
 func planBundle(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
 	files := opts.Bundle
-	if files == nil {
+	project := opts.Project
+	var options []bundle.Option
+	var sources []ProjectSource
+	if project == nil {
 		var err error
-		files, err = BundleFiles(opts.Source.Files)
+		if files == nil {
+			files, err = BundleFiles(opts.Source.Files)
+			if err != nil {
+				return PlanResult{}, err
+			}
+		}
+		project, err = LoadProject(files)
 		if err != nil {
 			return PlanResult{}, err
 		}
+	}
+	if project != nil {
+		mapped, scripts, inventory, err := project.bundle()
+		if err != nil {
+			return PlanResult{}, err
+		}
+		files, sources = mapped, inventory
+		options = append(options, bundle.WithScriptSources(scripts))
 	}
 	variables, err := Variables(opts.Variables)
 	if err != nil {
 		return PlanResult{}, err
 	}
-	options := []bundle.Option{bundle.WithVariables(variables)}
+	options = append(options, bundle.WithVariables(variables))
 	if opts.Schema != "main" {
 		options = append(options, bundle.WithSchema(opts.Schema))
 	}
@@ -94,7 +116,7 @@ func planBundle(ctx context.Context, db *sql.DB, opts Options) (PlanResult, erro
 	if err != nil {
 		return PlanResult{}, err
 	}
-	data, err := json.Marshal(preview)
+	data, err := json.Marshal(planPreview{Preview: preview, Sources: sources})
 	if err != nil {
 		return PlanResult{}, err
 	}

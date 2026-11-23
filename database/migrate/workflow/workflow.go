@@ -26,6 +26,7 @@ type Options struct {
 	Schema     string
 	Source     Source
 	Bundle     fs.FS
+	Project    *Project
 	Variables  []string
 	Routines   string
 	AllowDrops bool
@@ -49,6 +50,7 @@ type PlanResult struct {
 	Warnings   []string          `json:"warnings"`
 	Applicable bool              `json:"applicable"`
 	SQL        string            `json:"sql"`
+	Sources    []ProjectSource   `json:"sources,omitempty"`
 	CSVPlan    *csvdata.Artifact `json:"csvPlan,omitempty"`
 	// ScriptPlan is the plan file of a SQL Server script bundle.
 	ScriptPlan *scriptplan.PlanFile `json:"scriptPlan,omitempty"`

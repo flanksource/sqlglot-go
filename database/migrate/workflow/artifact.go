@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	bundle "github.com/flanksource/sqlglot-go/database/migrate"
 	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
 	"github.com/flanksource/sqlglot-go/database/migrate/review"
 	scriptplan "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
@@ -39,6 +38,15 @@ func Unwrap(data []byte) (json.RawMessage, []string, error) {
 }
 
 func Review(data []byte, dialect, schema string) (PlanResult, error) {
+	var preview planPreview
+	if err := json.Unmarshal(data, &preview); err != nil {
+		return PlanResult{}, err
+	}
+	if preview.ScriptPlan != nil {
+		result, err := reviewScriptPlan(data, preview.ScriptPlan, preview.Warnings, dialect, schema)
+		result.Sources = preview.Sources
+		return result, err
+	}
 	file, warnings, err := scriptPlanOf(data)
 	if err != nil {
 		return PlanResult{}, err
@@ -46,15 +54,11 @@ func Review(data []byte, dialect, schema string) (PlanResult, error) {
 	if file != nil {
 		return reviewScriptPlan(data, file, warnings, dialect, schema)
 	}
-	var preview bundle.Preview
-	if err := json.Unmarshal(data, &preview); err != nil {
-		return PlanResult{}, err
-	}
 	if preview.SQLServerPlan != nil {
 		if preview.Artifact != nil || preview.SQLServerArtifact != nil || len(preview.Warnings) == 0 || (dialect != "" && dialect != "sqlserver") {
 			return PlanResult{}, fmt.Errorf("invalid advisory SQL Server preview")
 		}
-		result := PlanResult{Dialect: "sqlserver", Schema: schema, Artifact: data, Original: data, Warnings: preview.Warnings, Steps: []Step{}, Acks: []string{}, Changes: preview.SQLServerPlan.Changes}
+		result := PlanResult{Dialect: "sqlserver", Schema: schema, Artifact: data, Original: data, Warnings: preview.Warnings, Steps: []Step{}, Acks: []string{}, Changes: preview.SQLServerPlan.Changes, Sources: preview.Sources}
 		for _, step := range preview.SQLServerPlan.Steps {
 			result.Steps = append(result.Steps, Step{ID: step.Change.ID, SQL: step.SQL, Destructive: step.Change.Destructive})
 		}
@@ -91,7 +95,7 @@ func Review(data []byte, dialect, schema string) (PlanResult, error) {
 			schema = scope.Baseline.Schema
 		}
 	}
-	result := PlanResult{Dialect: dialect, Schema: schema, Original: data, Artifact: artifact, Steps: []Step{}, Acks: []string{}, Warnings: warnings}
+	result := PlanResult{Dialect: dialect, Schema: schema, Original: data, Artifact: artifact, Steps: []Step{}, Acks: []string{}, Warnings: warnings, Sources: preview.Sources}
 	if dialect == "sqlserver" {
 		var a native.Artifact
 		if err = Decode(artifact, &a); err != nil {
