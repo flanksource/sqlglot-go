@@ -20,6 +20,7 @@ import (
 	"github.com/flanksource/sqlglot-go/database/compare"
 	"github.com/flanksource/sqlglot-go/database/connections"
 	"github.com/flanksource/sqlglot-go/database/history"
+	"github.com/flanksource/sqlglot-go/database/migrate/workflow"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,7 +37,7 @@ var _ = Describe("ui server", func() {
 		GinkgoT().Setenv("XDG_CONFIG_HOME", GinkgoT().TempDir())
 		writeConnectionFile(dir, "orders.yaml", sqliteConnection(filepath.Join(dir, "orders.db")))
 		spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, spaBody) })
-		handler, err := newUIHandler(uiHandlerOptions{Root: newRootCommand(strings.NewReader("")), ConnectionsDir: dir, UI: spa})
+		handler, err := newUIHandler(uiHandlerOptions{Root: newRootCommand(strings.NewReader("")), ConnectionsDir: dir, ProjectDir: dir, UI: spa})
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(handler.Close)
 		server = httptest.NewServer(handler)
@@ -250,6 +251,81 @@ var _ = Describe("ui server", func() {
 		Expect(string(result.Data)).To(ContainSubstring("keep"))
 		Expect(string(result.Data)).NotTo(ContainSubstring("omit"))
 	})
+	It("discovers project sources and exposes only target aliases", func() {
+		const config = `version: 1
+mappings: [{match: 'schema.hcl'}]
+connections: {dev: 'connection://orders', private: 'sqlserver://operator:secret@example.test/db'}
+`
+		Expect(os.WriteFile(filepath.Join(dir, ".sqlglot-go.yaml"), []byte(config), 0600)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "schema.hcl"), []byte(localProjectSchema), 0600)).To(Succeed())
+		status, body := request(http.MethodPost, "/api/v1/migrate/project", map[string]any{})
+		Expect(status).To(Equal(http.StatusOK), body)
+		var info migrationProjectInfo
+		Expect(json.Unmarshal([]byte(body), &info)).To(Succeed())
+		Expect(info).To(Equal(migrationProjectInfo{Config: filepath.Join(dir, ".sqlglot-go.yaml"),
+			Targets: []string{"dev", "private"}, Preview: &workflow.ProjectPreview{Mapped: 1}}))
+		Expect(body).NotTo(ContainSubstring("secret"))
+
+		db, err := sql.Open("sqlite", filepath.Join(dir, "orders.db"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(db.Ping()).To(Succeed())
+		Expect(db.Close()).To(Succeed())
+		status, body = request(http.MethodPost, "/api/v1/migrate/plan", map[string]any{
+			"target": "dev", "source": map[string]any{"kind": "project"},
+		})
+		Expect(status).To(Equal(http.StatusOK), body)
+		Expect(body).To(ContainSubstring(`CREATE TABLE`))
+		status, body = request(http.MethodPost, "/api/v1/migrate/plan", map[string]any{
+			"target": "dev", "dsn": "connection://orders", "source": map[string]any{"kind": "project"},
+		})
+		Expect(status).To(Equal(http.StatusBadRequest), body)
+		Expect(body).To(ContainSubstring("select either --dsn or --target"))
+		status, body = request(http.MethodPost, "/api/v1/migrate/plan", map[string]any{
+			"target": "dev", "source": map[string]any{"kind": "project", "files": []workflow.File{{Path: "elsewhere.sql"}}},
+		})
+		Expect(status).To(Equal(http.StatusBadRequest), body)
+		Expect(body).To(ContainSubstring("does not accept uploaded contents"))
+	})
+
+	It("lists ordinary bundle files when the uploaded config defines only target aliases", func() {
+		status, body := request(http.MethodPost, "/api/v1/migrate/sources", map[string]any{
+			"config": "version: 1\nconnections: {dev: 'connection://orders'}\n",
+			"paths":  []string{".sqlglot-go.yaml", "schema.hcl"},
+		})
+		Expect(status).To(Equal(http.StatusOK), body)
+		Expect(body).To(MatchJSON(`{"required":["schema.hcl"],"plain":true}`))
+	})
+	It("previews uploaded mapped sources and preserves their labels in the reviewed plan", func() {
+		const config = `version: 1
+mappings:
+  - match: '*.hcl'
+    labels: {component: [billing]}
+ignore: ['excluded.hcl']
+`
+		status, body := request(http.MethodPost, "/api/v1/migrate/sources", map[string]any{"config": config, "paths": []string{".sqlglot-go.yaml", "schema.hcl", "excluded.hcl", "notes.txt"}})
+		Expect(status).To(Equal(http.StatusOK), body)
+		Expect(body).To(MatchJSON(`{"required":[".sqlglot-go.yaml","schema.hcl","excluded.hcl"]}`))
+		files := []workflow.File{
+			{Path: ".sqlglot-go.yaml", Content: config},
+			{Path: "schema.hcl", Content: "schema \"public\" {}\ntable \"items\" {\n schema = schema.public\n column \"id\" { type = integer }\n}"},
+			{Path: "excluded.hcl", Content: "invalid HCL"},
+		}
+		status, body = request(http.MethodPost, "/api/v1/migrate/sources", map[string]any{"files": files})
+		Expect(status).To(Equal(http.StatusOK), body)
+		Expect(body).To(MatchJSON(`{"mapped":1,"ignored":1}`))
+		db, err := sql.Open("sqlite", filepath.Join(dir, "orders.db"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(db.Ping()).To(Succeed())
+		Expect(db.Close()).To(Succeed())
+		status, body = request(http.MethodPost, "/api/v1/migrate/plan", map[string]any{
+			"dsn": "connection://orders", "source": workflow.Source{Kind: "bundle", Files: files},
+		})
+		Expect(status).To(Equal(http.StatusOK), body)
+		var plan workflow.PlanResult
+		Expect(json.Unmarshal([]byte(body), &plan)).To(Succeed())
+		Expect(plan.Sources).To(Equal([]workflow.ProjectSource{{Path: "schema.hcl", Kind: workflow.HCLContent, ID: "schema.hcl", Labels: map[string][]string{"component": {"billing"}}}}))
+	})
+
 	It("rejects server paths and unknown fields in content requests before opening a database", func() {
 		for path, body := range map[string]map[string]any{
 			"/api/v1/parse":          {"file": "/server/schema.sql"},
@@ -307,6 +383,8 @@ var _ = Describe("ui server", func() {
 		Expect(inputs("/api/v1/schema/compare")).To(ContainElements(compareFlags))
 		Expect(inputs("/api/v1/schema/patch")).To(ContainElements(append(compareFlags, "select", "diff-hash")))
 		Expect(inputs("/api/v1/migrate/plan")).To(ContainElements("source", "artifactContent"))
+		Expect(inputs("/api/v1/migrate/plan")).To(ContainElement("target"))
+		Expect(inputs("/api/v1/migrate/sources")).To(ContainElements("config", "paths", "files"))
 		Expect(inputs("/api/v1/migrate/apply")).To(ContainElements("artifactContent", "ack"))
 	})
 

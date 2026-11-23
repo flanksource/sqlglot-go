@@ -43,6 +43,7 @@ func (o TargetOptions) open(ctx context.Context, readOnly bool) (dbtarget.Connec
 
 type MigrationOptions struct {
 	TargetOptions
+	Target          string            `json:"target,omitempty" flag:"target" help:"Target alias defined in .sqlglot-go.yaml"`
 	Bundle          string            `json:"bundle,omitempty" flag:"bundle" help:"Directory containing HCL and SQL files (CLI only)"`
 	CSVRoot         string            `json:"csv-root,omitempty" flag:"csv-root" help:"Directory containing CSV migration sources (CLI only)"`
 	Country         []string          `json:"country,omitempty" flag:"-" help:"CSV country layer filter"`
@@ -60,6 +61,7 @@ type MigrationOptions struct {
 	AllowDrops      bool              `json:"allow-drops,omitempty" flag:"allow-drops" help:"Include omitted objects as removals in a bundle"`
 	Source          workflow.Source   `json:"source" flag:"-"`
 	ArtifactContent json.RawMessage   `json:"artifactContent,omitempty" flag:"-"`
+	project         *workflow.Project
 }
 
 // defaultPlanPath is where migrate plan writes its plan file without --out.
@@ -183,7 +185,14 @@ func migrationInput(ctx context.Context, opts MigrationOptions, role pathRole) (
 		if opts.Bundle != "" || opts.CSVRoot != "" || opts.Desired != "" || len(opts.Paths) > 0 || opts.Output != "" || opts.ConnectionsDir != "" {
 			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "HTTP requests require uploaded content, not server paths")
 		}
-		return opts, nil
+		if opts.DSN != "" && opts.Target != "" {
+			return opts, entity.NewStatusError(http.StatusBadRequest, "invalid_input", "select either --dsn or --target")
+		}
+		err := loadHTTPMigrationProject(&opts, role, request)
+		return opts, err
+	}
+	if opts.DSN != "" && opts.Target != "" {
+		return opts, fmt.Errorf("select either --dsn or --target")
 	}
 	sources := 0
 	for _, set := range []bool{opts.CSVRoot != "", opts.Bundle != "", opts.Desired != "", role == pathsAreSources && len(opts.Paths) > 0} {
@@ -199,6 +208,9 @@ func migrationInput(ctx context.Context, opts MigrationOptions, role pathRole) (
 	}
 	if role == pathIsPlanFile && len(opts.Paths) > 1 {
 		return opts, fmt.Errorf("expected one plan file, got %d paths", len(opts.Paths))
+	}
+	if err := loadCLIMigrationProject(&opts, role); err != nil || opts.project != nil {
+		return opts, err
 	}
 	if role == pathsAreSources && len(opts.Paths) > 0 {
 		files, err := readBundleSources(opts.Paths, os.Stderr)
@@ -234,7 +246,7 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 			if dir == "" {
 				dir = compareConnectionsDir
 			}
-			plan := workflow.Options{Source: opts.Source, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
+			plan := workflow.Options{Source: opts.Source, Project: opts.project, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
 			filters, err := migrationLayerFilters(opts)
 			if err != nil {
 				return workflow.RunResult{}, err
@@ -250,7 +262,7 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 			} else if opts.Source.Kind != "csv" && (len(filters) != 0 || opts.CSVPhase != "") {
 				return workflow.RunResult{}, fmt.Errorf("layer filters and phase require a CSV migration source")
 			}
-			if opts.Bundle != "" {
+			if opts.Bundle != "" && opts.project == nil {
 				root, err := os.OpenRoot(opts.Bundle)
 				if err != nil {
 					return workflow.RunResult{}, err

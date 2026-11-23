@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +79,9 @@ var _ = Describe("CSV migration CLI flags", func() {
 	)
 
 	It("routes the files selected by the documented AS.csv.yaml example", func() {
-		_, block, found := strings.Cut(migrationHelp, "```yaml\n")
+		_, section, found := strings.Cut(migrationHelp, "### Map CSV files with YAML\n")
+		Expect(found).To(BeTrue())
+		_, block, found := strings.Cut(section, "```yaml\n")
 		Expect(found).To(BeTrue())
 		mapping, _, found := strings.Cut(block, "\n```")
 		Expect(found).To(BeTrue())
@@ -212,5 +215,30 @@ var _ = Describe("migration filesystem confinement", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(root.Close)
 		Expect(root.ReadFile("reviewed.json")).To(ContainSubstring("CREATE TABLE"))
+	})
+
+	It("uses the project config with either filesystem source and reports its labels", func() {
+		config := `version: 1
+mappings:
+  - match: 'schema.hcl'
+    labels: {component: [billing]}
+ignore: ['excluded.hcl']
+`
+		Expect(os.WriteFile(filepath.Join(dir, workflow.ProjectConfigName), []byte(config), 0600)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "schema.hcl"), []byte(desired), 0600)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "excluded.hcl"), []byte("invalid HCL"), 0600)).To(Succeed())
+		for _, source := range [][]string{{"--bundle", dir}, {dir}} {
+			root := newRootCommand(strings.NewReader(""))
+			var output bytes.Buffer
+			root.SetOut(&output)
+			root.SetErr(&bytes.Buffer{})
+			root.SetArgs(append([]string{"migrate", "plan", "--dsn", dbPath, "--out", filepath.Join(dir, "reviewed.json")}, source...))
+			Expect(root.Execute()).To(Succeed())
+			var plan workflow.PlanResult
+			Expect(json.Unmarshal(output.Bytes(), &plan)).To(Succeed())
+			Expect(plan.Sources).To(Equal([]workflow.ProjectSource{{Path: "schema.hcl", Kind: workflow.HCLContent, ID: "schema.hcl",
+				Labels: map[string][]string{"component": {"billing"}}}}))
+			Expect(output.String()).To(ContainSubstring("CREATE TABLE"))
+		}
 	})
 })

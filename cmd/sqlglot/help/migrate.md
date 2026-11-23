@@ -29,6 +29,33 @@ sqlglot schema inspect --dsn connection://warehouse-reference --snapshot > ./des
 sqlglot migrate plan --dsn connection://warehouse-target --desired ./desired.json --out ./reviewed.json
 ```
 
+## Project source mappings
+
+Place `.sqlglot-go.yaml` in the project directory. With no explicit source, `migrate plan` checks the current directory first and then the Git root. `migrate plan DIR` and `migrate plan --bundle DIR` use the configuration in that directory.
+
+```yaml
+version: 1
+connections:
+  dev: 'connection://inventory-dev'
+  local: './inventory.db'
+mappings:
+  - match: 'schema/**/*.hcl'
+  - match: 'migrations/**/*.sql'
+    labels: {component: [billing]}
+  - match: 'legacy/baseline.txt'
+    transform: '{"hcl": file.content, "id": "schema/baseline.hcl"}'
+ignore:
+  - 'migrations/archive/**'
+```
+
+Run `sqlglot migrate plan --target dev` to use the configured sources and the `dev` connection. `--target` accepts an alias and is mutually exclusive with `--dsn`. Aliases can use existing `connection://` references or database DSNs. Relative SQLite paths such as `./inventory.db` resolve beside the project configuration.
+
+Only matched files enter the bundle. Globs use case-sensitive, project-relative paths. An explicit `kind` overrides `.hcl` or `.sql` extension inference. For other extensions, the transform can determine the kind from its `sql` or `hcl` result key.
+
+A `transform` is a gomplate CEL expression with `file.path` and `file.content`. It returns `sql` or `hcl` and can also set `id`, `labels`, and the SQL `name` and `phase`. An HCL ID is its logical `.hcl` path. A SQL ID is its migration key. Labels are named lists of strings included in structured plan output. A transform can replace a rule's label, and an empty list removes it.
+
+For XML descriptors, `xmlpath(xml, selector)` requires one matching node and returns its text or attribute value. `read(path)` reads a companion file relative to the descriptor within the project. Ignore rules apply to both files. For example, `{"sql": read(xmlpath(file.content, "/root/entry[@name='SQLDATA']/@file")), "id": xmlpath(file.content, "/root/entry[@name='SQLSCRIPTGUID']").trim().lower()}` reads an OIPA deployment script and assigns its normalized GUID.
+
 ## HCL bundles
 
 PostgreSQL bundles declare `public` and remap it to the existing schema selected with `--schema`. SQLite projects supported PostgreSQL-shaped HCL to `main`. SQL Server uses its own HCL types and declares `dbo`.
@@ -54,7 +81,7 @@ Pass values for declared HCL variables with repeatable `--var 'NAME=HCL_LITERAL'
 
 ## SQL script headers
 
-Put directives in leading `--` comment lines. PostgreSQL and SQL Server can preview script bundles. SQL Server scripts accept `GO` batch separators and reject SQLCMD commands and variables.
+Put directives in leading `--` comment lines. PostgreSQL and SQL Server can preview script bundles. SQL Server scripts accept `GO` batch separators and reject SQLCMD commands and variables. A SQL Server script with no executable statements appears as skipped with a planning warning.
 
 For a PostgreSQL example, save `db/010_items_view.sql` alongside the HCL file.
 

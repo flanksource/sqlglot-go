@@ -20,6 +20,8 @@ func addDatabaseCommands(root *cobra.Command) {
 	addCompareCommands(schemaCmd)
 	migrateCmd := &cobra.Command{Use: "migrate", Short: "Plan and apply reviewed database migrations", Long: migrationHelp}
 	migrateCmd.AddCommand(newMigrationPlanCommand(), newMigrationApplyCommand(), newMigrationReviewCommand())
+	addMigrationSourcesCommand(migrateCmd)
+	addMigrationProjectCommand(migrateCmd)
 	migrateCmd.SetHelpFunc(renderMigrationHelp)
 	clicky.SetGroupedUsage(migrateCmd)
 	root.AddCommand(schemaCmd, migrateCmd)
