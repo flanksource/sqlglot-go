@@ -14,7 +14,8 @@ import (
 
 type Result struct {
 	// Outcome is applied, already-applied, stale, or the worst outcome of the
-	// scripts that failed (failed, partial or commit-unknown).
+	// scripts that failed (failed, partial or commit-unknown). A completed
+	// apply with tolerated script failures is applied-with-warnings.
 	Outcome string   `json:"outcome"`
 	Applied []string `json:"applied"`
 	// Schema is applied when the schema step ran statements.
@@ -23,8 +24,9 @@ type Result struct {
 	Blocked []string `json:"blocked,omitempty"`
 	// Failed are the scripts that failed; Skipped the selected ones that did
 	// not run because of them.
-	Failed  []ScriptFailure `json:"failed,omitempty"`
-	Skipped []SkippedScript `json:"skipped,omitempty"`
+	Failed   []ScriptFailure `json:"failed,omitempty"`
+	Skipped  []SkippedScript `json:"skipped,omitempty"`
+	Warnings []ScriptFailure `json:"warnings,omitempty"`
 }
 
 // Apply runs file on db: it verifies the file's integrity and target, re-plans
@@ -107,7 +109,9 @@ func (s *session) apply(ctx context.Context, file PlanFile, cfg applyConfig) (Re
 		return result, errors.Join(run.failures...)
 	}
 	result.Outcome = "applied"
-	if len(result.Applied) == 0 && result.Schema == "" {
+	if len(result.Warnings) > 0 {
+		result.Outcome = "applied-with-warnings"
+	} else if len(result.Applied) == 0 && result.Schema == "" {
 		result.Outcome = "already-applied"
 	}
 	return result, nil
@@ -171,19 +175,11 @@ func (r *applyRun) phase(ctx context.Context, result *Result, phase scripts.Phas
 			r.skip(result, planned.Script.ID, dependency)
 			continue
 		}
-		item := planned
-		if err := r.cfg.report(ProgressScript, planned.Script.ID, func() (err error) {
-			if item, err = r.settle(ctx, planned); err != nil {
-				return err
-			}
-			if err = r.s.execute(ctx, item, r.file.Hash, r.check(item)); err != nil {
-				return &scriptError{err}
-			}
-			return nil
-		}); err != nil {
-			if err := r.failed(ctx, result, item.Script.ID, err); err != nil {
-				return errors.Join(append(r.failures, err)...)
-			}
+		item, applied, err := r.runScript(ctx, result, planned)
+		if err != nil {
+			return errors.Join(append(r.failures, err)...)
+		}
+		if !applied {
 			continue
 		}
 		result.Applied = append(result.Applied, item.Script.ID)
@@ -197,6 +193,30 @@ func (r *applyRun) phase(ctx context.Context, result *Result, phase scripts.Phas
 		}
 	}
 	return nil
+}
+
+func (r *applyRun) runScript(ctx context.Context, result *Result, planned scripts.Pending) (scripts.Pending, bool, error) {
+	p := Progress{Step: ProgressScript, Script: planned.Script.ID}
+	r.cfg.emit(p)
+	p.Done = true
+	item, err := r.settle(ctx, planned)
+	if err == nil {
+		if err = r.s.execute(ctx, item, r.file.Hash, r.check(item)); err != nil {
+			err = &scriptError{err}
+		}
+	}
+	if err == nil {
+		r.cfg.emit(p)
+		return item, true, nil
+	}
+	warned, stop := r.failed(ctx, result, item.Script.ID, err)
+	if warned {
+		p.Warning = err
+	} else {
+		p.Err = err
+	}
+	r.cfg.emit(p)
+	return item, false, stop
 }
 
 // settle is planned as it will run: its inputs at their snapshot values,
