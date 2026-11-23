@@ -127,7 +127,11 @@ func serveUI(cmd *cobra.Command, root *cobra.Command, opts uiOptions) (returnErr
 	if err := checkUIAddr(opts.addr, opts.listenAny); err != nil {
 		return err
 	}
-	handlerOpts := uiHandlerOptions{Root: root, ConnectionsDir: opts.connectionsDir, ListenAny: opts.listenAny}
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	handlerOpts := uiHandlerOptions{Root: root, ConnectionsDir: opts.connectionsDir, ProjectDir: projectDir, ListenAny: opts.listenAny}
 	var devPort int
 	var devURL *url.URL
 	if opts.dev {
@@ -238,6 +242,7 @@ func isLoopbackHost(host string) bool {
 type uiHandlerOptions struct {
 	Root           *cobra.Command
 	ConnectionsDir string
+	ProjectDir     string
 	UI             http.Handler
 	ListenAny      bool
 	// AllowedOrigins are extra Origin hosts the API accepts: the Vite dev
@@ -310,11 +315,15 @@ func guardUIRequests(next http.Handler, opts uiHandlerOptions) http.Handler {
 				http.Error(w, reason, http.StatusForbidden)
 				return
 			}
-			if r.ContentLength > 16*1024*1024 {
-				http.Error(w, "request exceeds 16 MiB", http.StatusRequestEntityTooLarge)
+			limit := requestBodyLimit(r.URL.Path)
+			if r.ContentLength > limit {
+				http.Error(w, fmt.Sprintf("request exceeds %d MiB", limit/mib), http.StatusRequestEntityTooLarge)
 				return
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, 16*1024*1024)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+			if opts.ProjectDir != "" && strings.HasPrefix(r.URL.Path, apiPrefix+"/migrate/") {
+				r = r.WithContext(context.WithValue(r.Context(), projectDirectoryKey{}, opts.ProjectDir))
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

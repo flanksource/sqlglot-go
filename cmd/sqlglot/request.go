@@ -2,21 +2,34 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/flanksource/clicky/entity"
 	"github.com/flanksource/clicky/rpc"
 	"github.com/flanksource/sqlglot-go/database/migrate/workflow"
 )
 
+const mib = 1024 * 1024
+
+func requestBodyLimit(path string) int64 {
+	if strings.HasPrefix(path, apiPrefix+"/migrate/") {
+		return 128 * mib
+	}
+	return 16 * mib
+}
+
 func decodeRequest(request *http.Request, value any) error {
-	data, err := io.ReadAll(io.LimitReader(request.Body, 16*1024*1024+1))
+	limit := requestBodyLimit(request.URL.Path)
+	data, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) || int64(len(data)) > limit {
+		return entity.NewStatusErrorf(http.StatusRequestEntityTooLarge, "request_too_large", "request exceeds %d MiB", limit/mib)
+	}
 	if err != nil {
 		return entity.NewStatusErrorf(http.StatusBadRequest, "invalid_request", "%v", err)
-	}
-	if len(data) > 16*1024*1024 {
-		return entity.NewStatusErrorf(http.StatusRequestEntityTooLarge, "request_too_large", "request exceeds 16 MiB")
 	}
 	if err := workflow.Decode(data, value); err != nil {
 		return entity.NewStatusErrorf(http.StatusBadRequest, "invalid_request", "%v", err)

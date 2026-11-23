@@ -11,7 +11,7 @@ func addContentOpenAPI(spec *rpc.OpenAPISpec) {
 			if method != "post" {
 				continue
 			}
-			if path != apiPrefix+"/migrate/plan" && path != apiPrefix+"/migrate/apply" && path != apiPrefix+"/migrate/review" && path != apiPrefix+"/render" {
+			if path != apiPrefix+"/migrate/plan" && path != apiPrefix+"/migrate/apply" && path != apiPrefix+"/migrate/review" && path != apiPrefix+"/migrate/sources" && path != apiPrefix+"/render" {
 				continue
 			}
 			if op.RequestBody == nil {
@@ -24,10 +24,14 @@ func addContentOpenAPI(spec *rpc.OpenAPISpec) {
 			if media.Schema.Properties == nil {
 				media.Schema.Properties = map[string]*rpc.OpenAPISchema{}
 			}
-			if path == apiPrefix+"/render" {
+			switch path {
+			case apiPrefix + "/render":
 				media.Schema.Properties["value"] = &rpc.OpenAPISchema{Description: "Existing JSON result to render; this never executes a database operation"}
-			} else {
+			case apiPrefix + "/migrate/sources":
+				media.Schema = rpc.SchemaForStruct(migrationSourceInput{})
+			default:
 				media.Schema.Properties["source"] = rpc.SchemaForStruct(workflow.Source{})
+				media.Schema.Properties["target"] = &rpc.OpenAPISchema{Type: "string", Description: "Alias from the server's local migration project. Use one of target or dsn."}
 				media.Schema.Properties["artifactContent"] = &rpc.OpenAPISchema{Type: "object", Description: "Unmodified reviewed artifact JSON"}
 				for _, key := range []string{"bundle", "desired", "artifact", "out", "connections-dir"} {
 					delete(media.Schema.Properties, key)
