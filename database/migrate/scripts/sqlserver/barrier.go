@@ -14,10 +14,17 @@ type Connection interface{ sessionDB }
 type ApplyOption func(*applyConfig)
 
 type applyConfig struct {
-	barrier     func(context.Context, Connection) error
-	analysis    cache.Store
-	analysisTTL time.Duration
-	progress    func(Progress)
+	barrier            func(context.Context, Connection) error
+	analysis           cache.Store
+	analysisTTL        time.Duration
+	progress           func(Progress)
+	primaryKeyWarnings bool
+}
+
+// WithPrimaryKeyWarnings continues after a script's primary-key violation when the
+// script rolled back and its failure was recorded. Scripts that depend on it are skipped.
+func WithPrimaryKeyWarnings() ApplyOption {
+	return func(c *applyConfig) { c.primaryKeyWarnings = true }
 }
 
 // WithBarrier runs fn on the locked apply connection after the schema step

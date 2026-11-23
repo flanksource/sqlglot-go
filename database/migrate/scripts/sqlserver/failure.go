@@ -47,10 +47,10 @@ func (e *scriptError) Unwrap() error { return e.err }
 // failed records id's failure and returns nil when the apply can go on. It
 // cannot when the failure is not id's alone: the plan turned out stale, the
 // caller cancelled, or the session is gone.
-func (r *applyRun) failed(ctx context.Context, result *Result, id string, err error) error {
+func (r *applyRun) failed(ctx context.Context, result *Result, id string, err error) (warned bool, stop error) {
 	var drift *inputDrift
 	if errors.As(err, &drift) {
-		return &StalePlanError{Moved: []string{drift.Error()}}
+		return false, &StalePlanError{Moved: []string{drift.Error()}}
 	}
 	outcome := "failed"
 	var execution *ExecutionError
@@ -65,24 +65,34 @@ func (r *applyRun) failed(ctx context.Context, result *Result, id string, err er
 	}
 	var script *scriptError
 	if outcome == "applied" || !errors.As(err, &script) {
-		return err
+		return false, err
 	}
 	err = script.err
-	result.Failed = append(result.Failed, ScriptFailure{Script: id, Outcome: outcome, Error: err.Error()})
+	failure := ScriptFailure{Script: id, Outcome: outcome, Error: err.Error()}
+	defer func() {
+		if warned {
+			result.Warnings = append(result.Warnings, failure)
+		} else {
+			result.Failed = append(result.Failed, failure)
+		}
+	}()
 	if ctx.Err() != nil {
-		return err
+		return false, err
 	}
 	// The script may have left a transaction of its own open, and a fatal error
 	// ends the session, and with it the migration lock.
 	if _, sessionErr := r.s.conn.ExecContext(ctx, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; "+r.s.reset()); sessionErr != nil {
-		return errors.Join(err, fmt.Errorf("the session did not survive script %s: %w", id, sessionErr))
+		return false, errors.Join(err, fmt.Errorf("the session did not survive script %s: %w", id, sessionErr))
+	}
+	r.markUnmet(id)
+	if outcome == "failed" && r.cfg.primaryKeyWarnings && isPrimaryKeyViolation(err) {
+		return true, nil
 	}
 	r.failures = append(r.failures, err)
-	r.markUnmet(id)
 	if outcome != "failed" {
 		r.markStale(id)
 	}
-	return nil
+	return false, nil
 }
 
 // markUnmet marks id and every script still to run that directly or indirectly

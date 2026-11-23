@@ -13,12 +13,13 @@ const (
 	ProgressSchema ProgressStep = "schema"
 )
 
-// Progress is one step of an Apply starting or, when Done, ending with Err.
+// Progress is one step of an Apply starting or, when Done, ending with an error or warning.
 type Progress struct {
-	Step   ProgressStep
-	Script string
-	Done   bool
-	Err    error
+	Step    ProgressStep
+	Script  string
+	Done    bool
+	Err     error
+	Warning error
 }
 
 // WithProgress calls fn, on the applying goroutine, as each step of the apply
@@ -36,4 +37,10 @@ func (c applyConfig) report(step ProgressStep, script string, fn func() error) e
 	err := fn()
 	c.progress(Progress{Step: step, Script: script, Done: true, Err: err})
 	return err
+}
+
+func (c applyConfig) emit(p Progress) {
+	if c.progress != nil {
+		c.progress(p)
+	}
 }

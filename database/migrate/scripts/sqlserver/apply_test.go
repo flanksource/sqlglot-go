@@ -565,6 +565,56 @@ var _ = Describe("Plan file apply", func() {
 			Expect(err).To(MatchError(failedWith("a").Error))
 			Expect(result.Applied).To(Equal([]string{"b"}))
 		})
+
+		It("reports a rolled-back primary key violation as a warning and reaches the deploy barrier and post scripts", func(ctx SpecContext) {
+			file := start(scripts.Script{ID: "a", Phase: scripts.Pre, SQL: insert("a")},
+				scripts.Script{ID: "b", Phase: scripts.Post, SQL: insert("b"), DependsOn: []string{"a"}},
+				scripts.Script{ID: "c", Phase: scripts.Post, SQL: insert("c")})
+			duplicate := mssql.Error{Number: 2627, Message: violation + ". Cannot insert duplicate key in object 'dbo.AsCode'."}
+			expectBegin(mock, scriptRun{scope: opts.Scope, id: "a"})
+			mock.ExpectExec(completionOf(insert("a"), "a")).WillReturnError(duplicate)
+			mock.ExpectRollback()
+			mock.ExpectExec(recordedOutcome("a", "failed")).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectSessionCheck(mock)
+			expectTransaction(mock, scriptRun{scope: opts.Scope, id: "c", body: insert("c")})
+			expectRelease(mock)
+
+			var barrier bool
+			var warning error
+			result, err := Apply(ctx, db, file, WithPrimaryKeyWarnings(), WithBarrier(func(context.Context, Connection) error {
+				barrier = true
+				return nil
+			}), WithProgress(func(p Progress) {
+				if p.Script == "a" && p.Done {
+					Expect(p.Err).NotTo(HaveOccurred())
+					warning = p.Warning
+				}
+			}))
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(barrier).To(BeTrue())
+			Expect(warning).To(MatchError(ContainSubstring(violation)))
+			Expect(result).To(Equal(Result{Outcome: "applied-with-warnings", Applied: []string{"c"},
+				Warnings: []ScriptFailure{{Script: "a", Outcome: "failed", Error: "script a batch 1: " + duplicate.Error()}},
+				Skipped:  []SkippedScript{{Script: "b", Dependency: "a"}}}))
+		})
+
+		DescribeTable("recognizes only SQL Server primary key batch violations",
+			func(cause error, want bool) {
+				Expect(isPrimaryKeyViolation(&scriptBatchError{script: "a", batch: 1, err: cause})).To(Equal(want))
+			},
+			Entry("2627 with statement termination", mssql.Error{All: []mssql.Error{
+				{Number: 2627, Message: violation}, {Number: 3621},
+			}}, true),
+			Entry("2627 for a unique constraint", mssql.Error{Number: 2627, Message: "Violation of UNIQUE KEY constraint 'UQ_ASCODE'"}, false),
+			Entry("2601 for a unique index", mssql.Error{Number: 2601, Message: "Cannot insert duplicate key row with unique index"}, false),
+			Entry("a batch with a second error", mssql.Error{All: []mssql.Error{
+				{Number: 2627, Message: violation}, {Number: 547, Message: "foreign key violation"},
+			}}, false),
+			Entry("the migration ledger", mssql.Error{Number: 2627, Message: "Violation of PRIMARY KEY constraint 'PK_MIGRATIONS'. Cannot insert duplicate key in object 'dbo.sqlglot_migrations'."}, false),
+			Entry("a joined transport error", errors.Join(mssql.Error{Number: 2627, Message: violation}, errors.New("connection reset")), false),
+			Entry("error text alone", errors.New(violation), false),
+		)
 	})
 
 	It("re-plans after a script with unknown effects and observes every input of the scripts after it", func(ctx SpecContext) {

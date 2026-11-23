@@ -245,8 +245,11 @@ func (s *session) runTransactional(ctx context.Context, tx *sql.Tx, script scrip
 		if last {
 			after = completion
 		}
-		for _, statement := range request(batch, tails[i], after, last) {
+		for part, statement := range request(batch, tails[i], after, last) {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				if part == 0 {
+					return countError(&scriptBatchError{script: script.ID, batch: i + 1, err: err})
+				}
 				return countError(fmt.Errorf("script %s batch %d: %w", script.ID, i+1, err))
 			}
 		}
