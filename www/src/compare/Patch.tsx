@@ -57,7 +57,7 @@ function PatchRun({ route, navigate, result }: { route: Route; navigate: Navigat
       )}
       missingActions={backToReview}
     >
-      {(patch) => <><Button onClick={() => navigate({ page: "migrations", migrationRun: route.patch, workflowConnection: result.target.startsWith("connection://") ? result.target : "", workflowDriver: result.dialect, workflowSchema: result.schemas.length === 1 ? result.schemas[0] ?? "" : "" })}>Review application</Button><PatchView patch={patch} result={result} /></>}
+      {(patch) => <><Button onClick={() => navigate({ page: "migrations", migrationRun: route.patch, migrationTarget: undefined, workflowConnection: result.target.startsWith("connection://") ? result.target : "", workflowDriver: result.dialect, workflowSchema: result.schemas.length === 1 ? result.schemas[0] ?? "" : "" })}>Review application</Button><PatchView patch={patch} result={result} /></>}
     </RunGate>
   );
 }

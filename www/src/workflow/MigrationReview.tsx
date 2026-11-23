@@ -9,10 +9,14 @@ import {
 } from "@flanksource/clicky-ui/components";
 import { Badge, Callout, CodeBlock } from "@flanksource/clicky-ui/data";
 import { PLAN_FILE } from "../compare/model";
+import type { Navigate, Route } from "../compare/route";
 import { downloadText } from "../download";
+import { MigrationScripts } from "./MigrationScripts";
+import { PROJECT_TARGET_PREFIX } from "./projectUpload";
 import type { ReviewedPlan, ApplyInput } from "./types";
 
 function targetLabel(target: string): string {
+  if (target.startsWith(PROJECT_TARGET_PREFIX)) return `${target.slice(PROJECT_TARGET_PREFIX.length)} (project)`;
   if (target.startsWith("connection://")) return target;
   try {
     const url = new URL(target);
@@ -27,11 +31,15 @@ export function MigrationReview({
   target,
   onApply,
   busy,
+  route,
+  navigate,
 }: {
   plan: ReviewedPlan;
   target: string;
   onApply: (input: ApplyInput) => void;
   busy: boolean;
+  route: Route;
+  navigate: Navigate;
 }) {
   const [selection, setSelection] = useState<{
     hash: string;
@@ -41,6 +49,7 @@ export function MigrationReview({
   const [timeout, setTimeout] = useState("5s");
   const [error, setError] = useState("");
   const { confirm, dialog } = useConfirm();
+  const counts = migrationCounts(plan);
   const latest = useRef({ hash: plan.hash, target });
   latest.current = { hash: plan.hash, target };
   const acknowledged =
@@ -57,9 +66,12 @@ export function MigrationReview({
     if (!ready) return;
     setError("");
     const hash = plan.hash;
+    const work = plan.scriptPlan
+      ? `${quantity(counts.pre, "pre-deployment script")}, ${quantity(plan.steps.length, "schema change")}, and ${quantity(counts.post, "post-deployment script")} will run.${counts.blocked ? ` ${quantity(counts.blocked, "script")} blocked.` : ""}`
+      : `${quantity(plan.steps.length, "SQL step")} will run.`;
     const accepted = await confirm({
       title: "Apply reviewed migration?",
-      message: `Target: ${targetLabel(target)}\nSchema: ${plan.schema}\n${plan.steps.length} SQL steps will run. Apply refuses the plan if the target changed since it was planned.`,
+      message: `Target: ${targetLabel(target)}\nSchema: ${plan.schema}\n${work} Apply refuses the plan if the target changed since it was planned.`,
       confirmLabel: "Apply reviewed migration",
       variant: plan.acks.length ? "destructive" : "default",
     });
@@ -82,7 +94,7 @@ export function MigrationReview({
               onClick={() =>
                 downloadText({
                   filename: PLAN_FILE,
-                  content: JSON.stringify(plan.artifact, null, 2),
+                  content: JSON.stringify(downloadablePlan(plan), null, 2),
                   type: "application/json",
                 })
               }
@@ -92,6 +104,7 @@ export function MigrationReview({
             <Button
               size="sm"
               variant="outline"
+              disabled={!plan.sql.trim()}
               onClick={() =>
                 downloadText({
                   filename: "migration.sql",
@@ -100,7 +113,7 @@ export function MigrationReview({
                 })
               }
             >
-              Download SQL
+              Download schema SQL
             </Button>
           </>
         }
@@ -116,6 +129,9 @@ export function MigrationReview({
             <CopyButton value={plan.hash} label="Copy plan hash" />
           </dd>
         </dl>
+        {plan.scriptPlan && <p className="mt-3 text-sm font-medium">
+          {quantity(counts.pre + counts.post, "script")} to run · {counts.blocked} blocked · {quantity(plan.steps.length, "schema change")}
+        </p>}
       </Panel>
       {plan.warnings.map((warning, index) => (
         <Callout key={index} variant="warning" title="Planning warning">
@@ -128,29 +144,9 @@ export function MigrationReview({
           applied.
         </Callout>
       )}
-      <section aria-label="Ordered migration steps" className="space-y-3">
-        {plan.steps.map((step, index) => (
-          <Panel
-            key={`${index}:${step.id}`}
-            title={
-              <span className="flex items-center gap-2">
-                Step {index + 1}{" "}
-                {step.destructive && <Badge tone="danger">Destructive</Badge>}
-              </span>
-            }
-          >
-            <code className="mb-2 block break-all text-xs text-muted-foreground">
-              {step.id}
-            </code>
-            <CodeBlock language="sql" source={step.sql} copyable />
-          </Panel>
-        ))}
-      </section>
-      {plan.steps.length === 0 && (
-        <Callout variant="note" title="No SQL changes">
-          The desired schema already matches the target.
-        </Callout>
-      )}
+      {plan.scriptPlan ? (
+        <MigrationScripts plan={plan} route={route} navigate={navigate} schema={<SchemaSteps steps={plan.steps} />} />
+      ) : <SchemaSteps steps={plan.steps} />}
       <section
         aria-label="Application approval"
         className="space-y-3 rounded-lg border border-border p-4"
@@ -208,4 +204,39 @@ export function MigrationReview({
       {dialog}
     </div>
   );
+}
+
+function quantity(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function migrationCounts(plan: ReviewedPlan) {
+  const counts = { pre: 0, post: 0, blocked: 0 };
+  for (const action of plan.scriptPlan?.actions ?? []) {
+    if (action.blocked?.length) counts.blocked++;
+    else if (action.selected) counts[action.script.phase]++;
+  }
+  return counts;
+}
+
+function downloadablePlan(plan: ReviewedPlan): unknown {
+  if (!plan.sources?.length) return plan.artifact;
+  if (plan.scriptPlan) return { scriptPlan: plan.artifact, sources: plan.sources };
+  if (plan.artifact && typeof plan.artifact === "object" && "sqlServerPlan" in plan.artifact) return plan.artifact;
+  return { artifact: plan.artifact, sources: plan.sources };
+}
+
+function SchemaSteps({ steps }: { steps: ReviewedPlan["steps"] }) {
+  return <section aria-label="Schema changes" className="space-y-2">
+    <h2 className="text-sm font-semibold">Schema changes</h2>
+    {steps.length === 0 && <p className="text-sm text-muted-foreground">No schema changes</p>}
+    {steps.map((step, index) => (
+      <Panel key={`${index}:${step.id}`} title={<span className="flex items-center gap-2">
+        Step {index + 1} {step.destructive && <Badge tone="danger">Destructive</Badge>}
+      </span>}>
+        <code className="mb-2 block break-all text-xs text-muted-foreground">{step.id}</code>
+        <CodeBlock language="sql" source={step.sql} copyable />
+      </Panel>
+    ))}
+  </section>;
 }

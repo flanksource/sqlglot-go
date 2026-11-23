@@ -9,6 +9,7 @@ import type { HistoryRecord } from "../types";
 import { useDraft } from "./drafts";
 import { MigrationReview } from "./MigrationReview";
 import { MigrationSetup } from "./MigrationSetup";
+import { PROJECT_TARGET_PREFIX, type LocalProject } from "./projectUpload";
 import { ResultExport } from "./ResultExport";
 import { TargetFields } from "./TargetFields";
 import { useOperation } from "./useOperation";
@@ -28,7 +29,13 @@ export function Migrations({
   navigate: Navigate;
 }) {
   const [raw, setRaw] = useDraft("migration-target");
-  const target = route.workflowConnection || raw;
+  const project = useQuery({
+    queryKey: ["migration-project"],
+    queryFn: async () => (await post("/migrate/project", {})) as LocalProject,
+    retry: false,
+  });
+  const alias = route.workflowConnection ? undefined : route.migrationTarget;
+  const target = alias ? PROJECT_TARGET_PREFIX + alias : route.workflowConnection || raw;
   const run = route.migrationRun ?? "";
   const record = useHistoryRecord(run);
   const planning = useOperation("/migrate/plan", (migrationRun) =>
@@ -38,7 +45,7 @@ export function Migrations({
     navigate({ migrationRun }),
   );
   const fields = {
-    dsn: target,
+    ...(alias ? { target: alias } : { dsn: target }),
     schema: route.workflowSchema ?? "",
     driver: route.workflowDriver ?? "",
   };
@@ -56,6 +63,8 @@ export function Migrations({
         plan={plan}
         target={target}
         busy={applying.busy}
+        route={route}
+        navigate={navigate}
         onApply={(input) => apply(plan, input)}
       />
       <ResultExport value={plan.steps} route={route} navigate={navigate} />
@@ -92,7 +101,7 @@ export function Migrations({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => navigate({ migrationRun: "" })}
+            onClick={() => navigate({ migrationRun: "", migrationSearch: undefined, migrationLabel: undefined, migrationUnchanged: undefined })}
           >
             New plan
           </Button>
@@ -100,19 +109,26 @@ export function Migrations({
       </header>
       <TargetFields
         value={target}
+        projectTargets={project.data?.targets ?? []}
         onChange={(value) => {
-          setRaw(value);
+          const projectAlias = value.startsWith(PROJECT_TARGET_PREFIX) ? value.slice(PROJECT_TARGET_PREFIX.length) : undefined;
+          setRaw(projectAlias ? "" : value);
           navigate({
+            migrationTarget: projectAlias,
             workflowConnection: value.startsWith("connection://") ? value : "",
           });
         }}
         route={route}
         navigate={navigate}
       />
+      {project.error && <Callout variant="caution" title="Project configuration could not be loaded">
+        {project.error.message}
+      </Callout>}
       {!run ? (
         <MigrationSetup
           disabled={planning.busy}
           targetReady={!!target}
+          project={project.data}
           onPlan={(input) => planning.start({ ...fields, ...input })}
         />
       ) : record.data?.kind === "patch" ? (

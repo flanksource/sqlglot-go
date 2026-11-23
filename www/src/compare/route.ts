@@ -13,6 +13,10 @@ export interface Route {
   inspectionTargetKind?: string;
   sqlObject?: string;
   migrationRun?: string;
+  migrationTarget?: string | undefined;
+  migrationSearch?: string | undefined;
+  migrationLabel?: string | undefined;
+  migrationUnchanged?: string | undefined;
   workflowConnection?: string;
   workflowSchema?: string;
   workflowDriver?: string;
@@ -62,6 +66,10 @@ const PARAMS = {
   inspectionTargetKind: "inspect.target-kind",
   sqlObject: "sql.object",
   migrationRun: "mig.run",
+  migrationTarget: "mig.target",
+  migrationSearch: "mig.q",
+  migrationLabel: "mig.label",
+  migrationUnchanged: "mig.unchanged",
   workflowConnection: "db.connection",
   workflowSchema: "db.schema",
   workflowDriver: "db.driver",

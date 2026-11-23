@@ -8,21 +8,28 @@ import { useConnectionDashboard } from "@flanksource/clicky-ui/connections";
 import { Callout } from "@flanksource/clicky-ui/data";
 import { API_BASE } from "../api";
 import { connectionOption } from "./connectionOption";
+import { PROJECT_TARGET_PREFIX } from "./projectUpload";
+
+function isNamedTarget(value: string) {
+  return value.startsWith("connection://") || value.startsWith(PROJECT_TARGET_PREFIX);
+}
 
 export function ConnectionPicker({
   label,
   value,
   onChange,
+  projectTargets = [],
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  projectTargets?: string[];
 }) {
   const [choice, setMode] = useState<"saved" | "dsn">(
-    value && !value.startsWith("connection://") ? "dsn" : "saved",
+    value && !isNamedTarget(value) ? "dsn" : "saved",
   );
   const mode = value
-    ? value.startsWith("connection://")
+    ? isNamedTarget(value)
       ? "saved"
       : "dsn"
     : choice;
@@ -50,11 +57,14 @@ export function ConnectionPicker({
           ariaLabel={label}
           value={value}
           onChange={onChange}
-          options={(connections.data?.connections ?? [])
-            .filter((connection) => !connection.warnings?.length)
-            .map(connectionOption)}
+          options={[
+            ...projectTargets.map((target) => ({ value: PROJECT_TARGET_PREFIX + target, label: `${target} (project)` })),
+            ...(connections.data?.connections ?? [])
+              .filter((connection) => !connection.warnings?.length)
+              .map(connectionOption),
+          ]}
           allowCustomValue={false}
-          loading={connections.isPending}
+          loading={connections.isPending && projectTargets.length === 0}
           placeholder="Select connection…"
         />
       ) : (

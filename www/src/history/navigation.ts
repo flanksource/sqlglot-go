@@ -12,7 +12,7 @@ export function routeForRecord(record: HistoryRecord): Partial<Route> {
   if (record.kind === "patch" && record.parent) return { ...compare, stage: "patch", run: record.parent, patch: record.id };
   const workflow = { workflowConnection: record.target?.startsWith("connection://") ? record.target : "", workflowSchema: record.schemas.length === 1 ? record.schemas[0] ?? "" : "", workflowDriver: record.dialect ?? "" };
   if (record.kind === "inspection") return { ...workflow, page: "inspect", inspectionRun: record.id, inspectionMode: "catalog" };
-  if (record.kind === "migration") return { ...workflow, page: "migrations", migrationRun: record.id };
+  if (record.kind === "migration") return { ...workflow, page: "migrations", migrationRun: record.id, migrationTarget: undefined };
   return { page: "history", historyRecord: record.id };
 }
 
