@@ -43,7 +43,7 @@ func TestSelectFromRecordedHashesAlwaysDoesNotCascade(t *testing.T) {
 		"migrations/triggers.sql":  &fstest.MapFile{Data: []byte("-- dependsOn: functions.sql\nSELECT 2")},
 		"migrations/views.sql":     &fstest.MapFile{Data: []byte("-- dependsOn: triggers.sql\nSELECT 3")},
 	}
-	scripts, err := loadScripts(filesystem, "migrations")
+	scripts, err := loadScripts(filesystem, options{dir: "migrations"})
 	require.NoError(t, err)
 	recorded := func(names ...string) map[string][]byte {
 		hashes := map[string][]byte{}
@@ -80,7 +80,7 @@ func TestLoadScriptsDefaultsToPostAndOrdersTransitively(t *testing.T) {
 		"migrations/b.sql": &fstest.MapFile{Data: []byte("-- phase: pre\n-- dependsOn: a.sql\nSELECT 2")},
 		"migrations/c.sql": &fstest.MapFile{Data: []byte("-- dependsOn: b.sql\nSELECT 3")},
 	}
-	scripts, err := loadScripts(filesystem, "migrations")
+	scripts, err := loadScripts(filesystem, options{dir: "migrations"})
 	require.NoError(t, err)
 	assert.Equal(t, phasePre, scripts["a.sql"].phase)
 	assert.Equal(t, phasePost, scripts["c.sql"].phase)
@@ -121,7 +121,7 @@ func TestScriptGraphValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := loadScripts(tt.files, "migrations")
+			_, err := loadScripts(tt.files, options{dir: "migrations"})
 			require.Error(t, err)
 			assert.True(t, strings.Contains(err.Error(), tt.err), err.Error())
 		})

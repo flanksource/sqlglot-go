@@ -477,7 +477,7 @@ var _ = Describe("SQL Server migration bundle", func() {
 		Entry("an empty bundle", fstest.MapFS{}, nil, `declares no tables, routines or scripts`),
 		Entry("a script using a sqlcmd command",
 			fstest.MapFS{"db/routines/acme_purge_orders.sql": file(purgeRoutine), "db/001_seed.sql": file("SELECT 1\n:r other.sql\n")},
-			[]Option{WithDir("db"), WithRoutines("db/routines")}, `SQL script 001_seed.sql line 2: sqlcmd command ":r other.sql" is not supported`),
+			[]Option{WithDir("db"), WithRoutines("db/routines")}, `SQL script 001_seed.sql: line 2: sqlcmd command ":r other.sql" is not supported`),
 		Entry("another schema", fstest.MapFS{"db/schema.hcl": file(ordersHCLFile)},
 			[]Option{WithDir("db"), WithSchema("tenant_x")}, `support only schema "dbo", got "tenant_x"`),
 		Entry("drops", fstest.MapFS{"db/schema.hcl": file(ordersHCLFile)},

@@ -9,8 +9,8 @@ import (
 func Ordered(items []Script) ([]Script, error) {
 	byID := map[string]Script{}
 	for _, s := range items {
-		if s.ID == "" || strings.TrimSpace(s.SQL) == "" {
-			return nil, fmt.Errorf("script requires an ID and nonempty SQL: %q", s.Path)
+		if s.ID == "" {
+			return nil, fmt.Errorf("script requires an ID: %q", s.Path)
 		}
 		if s.Phase != Pre && s.Phase != Post {
 			return nil, fmt.Errorf("script %s: invalid phase %q", s.ID, s.Phase)

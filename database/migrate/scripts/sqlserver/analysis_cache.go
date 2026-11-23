@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,6 +62,9 @@ func analyseScript(sql string) (scripts.CachedAnalysis, error) {
 	if problem != "" {
 		return scripts.CachedAnalysis{BatchError: problem}, nil
 	}
+	if len(batches) == 0 {
+		return scripts.CachedAnalysis{Analysis: scripts.Analysis{NoStatements: true}}, nil
+	}
 	analysis := scripts.Analyze(scripts.AnalysisOptions{SQL: sql})
 	for _, batch := range batches {
 		tail, err := sqlglot.BatchTailOf(batch)
@@ -93,16 +97,20 @@ func (opts Options) scriptAnalyses(ctx context.Context) (map[string]scripts.Anal
 	}
 	out := make(map[string]scripts.Analysis, len(opts.Scripts))
 	for _, s := range opts.Scripts {
+		name := cmp.Or(s.Path, s.ID)
 		if len(s.ID) > 512 {
-			return nil, fmt.Errorf("script ID exceeds 512 characters")
+			return nil, fmt.Errorf("SQL script %s: ID exceeds 512 characters", name)
 		}
 		key := scripts.AnalysisKey(s.SQL, false)
 		if err := failed[key]; err != nil {
-			return nil, fmt.Errorf("analyse script %s: %w", s.ID, err)
+			return nil, fmt.Errorf("analyse script %s: %w", name, err)
 		}
 		entry := cached[key]
 		if entry.BatchError != "" {
-			return nil, batchError(s.ID, entry.BatchError)
+			return nil, batchError(name, entry.BatchError)
+		}
+		if entry.Analysis.NoStatements != (len(entry.Analysis.Tails) == 0) {
+			return nil, fmt.Errorf("SQL script %s: invalid batch analysis", name)
 		}
 		out[s.ID] = entry.Analysis
 	}

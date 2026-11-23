@@ -51,7 +51,7 @@ func (p *SchemaProvisioner) Fingerprint(ctx context.Context) (string, error) {
 	if err := refuseScriptPolicy(p.config, "PostgreSQL provisioner"); err != nil {
 		return "", err
 	}
-	if _, err := loadScripts(p.schemaFS, p.config.dir); err != nil {
+	if _, err := loadScripts(p.schemaFS, p.config); err != nil {
 		return "", err
 	}
 	if _, _, err := loadHCL(p.schemaFS, p.config.dir, p.config.input); err != nil {
@@ -99,7 +99,7 @@ func (p *SchemaProvisioner) PrepareInstance(ctx context.Context, connection stri
 	if err := refuseScriptPolicy(p.config, "PostgreSQL provisioner"); err != nil {
 		return err
 	}
-	scripts, err := loadScripts(p.schemaFS, p.config.dir)
+	scripts, err := loadScripts(p.schemaFS, p.config)
 	if err != nil {
 		return err
 	}

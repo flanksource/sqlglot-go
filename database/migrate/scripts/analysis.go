@@ -29,7 +29,8 @@ type Analysis struct {
 	Effects Effects                `json:"effects"`
 	Defines map[ObjectName]Effects `json:"defines,omitempty"`
 	// Tails is what may follow each batch of a script body in its request.
-	Tails []sqlglot.BatchTail `json:"tails,omitempty"`
+	Tails        []sqlglot.BatchTail `json:"tails,omitempty"`
+	NoStatements bool                `json:"noStatements,omitempty"`
 }
 
 type AnalysisOptions struct {
@@ -39,7 +40,7 @@ type AnalysisOptions struct {
 
 // AnalysisVersion versions every cached analysis. Bump it whenever the
 // analyser, the batch splitter or canonicalisation changes what it produces.
-const AnalysisVersion = "7"
+const AnalysisVersion = "8"
 
 // CachedAnalysis is what a backend stores for one body: its analysis, the
 // canonical text of a module definition, and the batch error of a script body

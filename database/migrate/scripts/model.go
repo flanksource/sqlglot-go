@@ -27,6 +27,7 @@ type Script struct {
 	Path                 string       `json:"path"`
 	Name                 string       `json:"name"`
 	SQL                  string       `json:"sql"`
+	NoStatements         bool         `json:"noStatements,omitempty"`
 	Phase                Phase        `json:"phase"`
 	HeaderPhase          Phase        `json:"-"`
 	Always               bool         `json:"always,omitempty"`

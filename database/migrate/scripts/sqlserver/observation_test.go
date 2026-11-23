@@ -145,13 +145,32 @@ var _ = Describe("Script analysis cache", func() {
 	})
 
 	It("fails a cached batch error exactly as splitting the body does", func(ctx SpecContext) {
+		const malformed = "GO 2\n"
+		opts.Scripts[0].SQL = malformed
+		_, problem := splitBatches(malformed)
+		Expect(problem).To(ContainSubstring("GO must stand alone"))
 		store := cache.NewMemory()
-		Expect(store.Set(ctx, scripts.AnalysisKey("SELECT dbo.country()", false), []byte(`{"analysis":{"calls":[]},"batchError":" has no statements"}`), 0)).To(Succeed())
 		opts.Analysis = store
+		_, first := Plan(ctx, opts)
+		Expect(first).To(MatchError(ContainSubstring("SQL script seed: split batches: line 1: GO must stand alone")))
+		_, second := Plan(ctx, opts)
+		Expect(second).To(MatchError(first.Error()))
+	})
 
-		_, err := Plan(ctx, opts)
-
-		Expect(err).To(MatchError("SQL script seed has no statements"))
+	It("keeps a no-op and its warning when the batch analysis is cached", func(ctx SpecContext) {
+		opts.Scripts = []scripts.Script{{ID: "disabled", Path: "scripts/disabled/data.xml", SQL: "-- disabled", Phase: scripts.Post, Always: true}}
+		store := &countingStore{Store: cache.NewMemory()}
+		opts.Analysis = store
+		expectTarget(mock)
+		first, err := Plan(ctx, opts)
+		Expect(err).NotTo(HaveOccurred())
+		expectTarget(mock)
+		second, err := Plan(ctx, opts)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(second).To(Equal(first))
+		Expect(store.sets).To(Equal(1))
+		Expect(second.Selected()).To(BeEmpty())
+		Expect(second.Warnings).To(Equal([]string{"SQL script scripts/disabled/data.xml has no statements; skipped"}))
 	})
 
 	DescribeTable("fails loudly when the cache cannot answer",

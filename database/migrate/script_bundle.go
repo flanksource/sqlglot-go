@@ -3,7 +3,7 @@ package migrate
 import "github.com/flanksource/sqlglot-go/database/migrate/scripts"
 
 func (s *script) bundleScript() scripts.Script {
-	return scripts.Script{ID: s.path, Path: s.path, Name: s.path, SQL: s.content, Phase: scripts.Phase(s.phase), Always: s.always, NonTransactional: !s.transactional, DependsOn: s.dependsOn}
+	return scripts.Script{ID: s.id, Path: s.path, Name: s.name, SQL: s.content, Phase: scripts.Phase(s.phase), Always: s.always, NonTransactional: !s.transactional, DependsOn: s.dependsOn}
 }
 
 func scriptBundle(items map[string]*script) []scripts.Script {

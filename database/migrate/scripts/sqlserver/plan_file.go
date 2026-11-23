@@ -137,7 +137,7 @@ func actionChange(before, after scripts.Pending) string {
 	switch {
 	case before.Script.ID != after.Script.ID:
 		return "action " + before.Script.ID + " is now " + after.Script.ID
-	case before.Selected != after.Selected || !slices.Equal(before.Reasons, after.Reasons):
+	case before.Selected != after.Selected || before.Script.NoStatements != after.Script.NoStatements || !slices.Equal(before.Reasons, after.Reasons):
 		return "action " + before.Script.ID + " now " + describeSelection(after)
 	case !slices.Equal(before.Blocked, after.Blocked):
 		return "action " + before.Script.ID + " blocked by " + strings.Join(after.Blocked, ", ")

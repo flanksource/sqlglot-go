@@ -42,7 +42,7 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 			return result, err
 		}
 	}
-	scripts, err := loadScripts(files, cfg.dir, cfg.routines)
+	scripts, err := loadScripts(files, cfg)
 	if err != nil {
 		return result, err
 	}
@@ -54,6 +54,14 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 		if s.phase == phasePre && (a.Kind == "ddl" || a.Kind == "mixed" || a.Kind == "unknown") {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("pre-script %s is %s; preview uses the current database without executing it", s.path, a.Kind))
 		}
+	}
+	if dialect == "sqlserver" && (len(scripts) > 0 || cfg.scriptPolicy != nil) {
+		plan, err := planSQLServer(ctx, db, files, cfg)
+		if err != nil {
+			return result, err
+		}
+		result.ScriptPlan = &plan
+		return result, nil
 	}
 	parser, security, err := loadHCL(files, cfg.dir, cfg.input)
 	if err != nil {
@@ -67,16 +75,7 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 		advisory = append(advisory, "security changes require phased reviewed artifacts")
 	}
 	if dialect == "sqlserver" {
-		if len(scripts) == 0 && cfg.scriptPolicy == nil {
-			return previewSQLServer(ctx, db, files, cfg, result, advisory)
-		}
-		// A script bundle plans as one plan file: scripts and schema step.
-		plan, err := planSQLServer(ctx, db, files, cfg)
-		if err != nil {
-			return result, err
-		}
-		result.ScriptPlan = &plan
-		return result, nil
+		return previewSQLServer(ctx, db, files, cfg, result, advisory)
 	}
 	if cfg.routines != "" || len(cfg.exclude) > 0 {
 		return result, fmt.Errorf("reviewed bundle previews do not support routines or inspection exclusions")

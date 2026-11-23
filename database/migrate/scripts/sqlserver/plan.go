@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -69,6 +70,7 @@ func prepare(ctx context.Context, opts Options) (Options, error) {
 // declarations, so preparing a prepared script changes nothing.
 func (opts Options) prepareScript(s *scripts.Script, contextPolicy string) {
 	analysis := opts.analysis[s.ID]
+	s.NoStatements = analysis.NoStatements
 	effects := analysis.Effects.Normalized()
 	s.Effects, s.Defines, s.ContextPolicy = &effects, analysis.Defines, contextPolicy
 	calls := slices.Clone(analysis.Calls)
@@ -104,8 +106,8 @@ func (opts Options) prepareScript(s *scripts.Script, contextPolicy string) {
 // earlier script in the plan will write.
 func Plan(ctx context.Context, opts Options) (PlanFile, error) {
 	for _, s := range opts.Scripts {
-		if s.Effects != nil || len(s.Defines) > 0 {
-			return PlanFile{}, fmt.Errorf("script %s supplies effects: they are derived from its SQL, so leave Effects and Defines unset", s.ID)
+		if s.Effects != nil || len(s.Defines) > 0 || s.NoStatements {
+			return PlanFile{}, fmt.Errorf("script %s supplies analysis: Effects, Defines and NoStatements are derived from its SQL", s.ID)
 		}
 	}
 	prepared, err := prepare(ctx, opts)
@@ -166,6 +168,9 @@ func planWarnings(file PlanFile, observed map[string][]string) []string {
 	var out []string
 	declared := file.Bundle.Schema.writes()
 	for _, item := range file.Actions {
+		if item.Script.NoStatements {
+			out = append(out, fmt.Sprintf("SQL script %s has no statements; skipped", cmp.Or(item.Script.Path, item.Script.ID)))
+		}
 		if !item.Selected {
 			continue
 		}
@@ -214,12 +219,18 @@ func observeTarget(ctx context.Context, q queryer, opts Options) (observedTarget
 	epoch := newObservationEpoch(q)
 	var modules []string
 	for _, s := range opts.Scripts {
+		if s.NoStatements {
+			continue
+		}
 		modules = append(append(modules, opts.modulesOf(s)...), closureModules(s)...)
 	}
 	if err := epoch.load(ctx, opts, modules); err != nil {
 		return t, err
 	}
 	for _, s := range opts.Scripts {
+		if s.NoStatements {
+			continue
+		}
 		o := opts.observe(ctx, epoch, s)
 		t.observations[s.ID], t.warnings[s.ID] = o.inputs, o.warnings
 		for _, expression := range o.environment {
