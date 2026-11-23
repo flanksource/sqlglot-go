@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildRoute, parseRoute } from "../compare/route";
 import { COMPARISON_RUN, PATCH_RUN, comparisonRecord, patchRecord, record } from "../fixtures/records";
 import { routeForRecord, summaryText, taskRunOf } from "./navigation";
 
@@ -16,6 +17,13 @@ describe("routeForRecord", () => {
 
   it("joins every schema of the record for the comparison route", () => {
     expect(routeForRecord(comparisonRecord({ schemas: ["main", "aux"] }))).toMatchObject({ schemas: "main,aux" });
+  });
+
+  it("clears the previous project target when opening a recorded migration", () => {
+    const current = parseRoute("/", "?page=history&mig.target=dev");
+    const next = routeForRecord(record({ id: "m", kind: "migration" }));
+    const reopened = new URL(buildRoute({ ...current, ...next }), window.location.origin);
+    expect(reopened.searchParams.has("mig.target")).toBe(false);
   });
 
   it("opens an orphan patch in history and reopens inspections and migrations in their dedicated screens", () => {

@@ -9,11 +9,31 @@ export type SQLDiagnostic = {
   excerpt?: string;
 };
 export type Source = {
-  kind: "hcl" | "snapshot" | "bundle" | "artifact";
+  kind: "hcl" | "snapshot" | "bundle" | "artifact" | "project";
   content?: string;
   files?: { path: string; content: string }[];
 };
 export type Target = { dsn: string; driver?: string; schema?: string };
+export type ProjectSource = {
+  id: string;
+  path: string;
+  kind: "hcl" | "sql";
+  labels?: Record<string, string[]>;
+};
+export type ScriptAction = {
+  script: {
+    id: string;
+    name: string;
+    path: string;
+    phase: "pre" | "post";
+    sql: string;
+    noStatements?: boolean;
+    nonTransactional?: boolean;
+  };
+  selected: boolean;
+  reasons?: string[];
+  blocked?: string[];
+};
 export type ReviewedPlan = {
   dialect: string;
   schema: string;
@@ -25,6 +45,8 @@ export type ReviewedPlan = {
   warnings: string[];
   applicable: boolean;
   sql: string;
+  sources?: ProjectSource[];
+  scriptPlan?: { actions: ScriptAction[] };
 };
 export type ApplyInput = {
   ack: string[];

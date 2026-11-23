@@ -84,6 +84,12 @@ describe("buildRoute", () => {
     const url = buildRoute({ ...DEFAULT, page: "migrations", reference: unsaved, target: unsaved, workflowConnection: unsaved, migrationRun: "recorded" });
     expect(url).toBe("/?mig.run=recorded&page=migrations");
   });
+  it("round-trips a project target by alias", () => {
+    const route = { ...DEFAULT, page: "migrations" as const, migrationTarget: "dev" };
+    const url = buildRoute(route);
+    expect(url).toContain("mig.target=dev");
+    expect(parseRoute("/", url.slice(1))).toEqual(route);
+  });
   it("omits default values", () => {
     at("");
     expect(buildRoute(DEFAULT)).toBe("/");

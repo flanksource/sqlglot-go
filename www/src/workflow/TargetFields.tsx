@@ -7,11 +7,13 @@ export function TargetFields({
   onChange,
   route,
   navigate,
+  projectTargets = [],
 }: {
   value: string;
   onChange: (value: string) => void;
   route: Route;
   navigate: Navigate;
+  projectTargets?: string[];
 }) {
   return (
     <section
@@ -22,6 +24,7 @@ export function TargetFields({
         label="Target connection"
         value={value}
         onChange={onChange}
+        projectTargets={projectTargets}
       />
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="space-y-1 text-sm">

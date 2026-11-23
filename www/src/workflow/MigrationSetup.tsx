@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Button,
   Checkbox,
@@ -8,66 +8,74 @@ import {
 import { Callout } from "@flanksource/clicky-ui/data";
 import { MonacoEditor } from "@flanksource/clicky-ui/monaco";
 import { useDraft } from "./drafts";
+import { PROJECT_CONFIG, uploadMigrationBundle, type BundleFile, type LocalProject, type ProjectPreview } from "./projectUpload";
 import type { Source } from "./types";
 
 export function MigrationSetup({
   disabled,
   targetReady,
+  project,
   onPlan,
 }: {
   disabled: boolean;
   targetReady: boolean;
+  project: LocalProject | undefined;
   onPlan: (input: Record<string, unknown>) => void;
 }) {
-  const [kind, setKind] = useDraft("migration-kind", "hcl");
   const [content, setContent] = useDraft("migration-content");
+  const hasLocalMappings = !!(project?.preview || project?.error);
+  const [kind, setKind] = useDraft("migration-kind", hasLocalMappings && !content ? "project" : "hcl");
   const [filesJSON, setFiles] = useDraft("migration-files", "[]");
+  const [previewJSON, setPreview] = useDraft("migration-project-preview");
   const [variables, setVariables] = useDraft("migration-variables");
   const [routines, setRoutines] = useDraft("migration-routines");
   const [allowDrops, setAllowDrops] = useState(false);
   const [error, setError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const uploadID = useRef(0);
+  const bundleFiles = useMemo(() => JSON.parse(filesJSON) as BundleFile[], [filesJSON]);
+  const preview = previewJSON ? JSON.parse(previewJSON) as ProjectPreview : undefined;
   async function upload(files: FileList | null) {
     if (!files?.length) return;
+    const id = ++uploadID.current;
+    setUploading(true);
+    setError("");
     try {
       if (kind === "bundle") {
-        const entries = await Promise.all(
-          Array.from(files).map(async (file) => ({
-            path:
-              file.webkitRelativePath.split("/").slice(1).join("/") ||
-              file.name,
-            content: await file.text(),
-          })),
-        );
-        setFiles(JSON.stringify(entries));
+        setFiles("[]");
+        setPreview("");
+        const uploaded = await uploadMigrationBundle(files);
+        if (uploadID.current !== id) return;
+        setFiles(JSON.stringify(uploaded.files));
+        setPreview(uploaded.preview ? JSON.stringify(uploaded.preview) : "");
       } else {
         const file = files[0];
         if (!file) throw new Error("No file selected");
-        setContent(await file.text());
+        const text = await file.text();
+        if (uploadID.current === id) setContent(text);
       }
-      setError("");
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      if (uploadID.current === id) setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      if (uploadID.current === id) setUploading(false);
     }
   }
   function plan() {
     try {
-      if (!["hcl", "snapshot", "bundle", "artifact"].includes(kind))
+      if (!["hcl", "snapshot", "bundle", "artifact", "project"].includes(kind))
         throw new Error("Unknown source type");
       if (kind === "snapshot" || kind === "artifact") JSON.parse(content);
       const source: Source =
         kind === "bundle"
           ? {
               kind,
-              files: JSON.parse(filesJSON) as {
-                path: string;
-                content: string;
-              }[],
+              files: bundleFiles,
             }
-          : { kind: kind as Source["kind"], content };
+          : kind === "project" ? { kind } : { kind: kind as Source["kind"], content };
       setError("");
       onPlan({
         source,
-        ...(kind === "bundle"
+        ...(kind === "bundle" || kind === "project"
           ? {
               var: variables
                 .split("\n")
@@ -90,16 +98,22 @@ export function MigrationSetup({
           ariaLabel="Desired source"
           allowCustomValue={false}
           value={kind}
-          onChange={setKind}
+          onChange={(value) => {
+            uploadID.current++;
+            setUploading(false);
+            setError("");
+            setKind(value);
+          }}
           options={[
+            ...(hasLocalMappings ? [{ value: "project", label: "Local project" }] : []),
             { value: "hcl", label: "HCL schema" },
             { value: "snapshot", label: "Migration snapshot JSON" },
-            { value: "bundle", label: "HCL / SQL bundle folder" },
+            { value: "bundle", label: "HCL / SQL project folder" },
             { value: "artifact", label: "Reviewed artifact JSON" },
           ]}
         />
       </label>
-      <label className="block space-y-1 text-sm">
+      {kind !== "project" && <label className="block space-y-1 text-sm">
         <span className="block font-medium">
           {kind === "bundle" ? "Upload bundle folder" : "Upload file"}
         </span>
@@ -114,14 +128,22 @@ export function MigrationSetup({
               })}
           onChange={(event) => void upload(event.target.files)}
         />
-      </label>
-      {kind === "bundle" ? (
+      </label>}
+      {kind === "project" ? (
+        <div className="space-y-2 rounded-md border border-border p-3 text-sm">
+          {project?.config && <code className="block break-all">{project.config}</code>}
+          {project?.preview && <p>{project.preview.mapped} mapped · {project.preview.ignored} ignored</p>}
+          {project?.error && <Callout variant="caution" title="Check project mappings">{project.error}</Callout>}
+          {!hasLocalMappings && <p>Select another source or add mappings to {PROJECT_CONFIG}.</p>}
+        </div>
+      ) : null}
+      {kind === "bundle" || kind === "project" ? (
         <>
-          <p className="text-sm text-muted-foreground">
-            {(JSON.parse(filesJSON) as unknown[]).length} files selected.
-            Relative folder structure is preserved; source files remain in
-            memory.
-          </p>
+          {kind === "bundle" && <p role="status" className="text-sm text-muted-foreground">
+            {uploading ? "Checking uploaded sources…" : preview
+              ? <><code>{PROJECT_CONFIG}</code> · {preview.mapped} mapped · {preview.ignored} ignored</>
+              : `${bundleFiles.length} files selected.`}
+          </p>}
           <label className="block space-y-1 text-sm">
             <span className="block font-medium">
               Variables{" "}
@@ -153,7 +175,7 @@ export function MigrationSetup({
               onChange={setRoutines}
             />
             <span className="block text-xs text-muted-foreground">
-              A relative directory inside the uploaded SQL Server bundle.
+              A relative directory inside the SQL Server project or bundle.
             </span>
           </label>
           <label className="flex items-start gap-2 text-sm">
@@ -187,9 +209,9 @@ export function MigrationSetup({
       )}
       <Button
         disabled={
-          disabled ||
+          disabled || uploading ||
           (kind !== "artifact" && !targetReady) ||
-          (kind === "bundle" ? filesJSON === "[]" : !content.trim())
+          (kind === "project" ? !project?.preview : kind === "bundle" ? bundleFiles.length === 0 : !content.trim())
         }
         onClick={plan}
       >
