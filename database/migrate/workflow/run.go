@@ -76,9 +76,8 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 	}
 	defer func() { returnErr = errors.Join(returnErr, conn.DB.Close()) }()
 	record.Dialect, record.Schemas = conn.Dialect, []string{conn.Schema}
-	planOpts := Options{Dialect: conn.Dialect, Schema: conn.Schema, Source: opts.Plan.Source, Variables: opts.Plan.Variables, Routines: opts.Plan.Routines, AllowDrops: opts.Plan.AllowDrops}
-	planOpts.Bundle = opts.Plan.Bundle
-	planOpts.CSV = opts.Plan.CSV
+	planOpts := opts.Plan
+	planOpts.Dialect, planOpts.Schema = conn.Dialect, conn.Schema
 	t.SetDescription("Reviewing migration")
 	var plan PlanResult
 	if len(apply.Artifact) > 0 {
