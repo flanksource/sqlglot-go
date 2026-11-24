@@ -29,6 +29,11 @@ func (r *reader) source(item *sqlglot.Expression) error {
 	case "Values", "Unnest":
 		return r.walkArgs(item, "alias")
 	}
+	if r.migration {
+		if _, ok := item.SourceFunction(); ok {
+			return nil // the enclosing walk visits this call once
+		}
+	}
 	return &UnsupportedSQLError{Class: item.Class}
 }
 
@@ -45,11 +50,17 @@ func (r *reader) tableSource(item *sqlglot.Expression) error {
 	case this.Class == "Anonymous":
 		return r.functionSource(item)
 	}
-	ref, ok := tableRefOf(item)
+	if r.migration {
+		if name, ok := this.SourceFunction(); ok {
+			r.migrationCall(tableRef{catalog: child(item, "catalog").Name(), schema: child(item, "db").Name(), name: name}, this)
+			return r.walkArgs(this)
+		}
+	}
+	ref, ok := r.tableIdentity(item)
 	if !ok {
 		return &UnsupportedSQLError{Class: "Table(" + this.Class + ")"}
 	}
-	if r.ctes[strings.ToLower(ref.name)] && ref.schema == "" && ref.catalog == "" {
+	if r.ctes[r.nameKey(ref.name)] && ref.schema == "" && ref.catalog == "" {
 		return nil
 	}
 	kind := Read
@@ -68,7 +79,12 @@ func isTemporary(name *sqlglot.Expression) bool {
 // functionSource records a table-valued function in FROM as a call.
 func (r *reader) functionSource(item *sqlglot.Expression) error {
 	fn := item.This()
-	r.call(tableRef{catalog: child(item, "catalog").Name(), schema: child(item, "db").Name(), name: fn.Name()})
+	ref := tableRef{catalog: child(item, "catalog").Name(), schema: child(item, "db").Name(), name: fn.Name()}
+	if r.migration {
+		r.migrationCall(ref, fn)
+	} else {
+		r.call(ref)
+	}
 	return r.walkArgs(fn)
 }
 
@@ -89,6 +105,24 @@ func tableRefOf(table *sqlglot.Expression) (tableRef, bool) {
 		return ref, false
 	}
 	return ref, ref.name != ""
+}
+
+func (r *reader) tableIdentity(table *sqlglot.Expression) (tableRef, bool) {
+	ref, ok := tableRefOf(table)
+	if ok && r.migration && r.ctx.Dialect == "postgres" && table.This().Class == "Identifier" {
+		ref.name = r.identifier(table.This())
+		ref.schema = r.identifier(child(table, "db"))
+		ref.catalog = r.identifier(child(table, "catalog"))
+	}
+	return ref, ok
+}
+
+func (r *reader) identifier(node *sqlglot.Expression) string {
+	name := node.Name()
+	if node != nil && r.migration && r.ctx.Dialect == "postgres" && node.Args["quoted"] != true {
+		return strings.ToLower(name)
+	}
+	return name
 }
 
 // aliasOf is the name a FROM item is referred to by: its alias, or else its
@@ -114,7 +148,7 @@ var typeMethods = map[string]bool{"value": true, "query": true, "exist": true, "
 // receiver and arguments are walked as ordinary expressions.
 func (r *reader) dotCall(dot, fn *sqlglot.Expression) error {
 	parts, ok := qualifierParts(dot.This())
-	if ok && len(parts) <= 2 && !typeMethods[strings.ToLower(fn.Name())] {
+	if ok && len(parts) <= 2 && (!typeMethods[strings.ToLower(fn.Name())] || r.migration && r.ctx.Dialect != "tsql") {
 		ref := tableRef{schema: parts[len(parts)-1], name: fn.Name()}
 		if len(parts) == 2 {
 			ref.catalog = parts[0]
@@ -133,7 +167,7 @@ func (r *reader) dotCall(dot, fn *sqlglot.Expression) error {
 // and only its arguments are walked. PostgreSQL resolves functions by bare
 // name, so there it is a call.
 func (r *reader) unqualifiedCall(fn *sqlglot.Expression) error {
-	if r.ctx.Dialect == "tsql" {
+	if r.ctx.Dialect == "tsql" && !r.migration {
 		return r.walkArgs(fn)
 	}
 	return r.function(tableRef{name: fn.Name()}, fn)
@@ -164,6 +198,10 @@ func (r *reader) function(ref tableRef, fn *sqlglot.Expression) error {
 	if ref.name == "" {
 		return &UnsupportedSQLError{Class: "Anonymous(unnamed)"}
 	}
-	r.call(ref)
+	if r.migration {
+		r.migrationCall(ref, fn)
+	} else {
+		r.call(ref)
+	}
 	return r.walkArgs(fn)
 }

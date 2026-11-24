@@ -84,6 +84,7 @@ func parseStatement(sql string, options parseOptions) (*Expression, error) {
 // addresses the current token, with prev and next either side, and every rule
 // is written against curr/prev the way the reference's rules are.
 type parser struct {
+	migration bool
 	// Script analysis supports module syntax beyond the reference's opaque commands.
 	nativeTSQLModules bool
 	// inCallArgs is set while reading a call's own argument list, where a
@@ -407,6 +408,9 @@ func (p *parser) startsAValuesClause() bool {
 // parseStatementBody reads a statement once any WITH clause in front of it has
 // been taken off.
 func (p *parser) parseStatementBody() (*Expression, error) {
+	if p.migration && p.dialect == "postgres" && p.atWords("DO") {
+		return p.parsePostgresDo()
+	}
 	// A routine body refuses raw-text Commands, so it reads UPDATE STATISTICS
 	// as a statement; at top level it stays the reference's Command.
 	if p.dialect == "tsql" && p.inRoutineBody && p.atWords("UPDATE STATISTICS") {
@@ -556,6 +560,9 @@ func (p *parser) parseStatementBody() (*Expression, error) {
 	e, err = p.parseSetOperations(e)
 	if err != nil {
 		return nil, err
+	}
+	if p.migration && !takesQueryModifiers[e.Class] {
+		return nil, p.unsupported("an expression in place of a SQL statement")
 	}
 	if takesQueryModifiers[e.Class] {
 		if err := p.parseQueryModifiers(e); err != nil {

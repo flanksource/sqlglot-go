@@ -7,7 +7,11 @@
 // access a statement makes carries the line the statement starts on.
 package access
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/flanksource/sqlglot-go/sqlglot"
+)
 
 // Kind is what a statement does to an object.
 type Kind string
@@ -37,9 +41,11 @@ func (o Object) String() string {
 
 // Access is one read, write or call, on the line its statement starts on.
 type Access struct {
-	Kind   Kind   `json:"kind"`
-	Object Object `json:"object"`
-	Line   int    `json:"line"`
+	Kind       Kind                 `json:"kind"`
+	Object     Object               `json:"object"`
+	Line       int                  `json:"line"`
+	ObjectKind string               `json:"objectKind,omitempty"`
+	Range      *sqlglot.SourceRange `json:"-"`
 }
 
 // NodeKind is what a Node of a T-SQL body is.
@@ -59,7 +65,8 @@ const (
 // Node is one statement of a T-SQL body, or the IF, WHILE or TRY around the
 // statements it governs. A statement that accesses nothing is no node.
 type Node struct {
-	Kind NodeKind `json:"kind"`
+	sourceRange sqlglot.SourceRange
+	Kind        NodeKind `json:"kind"`
 	// Line is the 1-based line the statement starts on; Text is the statement
 	// as written, comments blanked. An IF's or WHILE's Text is its whole
 	// statement, condition included.

@@ -18,13 +18,15 @@ func checkSQLCMD(src []rune, tokens []Token) error {
 			}
 			if strings.TrimSpace(string(src[start:offset])) == "" {
 				line, _, _ := strings.Cut(string(src[offset:]), "\n")
-				return fmt.Errorf("line %d: sqlcmd command %q is not supported; scripts are plain T-SQL batches separated by GO", token.Line, strings.TrimSpace(line))
+				return &ScriptInputError{Range: SourceRange{Start: offset, End: token.End + 1},
+					Message: fmt.Sprintf("line %d: sqlcmd command %q is not supported; scripts are plain T-SQL batches separated by GO", token.Line, strings.TrimSpace(line))}
 			}
 		}
 		for i := offset; i <= token.End && i+1 < len(src); i++ {
 			if src[i] == '$' && src[i+1] == '(' {
 				line := 1 + strings.Count(string(src[:i]), "\n")
-				return fmt.Errorf("line %d: sqlcmd scripting variables ($(...)) are not supported; sqlcmd would substitute them", line)
+				return &ScriptInputError{Range: SourceRange{Start: i, End: i + 2},
+					Message: fmt.Sprintf("line %d: sqlcmd scripting variables ($(...)) are not supported; sqlcmd would substitute them", line)}
 			}
 		}
 	}

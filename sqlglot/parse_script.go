@@ -19,21 +19,37 @@ type ScriptResult struct {
 	Tree        *Expression       `json:"-"`
 	Diagnostics []ParseDiagnostic `json:"diagnostics"`
 	Complete    bool              `json:"complete"`
+	Statements  []*Expression     `json:"-"`
 }
 
 func ParseScript(sql, dialect string) (ScriptResult, error) {
+	return parseScript(sql, dialect, false)
+}
+
+// ParseMigrationScript retains located statements for analysis, including
+// successfully parsed statements after a diagnostic.
+func ParseMigrationScript(sql, dialect string) (ScriptResult, error) {
+	if dialect == "tsql" {
+		if _, err := SplitSQLServerScript(sql); err != nil {
+			return ScriptResult{}, err
+		}
+	}
+	return parseScript(sql, dialect, true)
+}
+
+func parseScript(sql, dialect string, migration bool) (ScriptResult, error) {
 	tk, err := NewTokenizer(dialect)
 	if err != nil {
 		return ScriptResult{}, err
 	}
-	if dialect == "tsql" {
+	if dialect == "tsql" || migration {
 		tk.noCommandPayload = true
 	}
 	tokens, err := tk.Tokenize(sql)
 	if err != nil {
 		return ScriptResult{}, err
 	}
-	if len(tokens) == 0 {
+	if len(tokens) == 0 && !migration {
 		return ScriptResult{}, fmt.Errorf("empty SQL input")
 	}
 	result := ScriptResult{Complete: true}
@@ -44,7 +60,7 @@ func ParseScript(sql, dialect string) (ScriptResult, error) {
 			continue
 		}
 		if batchStart < i {
-			batch := &parser{tokens: tokens[batchStart:i], cfg: tk.Config(), tables: tk.Config().Tables, dialect: dialect, sql: sql, nativeTSQLModules: true}
+			batch := &parser{tokens: tokens[batchStart:i], cfg: tk.Config(), tables: tk.Config().Tables, dialect: dialect, sql: sql, nativeTSQLModules: true, migration: migration}
 			trees, diagnostics, complete := batch.parseScriptBatch()
 			expressions = append(expressions, trees...)
 			result.Diagnostics = append(result.Diagnostics, diagnostics...)
@@ -53,7 +69,13 @@ func ParseScript(sql, dialect string) (ScriptResult, error) {
 		batchStart = i + 1
 	}
 	if len(expressions) == 0 && len(result.Diagnostics) == 0 {
+		if migration {
+			return result, nil
+		}
 		return ScriptResult{}, fmt.Errorf("empty SQL input")
+	}
+	if migration {
+		result.Statements = expressions
 	}
 	if len(result.Diagnostics) == 0 {
 		if len(expressions) == 1 {
@@ -115,6 +137,7 @@ func (p *parser) parseScriptBatch() ([]*Expression, []ParseDiagnostic, bool) {
 				Start: token.Start, End: token.End, HasRange: true}
 		}
 		if err == nil {
+			p.locate(tree, start)
 			expressions = append(expressions, tree)
 			continue
 		}

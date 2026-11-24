@@ -18,6 +18,8 @@ import "encoding/json"
 // the shape is not negotiable -- where this port disagrees with the
 // reference, the port is wrong until shown otherwise.
 type Expression struct {
+	sourceRange *SourceRange
+	sourceCall  *sourceCall
 	// Class is the reference's node class name, e.g. "Select", "Table",
 	// "Identifier". Kept as the Python spelling so dumps compare directly.
 	Class string

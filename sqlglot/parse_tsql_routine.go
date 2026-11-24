@@ -166,6 +166,7 @@ func (p *parser) parseTSQLStatement() (*Expression, error) {
 		return nil, &UnsupportedError{Construct: "a statement kept only as text in a routine body",
 			Start: token.Start, End: token.End, HasRange: true}
 	}
+	p.locate(statement, start)
 	return statement, nil
 }
 
