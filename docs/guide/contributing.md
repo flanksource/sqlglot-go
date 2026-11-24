@@ -10,7 +10,7 @@ make lint
 make build
 ```
 
-The tests compare token streams, expression trees, and generated SQL with committed expectations from the pinned Python sqlglot reference. The tests do not need Python to read those expectations. `make lint` also requires golangci-lint v2.13.1.
+The tests compare token streams, expression trees, and generated SQL with committed expectations from the pinned Python sqlglot reference. The tests do not need Python to read those expectations. `make lint` also requires golangci-lint v2.15.0.
 
 `make oracle` regenerates expectations and generated tables and requires Python plus the reference checkout pinned in `NOTICE`. `make oracle-exec` compares actual query results using the Python execution harness and its database dependencies. Agreement with the reference alone does not prove query semantics; the execution oracle supplies a separate check.
 
