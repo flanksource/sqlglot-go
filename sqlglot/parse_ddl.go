@@ -188,6 +188,9 @@ func (p *parser) parseCreate() (*Expression, error) {
 	// The name is a bare Identifier rather than a Table -- a trigger lives on
 	// a table rather than being one.
 	if kind == "TRIGGER" {
+		if p.migration && p.dialect == "sqlite" {
+			return p.parseSQLiteMigrationTrigger()
+		}
 		return p.parseTriggerRest(replace, start, constraintTrigger)
 	}
 
@@ -228,6 +231,9 @@ func (p *parser) parseCreate() (*Expression, error) {
 		return p.parseFunctionRest(table, kind, replace, exists, temporary)
 	}
 	if kind == "PROCEDURE" || kind == "PROC" {
+		if p.migration && p.dialect == "postgres" {
+			return p.parseFunctionRest(table, kind, replace, exists, temporary)
+		}
 		return p.parseProcedureRest(table, kind, replace, exists)
 	}
 
@@ -3486,15 +3492,21 @@ func (p *parser) parseFunctionBody() (body, returns *Expression, err error) {
 			return New("Return", Arg{"this", inner}), nil, nil
 		}
 		if c := p.curr(); c != nil && c.Type == TokSTRING {
+			start := p.index
 			p.advance()
-			return New("Literal", Arg{"this", c.Text}, Arg{"is_string", true}), nil, nil
+			body := New("Literal", Arg{"this", c.Text}, Arg{"is_string", true})
+			p.locate(body, start)
+			return body, nil, nil
 		}
 		// `AS $$ ... $$` holds a body in another language entirely, and the
 		// reference keeps the text without reading it. The TAG between the
 		// dollars is not kept, so `$FOO$ ... $FOO$` comes back as `$$ ... $$`.
 		if c := p.curr(); c != nil && c.Type == TokHEREDOC_STRING {
+			start := p.index
 			p.advance()
-			return New("Heredoc", Arg{"this", c.Text}), nil, nil
+			body := New("Heredoc", Arg{"this", c.Text})
+			p.locate(body, start)
+			return body, nil, nil
 		}
 		// Where a dialect's own `$` is a PARAMETER rather than a heredoc
 		// keyword, the tokenizer never marks the body at all -- so the

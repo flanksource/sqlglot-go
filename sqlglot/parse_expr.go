@@ -2631,6 +2631,19 @@ func (p *parser) parseCase() (*Expression, error) {
 // one of those would be a divergence, so a name the reference knows is refused
 // until its node is ported. The list is generated, not guessed.
 func (p *parser) parseFunction() (*Expression, error) {
+	if !p.migration {
+		return p.parseFunctionCall()
+	}
+	start := p.index
+	function, err := p.parseFunctionCall()
+	if err == nil && function != nil {
+		p.locate(function, start)
+		function.sourceCall = p.locateCall(start)
+	}
+	return function, err
+}
+
+func (p *parser) parseFunctionCall() (*Expression, error) {
 	name := p.curr().Text
 	quotedName := p.curr().Type == TokIDENTIFIER
 	upper := strings.ToUpper(name)
@@ -4172,6 +4185,7 @@ func collationName(e *Expression) *Expression {
 // Resolving the name here wrote `a.CASE WHEN 1 THEN 0 END`, which is not SQL
 // at all -- the generator fuzzer found it and CI's gate stopped it.
 func (p *parser) parseQualifiedName() (*Expression, error) {
+	start := p.index
 	c := p.curr()
 	if c == nil {
 		return nil, p.unsupported("a qualified call with no name")
@@ -4217,7 +4231,9 @@ func (p *parser) parseQualifiedName() (*Expression, error) {
 	if quoted {
 		this = New("Identifier", Arg{"this", name}, Arg{"quoted", true})
 	}
-	return p.parseAggregateCombinator(New("Anonymous", Arg{"this", this}, Arg{"expressions", args}))
+	function, err := p.parseAggregateCombinator(New("Anonymous", Arg{"this", this}, Arg{"expressions", args}))
+	p.locate(function, start)
+	return function, err
 }
 
 // parseDotField reads what follows a dot in a chain of accesses: a call, a

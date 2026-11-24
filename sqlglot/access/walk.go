@@ -1,8 +1,8 @@
 package access
 
 import (
+	"maps"
 	"slices"
-	"strings"
 
 	"github.com/flanksource/sqlglot-go/sqlglot"
 )
@@ -12,6 +12,11 @@ import (
 func (r *reader) walk(e *sqlglot.Expression) error {
 	if e == nil {
 		return nil
+	}
+	if r.migration && e.Class != "Anonymous" && e.Class != "Dot" {
+		if name, ok := e.SourceFunction(); ok {
+			r.migrationCall(tableRef{name: name}, e)
+		}
 	}
 	switch e.Class {
 	case "Select", "Union", "Intersect", "Except":
@@ -83,6 +88,11 @@ func (r *reader) walkKey(e *sqlglot.Expression, key string) error {
 // query walks a SELECT or set operation: its CTEs, then its sources, then
 // everything else it holds.
 func (r *reader) query(e *sqlglot.Expression) error {
+	if r.migration {
+		ctes := r.ctes
+		r.ctes = maps.Clone(ctes)
+		defer func() { r.ctes = ctes }()
+	}
 	switch e.Class {
 	case "Select":
 		return r.selectQuery(e)
@@ -126,7 +136,12 @@ func (r *reader) with(e *sqlglot.Expression) error {
 		if err := r.query(cte.This()); err != nil {
 			return err
 		}
-		r.ctes[strings.ToLower(child(cte, "alias").Name())] = true
+		alias := child(cte, "alias")
+		name := r.identifier(alias.This())
+		if name == "" {
+			name = alias.Name()
+		}
+		r.ctes[r.nameKey(name)] = true
 	}
 	return nil
 }

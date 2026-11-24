@@ -54,7 +54,8 @@ func splitBatches(script, dialect string, validateSQLCMD bool) ([]string, error)
 			continue
 		}
 		if next := i + 1; next < len(tokens) && tokens[next].Line == token.Line {
-			return nil, fmt.Errorf("split batches: line %d: GO must stand alone on its line, found %q after it", token.Line, tokens[next].Text)
+			return nil, &ScriptInputError{Range: SourceRange{Start: tokens[next].Start, End: tokens[next].End + 1},
+				Message: fmt.Sprintf("split batches: line %d: GO must stand alone on its line, found %q after it", token.Line, tokens[next].Text)}
 		}
 		if hasStatements {
 			batches = append(batches, strings.TrimSpace(string(src[start:token.Start])))

@@ -3,6 +3,8 @@ package access
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"strconv"
 
 	"github.com/flanksource/sqlglot-go/sqlglot"
 )
@@ -52,14 +54,17 @@ type statementRead struct {
 // reader walks one parsed statement and records each table it reads or
 // writes, once per kind, and each routine it calls.
 type reader struct {
-	ctx     statementContext
-	ctes    map[string]bool
-	targets map[*sqlglot.Expression]bool
-	sourced map[*sqlglot.Expression]bool
-	seen    map[string]bool
-	writes  []Access
-	reads   []Access
-	dynamic []Node
+	ctx       statementContext
+	ctes      map[string]bool
+	targets   map[*sqlglot.Expression]bool
+	sourced   map[*sqlglot.Expression]bool
+	seen      map[string]bool
+	writes    []Access
+	reads     []Access
+	dynamic   []Node
+	migration bool
+	location  *sqlglot.SourceRange
+	issues    []MigrationIssue
 }
 
 func readStatement(text string, ctx statementContext) (statementRead, error) {
@@ -83,6 +88,19 @@ func readStatement(text string, ctx statementContext) (statementRead, error) {
 
 // statement dispatches one statement; a Block recurses into its own.
 func (r *reader) statement(e *sqlglot.Expression) error {
+	if r.migration {
+		previous := r.location
+		defer func() { r.location = previous }()
+		ctes := r.ctes
+		r.ctes = maps.Clone(ctes)
+		defer func() { r.ctes = ctes }()
+		if loc, ok := e.SourceRange(); ok && (r.location == nil || loc.Start >= r.location.Start && loc.End <= r.location.End) {
+			r.location = &loc
+		}
+		if handled, err := r.migrationStatement(e); handled {
+			return err
+		}
+	}
 	switch e.Class {
 	case "Block":
 		for _, item := range children(e) {
@@ -121,11 +139,22 @@ func (r *reader) statement(e *sqlglot.Expression) error {
 // table records a read or write of a real table, once per kind.
 func (r *reader) table(kind Kind, ref tableRef) {
 	key := ref.key(kind, r.ctx.DefaultSchema)
+	if r.migration {
+		if r.ctx.Dialect == "postgres" {
+			key = string(kind) + "\x00" + ref.object(r.ctx.DefaultSchema).String()
+		}
+		if r.location != nil {
+			key += "\x00" + strconv.Itoa(r.location.Start)
+		}
+	}
 	if r.seen[key] {
 		return
 	}
 	r.seen[key] = true
 	access := Access{Kind: kind, Object: ref.object(r.ctx.DefaultSchema), Line: r.ctx.Line}
+	if r.migration {
+		access.ObjectKind, access.Range = "table", r.location
+	}
 	if kind == Write {
 		r.writes = append(r.writes, access)
 		return
@@ -135,7 +164,11 @@ func (r *reader) table(kind Kind, ref tableRef) {
 
 // call records a call to a stored procedure or function.
 func (r *reader) call(ref tableRef) {
-	r.reads = append(r.reads, Access{Kind: Call, Object: ref.object(r.ctx.DefaultSchema), Line: r.ctx.Line})
+	access := Access{Kind: Call, Object: ref.object(r.ctx.DefaultSchema), Line: r.ctx.Line}
+	if r.migration {
+		access.ObjectKind, access.Range = "function", r.location
+	}
+	r.reads = append(r.reads, access)
 }
 
 func child(e *sqlglot.Expression, key string) *sqlglot.Expression {
