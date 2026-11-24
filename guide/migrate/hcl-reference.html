@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supported HCL reference - sqlglot-go</title>
+<script>{;const saved = localStorage.getItem('rspress-theme-appearance');const preferDark = window.matchMedia('(prefers-color-scheme: dark)').matches;const defaultTheme = 'auto';const theme = saved === 'light' || saved === 'dark' || saved === 'auto' ? saved : defaultTheme;const isDark = theme === 'auto' ? preferDark : theme === 'dark';document.documentElement.classList.toggle('dark', isDark);document.documentElement.classList.toggle('rp-dark', isDark);document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';}</script>
+<link href="/sqlglot-go/static/css/styles.8d4a450e35.css" rel="stylesheet">
+<link rel="preload" href="/sqlglot-go/static/js/async/route-ab74e113a64d.2f57fecc61.js" as="script">
+<script defer src="/sqlglot-go/static/js/styles.36990f4507.js"></script>
+<script defer src="/sqlglot-go/static/js/lib-react.be882c4a90.js"></script>
+<script defer src="/sqlglot-go/static/js/lib-router.f890401236.js"></script>
+<script defer src="/sqlglot-go/static/js/q.812b34d9be.js"></script>
+<script defer src="/sqlglot-go/static/js/index.8103bddc52.js"></script>
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="generator" content="Rspress v2.0.23">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Supported HCL reference - sqlglot-go">
+<meta name="description" content="Supported Atlas HCL blocks, types, and restrictions for PostgreSQL, SQLite, and SQL Server.">
+<meta property="og:description" content="Supported Atlas HCL blocks, types, and restrictions for PostgreSQL, SQLite, and SQL Server."></head>
+
+  <body>
+    <div id="__rspress_root"><header class="rp-nav"><div class="rp-nav__left"><div class="rp-nav__title"><a href="/sqlglot-go/" class="rp-nav__title__link rp-link"><span>sqlglot-go</span></a></div></div><div class="rp-nav__right"><button class="rp-search-button"><div class="rp-search-button__content"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="none" viewBox="0 0 20 21" class="rp-search-button__icon"><path fill="currentColor" d="M8.333 1.913A6.667 6.667 0 0 1 15 8.58c0 1.54-.525 2.957-1.402 4.085l4.49 4.492a.834.834 0 0 1-1.177 1.178l-4.491-4.49a6.64 6.64 0 0 1-4.087 1.402 6.667 6.667 0 0 1 0-13.334m0 1.667a5 5 0 1 0 0 10 5 5 0 0 0 0-10"></path></svg><span class="rp-search-button__word">Search</span></div><div class="rp-search-button__hotkey" style="opacity:0"><span></span><span>K</span></div></button><div class="rp-search-button--mobile"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="none" viewBox="0 0 20 21"><path fill="currentColor" d="M8.333 1.913A6.667 6.667 0 0 1 15 8.58c0 1.54-.525 2.957-1.402 4.085l4.49 4.492a.834.834 0 0 1-1.177 1.178l-4.491-4.49a6.64 6.64 0 0 1-4.087 1.402 6.667 6.667 0 0 1 0-13.334m0 1.667a5 5 0 1 0 0 10 5 5 0 0 0 0-10"></path></svg></div><ul class="rp-nav-menu rp-nav-menu--right"><li class="rp-nav-menu__item"><a href="/sqlglot-go/guide/getting-started.html" class="rp-nav-menu__item__container rp-link">Guide</a></li><li class="rp-nav-menu__item"><a href="/sqlglot-go/guide/go-api.html" class="rp-nav-menu__item__container rp-link">Go API</a></li><li class="rp-nav-menu__item"><a href="/sqlglot-go/guide/inspection.html" class="rp-nav-menu__item__container rp-link">Inspection</a></li><li class="rp-nav-menu__item rp-nav-menu__item--active"><a href="/sqlglot-go/guide/migrate/index.html" class="rp-nav-menu__item__container rp-link">Migrations</a></li></ul><div class="rp-nav__others"><div class="rp-nav-menu__divider"></div><div class="rp-switch-appearance"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24" class="rp-switch-appearance__icon rp-switch-appearance__icon--sun"><path fill="currentColor" d="m7.001 15.848-1.226 1.226a.58.58 0 0 0 0 .818.58.58 0 0 0 .818 0l1.226-1.226a.58.58 0 0 0 0-.818.58.58 0 0 0-.818 0m-.352-8.735a.584.584 0 0 0 .825-.825L6.237 5.051a.584.584 0 0 0-.825.825zM5.011 11.07h-1.75a.584.584 0 0 0 0 1.167h1.75c.324 0 .584-.26.584-.583a.585.585 0 0 0-.584-.584m7.003-5.835c.324 0 .584-.26.584-.584V2.9a.58.58 0 0 0-.584-.584.58.58 0 0 0-.583.583V4.65c0 .323.262.584.583.584m5.616 1.621 1.226-1.225a.58.58 0 0 0 0-.818.58.58 0 0 0-.818 0l-1.226 1.225a.58.58 0 0 0 0 .818.576.576 0 0 0 .818 0m3.138 4.214h-1.75a.58.58 0 0 0-.584.584c0 .324.26.584.583.584h1.751a.584.584 0 1 0 0-1.167m-3.389 5.124a.584.584 0 0 0-.825.825l1.238 1.238a.584.584 0 0 0 .825-.826zm-5.365-9.795a5.256 5.256 0 0 0-5.257 5.258 5.256 5.256 0 0 0 5.257 5.257 5.256 5.256 0 0 0 5.257-5.257 5.256 5.256 0 0 0-5.257-5.258m0 11.675a.58.58 0 0 0-.583.583v1.751a.582.582 0 1 0 1.167 0v-1.75a.584.584 0 0 0-.584-.584"></path></svg><svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" fill="currentColor" viewBox="0 0 19 19" class="rp-switch-appearance__icon rp-switch-appearance__icon--moon"><path fill="currentColor" d="M9.166 0a9.2 9.2 0 0 1 1.857.188.834.834 0 0 1 .042 1.623 4.47 4.47 0 1 0 5.457 5.457l.048-.135a.834.834 0 0 1 1.575.177q.186.902.188 1.856A9.168 9.168 0 1 1 9.166 0"></path></svg></div><div class="rp-social-links"><a href="https://github.com/flanksource/sqlglot-go" target="_blank" rel="noopener noreferrer" class="rp-social-links__item"><div class="rp-social-links__icon"><div class="rp-social-links__icon"><svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12c0 5.303 3.438 9.8 8.205 11.385c.6.113.82-.258.82-.577c0-.285-.01-1.04-.015-2.04c-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729c1.205.084 1.838 1.236 1.838 1.236c1.07 1.835 2.809 1.305 3.495.998c.108-.776.417-1.305.76-1.605c-2.665-.3-5.466-1.332-5.466-5.93c0-1.31.465-2.38 1.235-3.22c-.135-.303-.54-1.523.105-3.176c0 0 1.005-.322 3.3 1.23c.96-.267 1.98-.399 3-.405c1.02.006 2.04.138 3 .405c2.28-1.552 3.285-1.23 3.285-1.23c.645 1.653.24 2.873.12 3.176c.765.84 1.23 1.91 1.23 3.22c0 4.61-2.805 5.625-5.475 5.92c.42.36.81 1.096.81 2.22c0 1.606-.015 2.896-.015 3.286c0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></div></div></a><ul class="rp-hover-group rp-hover-group--hidden rp-hover-group--right"></ul></div></div><button aria-label="mobile hamburger" class="rp-nav-hamburger rp-nav-hamburger__sm"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 21 21"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.667" d="M3.645 5.225h13.333M3.645 10.225h13.333M3.645 15.225h13.333"></path></svg></button><button aria-label="mobile hamburger" class="rp-nav-hamburger rp-nav-hamburger__md"><svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" fill="none" viewBox="0 0 21 21"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.667" d="M3.645 5.225h13.333M3.645 10.225h13.333M3.645 15.225h13.333"></path></svg><ul class="rp-hover-group rp-hover-group--hidden rp-hover-group--right"><div class="rp-nav-menu__others-mobile__container"><div class="rp-nav-hamburger__md__hover-group"><div class="rp-nav-screen-appearance"><div class="rp-nav-screen-appearance__left">Theme</div><div class="rp-nav-screen-appearance__right"></div></div><div class="rp-nav-screen-divider"></div><div class="rp-social-links"><a href="https://github.com/flanksource/sqlglot-go" target="_blank" rel="noopener noreferrer" class="rp-social-links__item"><div class="rp-social-links__icon"><div class="rp-social-links__icon"><svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12c0 5.303 3.438 9.8 8.205 11.385c.6.113.82-.258.82-.577c0-.285-.01-1.04-.015-2.04c-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729c1.205.084 1.838 1.236 1.838 1.236c1.07 1.835 2.809 1.305 3.495.998c.108-.776.417-1.305.76-1.605c-2.665-.3-5.466-1.332-5.466-5.93c0-1.31.465-2.38 1.235-3.22c-.135-.303-.54-1.523.105-3.176c0 0 1.005-.322 3.3 1.23c.96-.267 1.98-.399 3-.405c1.02.006 2.04.138 3 .405c2.28-1.552 3.285-1.23 3.285-1.23c.645 1.653.24 2.873.12 3.176c.765.84 1.23 1.91 1.23 3.22c0 4.61-2.805 5.625-5.475 5.92c.42.36.81 1.096.81 2.22c0 1.606-.015 2.896-.015 3.286c0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></div></div></a><ul class="rp-hover-group rp-hover-group--hidden rp-hover-group--right"></ul></div></div></div></ul></button></div></header><div class="rp-doc-layout__menu"><div class="rp-sidebar-menu"><button type="button" class="rp-sidebar-menu__left"><svg width="1em" height="1em" viewBox="0 0 32 32"><path fill="currentColor" d="M4 6h24v2H4zm0 18h24v2H4zm0-12h24v2H4zm0 6h24v2H4z"></path></svg><span>Menu</span></button><button type="button" class="rp-sidebar-menu__right"><span class="rp-sidebar-menu__right__text">ON THIS PAGE</span><svg width="14" height="14" class="rp-progress-circle"><circle cx="7" cy="7" r="6" stroke-linecap="round" fill="none" stroke="var(--rp-c-divider-light)" stroke-width="2"></circle><circle cx="7" cy="7" r="6" stroke-linecap="round" fill="none" stroke="var(--rp-c-brand)" stroke-width="2" stroke-dasharray="37.69911184307752" stroke-dashoffset="37.69911184307752" transform="rotate(-90 7 7)" style="transition:stroke-dashoffset 0.3s"></circle></svg><svg width="1em" height="1em" viewBox="0 0 32 32" class="rp-sidebar-menu__right__icon" style="transform:rotate(0deg);transition:transform 0.2s ease-out"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg></button></div></div><div class="rp-doc-layout__container"><aside class="rp-doc-layout__sidebar rp-scrollbar"><div class="rp-sidebar-item rp-sidebar-group" style="padding-left:12px" data-depth="0"><div class="rp-sidebar-item__left"><span class="rp-doc">Using sqlglot-go</span></div><div class="rp-sidebar-item__right"><div style="cursor:pointer;transition:transform 0.2s ease-out;transform:rotate(90deg)"><svg width="1em" height="1em" viewBox="0 0 32 32"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg></div></div></div><div style="display:grid;grid-template-rows:1fr;transition:grid-template-rows 0.2s ease-out"><div style="overflow:hidden"><a href="/sqlglot-go/guide/getting-started.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Getting started</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/cli.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Command line</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/web-ui.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Web UI</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/go-api.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Go API</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/connections.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Set up database connections</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/inspection.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Inspect a database</span></div><div class="rp-sidebar-item__right"></div></a></div></div><div class="rp-sidebar-item rp-sidebar-group" style="padding-left:12px" data-depth="0"><div class="rp-sidebar-item__left"><span class="rp-doc">Migrations</span></div><div class="rp-sidebar-item__right"><div style="cursor:pointer;transition:transform 0.2s ease-out;transform:rotate(90deg)"><svg width="1em" height="1em" viewBox="0 0 32 32"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg></div></div></div><div style="display:grid;grid-template-rows:1fr;transition:grid-template-rows 0.2s ease-out"><div style="overflow:hidden"><a href="/sqlglot-go/guide/migrate/index.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Overview</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrate/hcl.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">HCL schema migrations</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrate/sql.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">SQL script migrations</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrate/csv.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">CSV data migrations</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrations.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Compare two databases</span></div><div class="rp-sidebar-item__right"></div></a></div></div><div class="rp-sidebar-item rp-sidebar-group" style="padding-left:12px" data-depth="0"><div class="rp-sidebar-item__left"><span class="rp-doc">Migration reference</span></div><div class="rp-sidebar-item__right"><div style="cursor:pointer;transition:transform 0.2s ease-out;transform:rotate(90deg)"><svg width="1em" height="1em" viewBox="0 0 32 32"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg></div></div></div><div style="display:grid;grid-template-rows:1fr;transition:grid-template-rows 0.2s ease-out"><div style="overflow:hidden"><a href="/sqlglot-go/guide/migrate/project-yaml.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Project YAML</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrate/csv-yaml.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">CSV mapping YAML</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrate/hcl-reference.html" class="rp-sidebar-item rp-sidebar-item--active rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Supported HCL</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/guide/migrate/sql-headers.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">SQL script headers</span></div><div class="rp-sidebar-item__right"></div></a></div></div><div class="rp-sidebar-item rp-sidebar-group" style="padding-left:12px" data-depth="0"><div class="rp-sidebar-item__left"><span class="rp-doc">Development</span></div><div class="rp-sidebar-item__right"><div style="cursor:pointer;transition:transform 0.2s ease-out;transform:rotate(90deg)"><svg width="1em" height="1em" viewBox="0 0 32 32"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg></div></div></div><div style="display:grid;grid-template-rows:1fr;transition:grid-template-rows 0.2s ease-out"><div style="overflow:hidden"><a href="/sqlglot-go/guide/contributing.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Contributing and verification</span></div><div class="rp-sidebar-item__right"></div></a><a href="/sqlglot-go/upstream-issues.html" class="rp-sidebar-item rp-sidebar-item--group-item rp-link" style="padding-left:calc(12px * 1 + 12px)" data-depth="1"><div class="rp-sidebar-item__left"><span class="rp-doc">Upstream issues</span></div><div class="rp-sidebar-item__right"></div></a></div></div></aside><div class="rp-doc-layout__doc"><main class="rp-doc-layout__doc-container"><div class="rp-doc rspress-doc"><!--$--><h1 class="rp-toc-include" id="supported-hcl-reference"><a href="#supported-hcl-reference" class="rp-header-anchor rp-link" aria-hidden="true">#</a>Supported HCL reference<!-- --> </h1>
+<p>sqlglot uses Atlas HCL for desired schemas. The bundle format depends on the target. PostgreSQL and SQLite share a portable PostgreSQL-shaped subset. SQL Server uses its own table and column declarations.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Target</th><th><code>--bundle DIR</code></th><th><code>--desired FILE</code></th></tr></thead><tbody><tr><td>PostgreSQL</td><td>Declare <code>schema &quot;public&quot; {}</code>. Use <code>--schema</code> to remap the declaration onto an existing schema.</td><td>Use PostgreSQL Atlas HCL declaring the target schema, or a matching inspected snapshot.</td></tr><tr><td>SQLite</td><td>Declare PostgreSQL-shaped <code>schema &quot;public&quot; {}</code>. sqlglot projects supported tables and types onto <code>main</code>.</td><td>Use native SQLite Atlas HCL declaring <code>main</code>, or a matching inspected snapshot.</td></tr><tr><td>SQL Server</td><td>Declare <code>schema &quot;dbo&quot; {}</code> with SQL Server HCL types.</td><td>Use an inspected SQL Server JSON snapshot. To supply HCL, use a bundle.</td></tr></tbody></table></div>
+<p>A bundle loads <code>.hcl</code> files recursively and evaluates them together. Cross-file references such as <code>table.accounts.column.id</code> are allowed. Omitted tables and columns are preserved by default. <code>--allow-drops</code> considers omissions on PostgreSQL and SQLite bundles. SQL Server bundles reject that switch. A <code>--desired</code> file represents the complete desired scope, so omissions can produce drops. Always review the resulting plan.</p>
+<h2 class="rp-toc-include" id="variables-and-expressions"><a href="#variables-and-expressions" class="rp-header-anchor rp-link" aria-hidden="true">#</a>Variables and expressions</h2>
+<p>Declare a variable once in a bundle and reference it with <code>var.NAME</code>. The CLI accepts repeatable <code>--var &#x27;NAME=HCL_LITERAL&#x27;</code> values. Use HCL syntax for each literal, including inner quotes for strings, for example <code>--var &#x27;label=&quot;Inventory&quot;&#x27;</code>. Defaults can be declared in HCL.</p>
+<div class="rp-codeblock language-hcl"><div class="rp-codeblock__content"><div class="rp-codeblock__content__scroll-container rp-scrollbar rp-scrollbar--always"><pre class="shiki css-variables" style="background-color:var(--shiki-background);color:var(--shiki-foreground)" tabindex="0" data-lang="hcl"><code><span class="line"><span style="color:var(--shiki-token-function)">variable</span><span style="color:var(--shiki-foreground)"> &quot;label&quot; {</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">  type    </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-token-keyword)"> string</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">  default </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-token-string-expression)"> &quot;Pending&quot;</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">}</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:var(--shiki-token-function)">schema</span><span style="color:var(--shiki-foreground)"> &quot;public&quot; {}</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:var(--shiki-token-function)">table</span><span style="color:var(--shiki-foreground)"> &quot;items&quot; {</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">  schema </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-foreground)"> schema.public</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:var(--shiki-token-function)">  column</span><span style="color:var(--shiki-foreground)"> &quot;id&quot; {</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">    type </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-foreground)"> integer</span></span>
+<span class="line"><span style="color:var(--shiki-token-constant)">    null</span><span style="color:var(--shiki-foreground)"> = </span><span style="color:var(--shiki-token-constant)">false</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">  }</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:var(--shiki-token-function)">  column</span><span style="color:var(--shiki-foreground)"> &quot;label&quot; {</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">    type    </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-foreground)"> text</span></span>
+<span class="line"><span style="color:var(--shiki-token-constant)">    null</span><span style="color:var(--shiki-foreground)">    = </span><span style="color:var(--shiki-token-constant)">false</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">    default </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-foreground)"> var.label</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">  }</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:var(--shiki-token-function)">  primary_key</span><span style="color:var(--shiki-foreground)"> {</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">    columns </span><span style="color:var(--shiki-token-keyword)">=</span><span style="color:var(--shiki-foreground)"> [column.id]</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">  }</span></span>
+<span class="line"><span style="color:var(--shiki-foreground)">}</span></span></code></pre></div><div class="rp-code-button-group"><button class="rp-code-button-group__button rp-code-wrap-button" title="Toggle code wrap" aria-label="Toggle code wrap"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" class="rp-code-button-group__icon rp-code-button-group__icon--wrapped"><path fill="currentColor" d="M21 5H3v2h18zM3 19h7v-2H3zm0-6h15c1 0 2 .43 2 2s-1 2-2 2h-2v-2l-4 3 4 3v-2h2c2.95 0 4-1.27 4-4 0-2.72-1-4-4-4H3z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" class="rp-code-button-group__icon rp-code-button-group__icon--wrap"><path fill="currentColor" d="M16 7H3V5h13zM3 19h13v-2H3zm19-7-4-3v2H3v2h15v2z"></path></svg></button><button class="rp-code-button-group__button rp-code-copy-button" title="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" class="rp-code-button-group__icon rp-code-copy-button__icon rp-code-copy-button__icon--copy"><path fill="currentColor" d="M20 8v12H8V8zm0-2H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2"></path><path fill="currentColor" d="M4 16H2V4a2 2 0 0 1 2-2h12v2H4Z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" class="rp-code-button-group__icon rp-code-copy-button__icon rp-code-copy-button__icon--success"><path fill="currentColor" d="m9.55 18-5.7-5.7 1.425-1.425L9.55 15.15l9.175-9.175L20.15 7.4z"></path></svg></button></div></div></div>
+<p><code>sql(&quot;…&quot;)</code> supplies a raw SQL expression where the dialect permits it. Default expressions, check expressions, and index predicates must work on the target engine. For cross-database bundles, choose expressions with the same meaning on both targets. sqlglot preserves their SQL text.</p>
+<h2 class="rp-toc-include" id="postgresql"><a href="#postgresql" class="rp-header-anchor rp-link" aria-hidden="true">#</a>PostgreSQL</h2>
+<p>Use the PostgreSQL Atlas table syntax for columns, defaults, keys, indexes, and checks. PostgreSQL-specific attributes are available when they round-trip through the supported catalog snapshot and schema differ. An executable reviewed schema plan covers one schema and its tables. Live views, materialized views, foreign tables, partitions, row-level security, standalone sequences, routines, user triggers, domains, table inheritance, and exclusion, deferrable, or unvalidated constraints fall outside the reviewed snapshot. Use <code>schema inspect --snapshot</code> to check whether the catalog fits that contract.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Table block</th><th>PostgreSQL syntax</th></tr></thead><tbody><tr><td><code>column &quot;NAME&quot;</code></td><td><code>type</code>, <code>null</code>, and <code>default</code>. PostgreSQL also has <code>identity</code> and stored generated <code>as</code> blocks.</td></tr><tr><td><code>primary_key</code></td><td>Primary key columns, usually <code>columns = [column.id]</code>.</td></tr><tr><td><code>unique &quot;NAME&quot;</code></td><td>Unique constraint over column references.</td></tr><tr><td><code>index &quot;NAME&quot;</code></td><td><code>columns</code> or <code>on</code> parts, optional <code>unique</code>, <code>where</code>, <code>include</code>, and <code>type</code>, such as <code>BTREE</code> or <code>GIN</code>.</td></tr><tr><td><code>foreign_key &quot;NAME&quot;</code></td><td><code>columns</code>, <code>ref_columns</code>, <code>on_update</code>, and <code>on_delete</code>.</td></tr><tr><td><code>check &quot;NAME&quot;</code></td><td>SQL predicate in <code>expr</code>.</td></tr></tbody></table></div>
+<p>Common column types include <code>uuid</code>, <code>boolean</code>, <code>bytea</code>, <code>text</code>, <code>varchar(n)</code>, <code>integer</code>, <code>bigint</code>, <code>numeric(p,s)</code>, <code>double_precision</code>, <code>jsonb</code>, <code>date</code>, and <code>timestamptz(p)</code>. The Atlas references define the complete PostgreSQL syntax. Check availability against sqlglot&#x27;s bundled Atlas version and reviewed table scope before using newer features. <a href="https://atlasgo.io/hcl/postgres" target="_blank" rel="noopener noreferrer" class="rp-link">Atlas PostgreSQL HCL reference</a> · <a href="https://atlasgo.io/atlas-schema/hcl-types" target="_blank" rel="noopener noreferrer" class="rp-link">Atlas type syntax</a> · <a href="https://github.com/ariga/atlas/blob/v0.38.0/sql/postgres/sqlspec_oss.go#L976" target="_blank" rel="noopener noreferrer" class="rp-link">Bundled PostgreSQL type registry</a></p>
+<h3 class="rp-toc-include" id="roles-and-permissions"><a href="#roles-and-permissions" class="rp-header-anchor rp-link" aria-hidden="true">#</a>Roles and permissions</h3>
+<p>PostgreSQL bundles can declare roles and permissions for advisory review. A bundle containing either generates an advisory plan that <code>migrate apply</code> refuses.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Block or field</th><th>Accepted form</th></tr></thead><tbody><tr><td><code>role &quot;NAME&quot;</code></td><td>One role name. Boolean attributes are <code>external</code>, <code>login</code>, <code>inherit</code>, <code>superuser</code>, <code>create_db</code>, <code>create_role</code>, <code>replication</code>, and <code>bypass_rls</code>. <code>inherit</code> defaults to <code>true</code>; the others default to <code>false</code>.</td></tr><tr><td><code>role.conn_limit</code></td><td>Integer connection limit, default <code>-1</code>.</td></tr><tr><td><code>role.comment</code></td><td>Optional string.</td></tr><tr><td><code>role.member_of</code></td><td>List of role references, for example <code>[role.inventory_readers]</code>.</td></tr><tr><td><code>permission.to</code></td><td>Required grantee, such as <code>role.inventory_reader</code> or <code>PUBLIC</code>.</td></tr><tr><td><code>permission.for</code></td><td>Required schema, table, column, or sequence reference.</td></tr><tr><td><code>permission.privileges</code></td><td>Required nonempty privilege list. Use a privilege valid for the target or <code>ALL</code>.</td></tr><tr><td><code>permission.grantable</code></td><td>Optional boolean, default <code>false</code>.</td></tr><tr><td><code>permission.for_each</code></td><td>Optional collection. Use <code>each.value</code> in the permission body to expand one grant per entry.</td></tr></tbody></table></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Permission target</th><th>Privileges</th></tr></thead><tbody><tr><td>Schema</td><td><code>USAGE</code>, <code>CREATE</code></td></tr><tr><td>Table</td><td><code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>TRUNCATE</code>, <code>REFERENCES</code>, <code>TRIGGER</code>, <code>MAINTAIN</code></td></tr><tr><td>Column</td><td><code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code>, <code>REFERENCES</code></td></tr><tr><td>Sequence</td><td><code>USAGE</code>, <code>SELECT</code>, <code>UPDATE</code></td></tr></tbody></table></div>
+<h2 class="rp-toc-include" id="portable-bundles-for-sqlite"><a href="#portable-bundles-for-sqlite" class="rp-header-anchor rp-link" aria-hidden="true">#</a>Portable bundles for SQLite</h2>
+<p>Use one <code>schema &quot;public&quot; {}</code> and at least one table. SQLite accepts the following PostgreSQL-shaped declarations in a bundle.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Block</th><th>Supported form</th></tr></thead><tbody><tr><td><code>variable</code></td><td>Values and defaults evaluated before projection.</td></tr><tr><td><code>table &quot;NAME&quot;</code></td><td>Declare <code>schema = schema.public</code>. Supported table attributes are named checks.</td></tr><tr><td><code>column &quot;NAME&quot;</code></td><td><code>type</code>, <code>null</code>, and a literal or <code>sql(...)</code> default.</td></tr><tr><td><code>primary_key</code></td><td>Column references.</td></tr><tr><td><code>unique &quot;NAME&quot;</code></td><td>Column references. Becomes a named unique index in SQLite.</td></tr><tr><td><code>index &quot;NAME&quot;</code></td><td>Column references, optional <code>unique</code> and <code>where</code>, and default or explicit B-tree method.</td></tr><tr><td><code>foreign_key &quot;NAME&quot;</code></td><td><code>columns</code>, <code>ref_columns</code>, <code>on_update</code>, and <code>on_delete</code>. Actions include <code>NO_ACTION</code>, <code>RESTRICT</code>, <code>CASCADE</code>, <code>SET_NULL</code>, and <code>SET_DEFAULT</code>.</td></tr><tr><td><code>check &quot;NAME&quot;</code></td><td><code>expr</code>, preserved as SQL.</td></tr></tbody></table></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>PostgreSQL HCL family</th><th>SQLite projection</th></tr></thead><tbody><tr><td><code>uuid</code></td><td><code>text</code> without UUID-format enforcement</td></tr><tr><td><code>text</code>, <code>char</code>, <code>character</code>, <code>varchar</code>, <code>character_varying</code>, <code>bpchar</code>, <code>name</code></td><td><code>text</code>, without length enforcement</td></tr><tr><td><code>json</code>, <code>jsonb</code></td><td><code>text</code> with a <code>json_valid</code> check named <code>&lt;table&gt;_&lt;column&gt;_json</code></td></tr><tr><td><code>date</code>, <code>time</code>, <code>timetz</code>, <code>timestamp</code>, <code>timestamptz</code></td><td><code>datetime</code>, without precision or timezone enforcement</td></tr><tr><td><code>int2</code>, <code>int4</code>, <code>int8</code>, <code>int</code>, <code>integer</code>, <code>smallint</code>, <code>bigint</code>, <code>xid</code>, <code>xid8</code></td><td><code>integer</code></td></tr><tr><td><code>bool</code>, <code>boolean</code></td><td><code>bool</code> with SQLite numeric affinity</td></tr><tr><td><code>bytea</code></td><td><code>blob</code></td></tr><tr><td><code>numeric</code>, <code>decimal</code></td><td><code>numeric</code>, without precision or scale enforcement</td></tr><tr><td><code>real</code>, <code>float</code>, <code>float4</code>, <code>float8</code>, <code>double_precision</code></td><td><code>real</code></td></tr></tbody></table></div>
+<p>SQL spellings containing spaces can use <code>sql()</code>, for example <code>sql(&quot;timestamp with time zone&quot;)</code> or <code>sql(&quot;character varying(100)&quot;)</code>. SQLite rejects other type families, including arrays, enums, domains, ranges, serial types, and user-defined types. It also rejects generated and identity columns, expression indexes, per-index-column attributes, foreign-key attributes beyond the portable fields, triggers, schema objects such as views, <code>role</code> and <code>permission</code> blocks, and bundled <code>.sql</code> scripts. A check with a generated JSON-check name must use the matching JSON validation expression.</p>
+<p>The projection rules above apply to <code>--bundle</code>. With <code>--desired</code>, use the native SQLite table syntax for <code>schema &quot;main&quot; {}</code> and ensure the plan can round-trip the target catalog. <a href="https://atlasgo.io/hcl/sqlite" target="_blank" rel="noopener noreferrer" class="rp-link">Atlas SQLite HCL reference</a></p>
+<h2 class="rp-toc-include" id="sql-server-bundles"><a href="#sql-server-bundles" class="rp-header-anchor rp-link" aria-hidden="true">#</a>SQL Server bundles</h2>
+<p>Declare one <code>schema &quot;dbo&quot; {}</code>. SQL Server schema bundles manage declared tables and routines in <code>dbo</code>. Omitted tables, columns, routines, and extra indexes are preserved. Review any planned constraint changes.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Block</th><th>Supported form</th></tr></thead><tbody><tr><td><code>table &quot;NAME&quot;</code></td><td><code>schema = schema.dbo</code>, with columns, keys, indexes, foreign keys, and checks.</td></tr><tr><td><code>column &quot;NAME&quot;</code></td><td><code>type</code>, <code>null</code>, <code>default</code>, and optional <code>identity { seed, increment }</code>. Both identity attributes are integers. Defaults can use a literal or <code>sql(&quot;getdate()&quot;)</code>.</td></tr><tr><td><code>primary_key</code></td><td>Column references, optional name, and <code>clustered</code>. The key is clustered by default.</td></tr><tr><td><code>index &quot;NAME&quot;</code></td><td><code>columns</code> or column <code>on</code> parts with optional <code>desc</code>, plus <code>unique</code>, <code>clustered</code>, <code>include = [column.x]</code>, and <code>where</code>. Indexes default to nonclustered.</td></tr><tr><td><code>foreign_key &quot;NAME&quot;</code></td><td><code>columns</code>, <code>ref_columns</code>, <code>on_delete</code>, and <code>on_update</code>. Use SQL Server&#x27;s supported actions <code>NO_ACTION</code>, <code>CASCADE</code>, <code>SET_NULL</code>, and <code>SET_DEFAULT</code>.</td></tr><tr><td><code>check &quot;NAME&quot;</code></td><td><code>expr</code>.</td></tr></tbody></table></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="rp-table-scroll-container rp-scrollbar"><table><thead><tr><th>Family</th><th>Types</th></tr></thead><tbody><tr><td>Integers and bit</td><td><code>bit</code>, <code>tinyint</code>, <code>smallint</code>, <code>int</code>, <code>bigint</code></td></tr><tr><td>Exact numeric</td><td><code>decimal(p,s)</code>, <code>numeric(p,s)</code>, <code>money</code>, <code>smallmoney</code></td></tr><tr><td>Approximate numeric</td><td><code>real</code>, <code>float(n)</code></td></tr><tr><td>Character</td><td><code>char(n)</code>, <code>varchar(n)</code>, <code>nchar(n)</code>, <code>nvarchar(n)</code>, <code>text</code>, <code>ntext</code></td></tr><tr><td>Binary</td><td><code>binary(n)</code>, <code>varbinary(n)</code>, <code>image</code>, <code>rowversion</code></td></tr><tr><td>Temporal</td><td><code>date</code>, <code>time(p)</code>, <code>datetime</code>, <code>datetime2(p)</code>, <code>smalldatetime</code>, <code>datetimeoffset(p)</code></td></tr><tr><td>Other</td><td><code>uniqueidentifier</code>, <code>xml</code>, <code>sql_variant</code></td></tr></tbody></table></div>
+<p>Use <code>sql(&quot;nvarchar(max)&quot;)</code>, <code>sql(&quot;varchar(max)&quot;)</code>, or <code>sql(&quot;varbinary(max)&quot;)</code> for <code>(max)</code>. <code>sql(&quot;timestamp&quot;)</code> is an alias for <code>rowversion</code>. <code>float</code> precision up to 24 bits uses <code>real</code> storage.</p>
+<p>SQL Server rejects computed columns, user-defined and alias types such as <code>sysname</code>, and unsupported table or column attributes. It also rejects declared tables with unsupported partitioning or triggers and changes to an existing column&#x27;s identity. HCL blocks for views, triggers, sequences, functions, and procedures are not supported. Use <code>--routines DIR</code> for one <code>CREATE [OR ALTER] PROCEDURE</code> or <code>FUNCTION</code> batch per <code>.sql</code> file named after the routine. Use <a href="/sqlglot-go/guide/migrate/sql-headers.html" class="rp-link">SQL deployment scripts</a> for ordered executable statements, such as creating a view.</p>
+<p>For a runnable schema migration, see <a href="/sqlglot-go/guide/migrate/hcl.html" class="rp-link">HCL schema migrations</a>.</p><!--/$--></div><footer class="rp-doc-footer"><div class="rp-doc-footer__edit"></div><div class="rp-doc-footer__divider"></div><div class="rp-prev-next-page"><a href="/sqlglot-go/guide/migrate/csv-yaml.html" class="rp-prev-next-page__item rp-prev-next-page__prev rp-link"><span class="rp-prev-next-page__item__desc">Previous page</span><span class="rp-prev-next-page__item__title"><svg width="1em" height="1em" viewBox="0 0 32 32" class="rp-prev-next-page__icon rp-prev-next-page__rotate_180"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg><span>CSV mapping YAML</span></span></a><a href="/sqlglot-go/guide/migrate/sql-headers.html" class="rp-prev-next-page__item rp-prev-next-page__next rp-link"><span class="rp-prev-next-page__item__desc">Next page</span><span class="rp-prev-next-page__item__title"><span>SQL script headers</span><svg width="1em" height="1em" viewBox="0 0 32 32" class="rp-prev-next-page__icon"><path fill="currentColor" d="M22 16 12 26l-1.4-1.4 8.6-8.6-8.6-8.6L12 6z"></path></svg></span></a></div></footer></main></div><aside class="rp-doc-layout__outline rp-scrollbar"><div class="rp-outline"><div class="rp-outline__title">ON THIS PAGE<svg width="14" height="14" class="rp-progress-circle"><circle cx="7" cy="7" r="6" stroke-linecap="round" fill="none" stroke="var(--rp-c-divider-light)" stroke-width="2"></circle><circle cx="7" cy="7" r="6" stroke-linecap="round" fill="none" stroke="var(--rp-c-brand)" stroke-width="2" stroke-dasharray="37.69911184307752" stroke-dashoffset="37.69911184307752" transform="rotate(-90 7 7)" style="transition:stroke-dashoffset 0.3s"></circle></svg></div><nav class="rp-outline__toc rp-scrollbar"><a href="#variables-and-expressions" class="rp-toc-item rp-link" title="Variables and expressions" style="padding-left:0" data-depth="0"><span class="rp-toc-item__text rp-doc">Variables and expressions</span></a><a href="#postgresql" class="rp-toc-item rp-link" title="PostgreSQL" style="padding-left:0" data-depth="0"><span class="rp-toc-item__text rp-doc">PostgreSQL</span></a><a href="#roles-and-permissions" class="rp-toc-item rp-link" title="Roles and permissions" style="padding-left:12px" data-depth="1"><span class="rp-toc-item__text rp-doc">Roles and permissions</span></a><a href="#portable-bundles-for-sqlite" class="rp-toc-item rp-link" title="Portable bundles for SQLite" style="padding-left:0" data-depth="0"><span class="rp-toc-item__text rp-doc">Portable bundles for SQLite</span></a><a href="#sql-server-bundles" class="rp-toc-item rp-link" title="SQL Server bundles" style="padding-left:0" data-depth="0"><span class="rp-toc-item__text rp-doc">SQL Server bundles</span></a></nav><div class="rp-outline__divider"></div><div class="rp-outline__bottom"></div></div></aside></div></div>
+    <div id="__rspress_modal_container"></div>
+  </body>
+</html>
