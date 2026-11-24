@@ -9,11 +9,11 @@ import (
 	"path"
 	"strings"
 
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
 	"github.com/antchfx/xmlquery"
-	gomplate "github.com/flanksource/gomplate/v3"
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
+	"github.com/flanksource/gomplate/v4"
 )
 
 var errIgnoredProjectRead = errors.New("transform reads an ignored file")
