@@ -123,7 +123,7 @@ jobs:
         uses: flanksource/deps@92d640aba10afe1f8c384f42b0a356a0502cd7ce # v1.0.51
         with:
           version: v1.0.51
-          tools: golangci-lint@v2.13.1
+          tools: golangci-lint@v2.15.0
           GITHUB_TOKEN: ${{ github.token }}
       - name: Run Go lint
         uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83

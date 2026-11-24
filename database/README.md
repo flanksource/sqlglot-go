@@ -135,6 +135,6 @@ bash hack/database-integration.sh postgres
 bash hack/database-integration.sh sqlserver
 ```
 
-Install golangci-lint v2.13.1 for the lint target. The integration harness uses disposable containers with no published ports, network access or host mounts, copies Linux test binaries into them and removes them on exit. It works with a remote Docker context. Build the test binaries for the Docker server architecture; the SQL Server image requires amd64. For an externally managed disposable server, run integration-tagged review tests with `SQLGLOT_TEST_POSTGRES_URL`, or SQL Server executor tests with `COMMONS_DB_SQLSERVER_ARTIFACT_TEST_URL`. These tests create and remove isolated databases.
+Install golangci-lint v2.15.0 for the lint target. The integration harness uses disposable containers with no published ports, network access or host mounts, copies Linux test binaries into them and removes them on exit. It works with a remote Docker context. Build the test binaries for the Docker server architecture; the SQL Server image requires amd64. For an externally managed disposable server, run integration-tagged review tests with `SQLGLOT_TEST_POSTGRES_URL`, or SQL Server executor tests with `COMMONS_DB_SQLSERVER_ARTIFACT_TEST_URL`. These tests create and remove isolated databases.
 
 The harness rebuilds its test binaries automatically. Set `SQLGLOT_DOCKER_ARCH=arm64` for PostgreSQL on an ARM64 Docker server; the default is amd64. Migration advisory locks coordinate cooperating reviewed executors. Other DDL writers must be serialized with deployment execution.

@@ -380,7 +380,7 @@ and a POSIX shell, so on Windows they want WSL or Git Bash. Nothing is lost by
 skipping it: `make test` is `go test ./...`, and `make gaps` is the last command
 above with the file-and-line prefix stripped.
 
-The `oracle` and `service` targets regenerate committed expectations and generated tables and need Python and the pinned reference checkout. `lint` uses native golangci-lint v2.13.1; disposable database integration uses Docker. The asymmetry is
+The `oracle` and `service` targets regenerate committed expectations and generated tables and need Python and the pinned reference checkout. `lint` uses native golangci-lint v2.15.0; disposable database integration uses Docker. The asymmetry is
 deliberate: **contributing to the port needs a Go toolchain; maintaining the
 oracle needs more.** A contributor on Windows is held to exactly the same
 differential as everyone else without installing any of it.
