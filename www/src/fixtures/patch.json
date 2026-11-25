@@ -1,15 +1,83 @@
 {
   "dialect": "sqlite",
   "artifact": {
-    "version": 1,
+    "version": 2,
     "dialect": "sqlite",
-    "hash": "sha256:9e2d7c41a0b86f35d1c4e7a9b2f0d6c8a1e3b5d7f9c0a2e4b6d8f0a1c3e5b7d9",
+    "capabilities": { "fingerprint": "sqlite-3.45", "transactionalDdl": true },
+    "scope": { "mode": "complete", "schemas": ["main"] },
+    "baseline": { "tables": [], "definitions": [] },
+    "desired": { "tables": [], "definitions": [] },
     "selection": [
       "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
-      "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]"
-    ]
+      "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+      "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"
+    ],
+    "changes": [
+      {
+        "id": "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+        "action": "add",
+        "kind": "column",
+        "object": { "schema": "main", "name": "customers" },
+        "member": "email",
+        "destructive": false
+      },
+      {
+        "id": "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+        "action": "add",
+        "kind": "index",
+        "object": { "schema": "main", "name": "customers" },
+        "member": "idx_customers_email",
+        "destructive": false,
+        "requires": ["[\"add\",\"column\",\"main\",\"customers\",\"email\"]"]
+      },
+      {
+        "id": "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]",
+        "action": "drop",
+        "kind": "column",
+        "object": { "schema": "main", "name": "customers" },
+        "member": "legacy_code",
+        "destructive": true,
+        "reason": "drops column customers.legacy_code and its data"
+      }
+    ],
+    "units": [
+      {
+        "id": "unit-customers",
+        "changes": [
+          "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+          "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+          "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"
+        ],
+        "objects": [{ "schema": "main", "name": "customers" }],
+        "transactional": true,
+        "ops": [
+          {
+            "id": "add-email/create",
+            "change": "[\"add\",\"column\",\"main\",\"customers\",\"email\"]",
+            "phase": "create",
+            "object": { "schema": "main", "name": "customers" },
+            "statements": [{ "sql": "ALTER TABLE \"customers\" ADD COLUMN \"email\" TEXT" }]
+          },
+          {
+            "id": "add-idx/create",
+            "change": "[\"add\",\"index\",\"main\",\"customers\",\"idx_customers_email\"]",
+            "phase": "create",
+            "object": { "schema": "main", "name": "customers" },
+            "statements": [{ "sql": "CREATE UNIQUE INDEX \"idx_customers_email\" ON \"customers\" (\"email\")" }]
+          },
+          {
+            "id": "drop-legacy/drop",
+            "change": "[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]",
+            "phase": "drop",
+            "object": { "schema": "main", "name": "customers" },
+            "statements": [{ "sql": "ALTER TABLE \"customers\" DROP COLUMN \"legacy_code\"" }]
+          }
+        ]
+      }
+    ],
+    "hash": "sha256:9e2d7c41a0b86f35d1c4e7a9b2f0d6c8a1e3b5d7f9c0a2e4b6d8f0a1c3e5b7d9"
   },
-  "sql": "ALTER TABLE \"customers\" ADD COLUMN \"email\" TEXT;\nCREATE UNIQUE INDEX \"idx_customers_email\" ON \"customers\" (\"email\");\n",
+  "sql": "ALTER TABLE \"customers\" ADD COLUMN \"email\" TEXT;\nCREATE UNIQUE INDEX \"idx_customers_email\" ON \"customers\" (\"email\");\nALTER TABLE \"customers\" DROP COLUMN \"legacy_code\";\n",
   "hash": "sha256:9e2d7c41a0b86f35d1c4e7a9b2f0d6c8a1e3b5d7f9c0a2e4b6d8f0a1c3e5b7d9",
   "acks": ["[\"drop\",\"column\",\"main\",\"customers\",\"legacy_code\"]"],
   "selection": [

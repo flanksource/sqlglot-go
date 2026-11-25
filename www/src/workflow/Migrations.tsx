@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@flanksource/clicky-ui/components";
-import { Callout, CodeBlock } from "@flanksource/clicky-ui/data";
+import { Callout } from "@flanksource/clicky-ui/data";
 import { asPatchResult, post } from "../api";
 import { useHistoryRecord } from "../compare/queries";
 import type { Navigate, Route } from "../compare/route";
 import { RunGate } from "../compare/RunGate";
 import type { HistoryRecord } from "../types";
 import { useDraft } from "./drafts";
+import { MigrationOutcome } from "./MigrationOutcome";
 import { MigrationReview } from "./MigrationReview";
 import { MigrationSetup } from "./MigrationSetup";
 import { PROJECT_TARGET_PREFIX, type LocalProject } from "./projectUpload";
@@ -209,41 +210,4 @@ function RecordedArtifact({
     );
   if (!query.data) return <p role="status">Loading reviewed artifact…</p>;
   return <>{render(query.data)}</>;
-}
-
-function MigrationOutcome({ value }: { value: MigrationPayload }) {
-  const result = value.result;
-  if (!result)
-    return (
-      <Callout variant="warning" title="No execution result">
-        The run did not produce an execution outcome. Read the error before
-        starting another run.
-      </Callout>
-    );
-  const uncertain = result.outcome === "commit-unknown";
-  return (
-    <section className="space-y-3">
-      <Callout
-        variant={uncertain || result.outcome === "failed" ? "caution" : "note"}
-        title={
-          uncertain
-            ? "Commit outcome unknown"
-            : result.outcome === "already-applied"
-              ? "Already applied"
-              : result.outcome === "applied"
-                ? "Migration applied"
-                : "Migration failed"
-        }
-      >
-        {uncertain
-          ? "Inspect the target before attempting another application. A commit response was lost; this is not a confirmed rollback."
-          : `${result.steps} steps reported. Plan hash: ${result.hash}`}
-      </Callout>
-      <CodeBlock
-        language="json"
-        source={JSON.stringify(result, null, 2)}
-        copyable
-      />
-    </section>
-  );
 }

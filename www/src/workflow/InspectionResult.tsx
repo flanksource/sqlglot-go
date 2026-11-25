@@ -2,10 +2,28 @@ import { useMemo } from "react";
 import { CodeBlock, Callout } from "@flanksource/clicky-ui/data";
 import { SegmentedControl } from "@flanksource/clicky-ui/components";
 import type { Navigate, Route } from "../compare/route";
+import { snapshotNative, snapshotRefusals } from "../history/payload";
+import type { Refusal } from "../types";
 import { JSONTree } from "./JSONTree";
 import { ResultExport } from "./ResultExport";
 import { downloadText } from "../download";
 import { Button } from "@flanksource/clicky-ui/components";
+
+/** The objects a snapshot could not read faithfully; they are not in it, and a plan toward it must not touch them. */
+export function SnapshotRefusals({ refusals }: { refusals: Refusal[] }) {
+  if (refusals.length === 0) return null;
+  return (
+    <Callout variant="warning" title="Objects the inspector could not read">
+      <ul aria-label="Refusals" className="list-inside list-disc text-sm">
+        {refusals.map((refusal) => (
+          <li key={`${refusal.object.schema}.${refusal.object.name}.${refusal.member ?? ""}`}>
+            {refusal.object.schema ? `${refusal.object.schema}.` : ""}{refusal.object.name}{refusal.member ? `.${refusal.member}` : ""}: {refusal.reason}
+          </li>
+        ))}
+      </ul>
+    </Callout>
+  );
+}
 
 export function InspectionResult({
   value,
@@ -17,13 +35,7 @@ export function InspectionResult({
   navigate: Navigate;
 }) {
   const source = useMemo(() => JSON.stringify(value, null, 2), [value]);
-  const hcl =
-    value &&
-    typeof value === "object" &&
-    "hcl" in value &&
-    typeof value.hcl === "string"
-      ? value.hcl
-      : null;
+  const hcl = snapshotNative(value);
   const truncated = Boolean(
     value &&
     typeof value === "object" &&
@@ -62,6 +74,7 @@ export function InspectionResult({
           input.
         </Callout>
       )}
+      <SnapshotRefusals refusals={snapshotRefusals(value)} />
       {route.inspectionView === "source" || hcl !== null ? (
         <CodeBlock
           language={hcl !== null ? "hcl" : "json"}

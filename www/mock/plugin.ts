@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
 import type { CompareResult, HistoryRecord, PatchRequest, PatchResult } from "../src/types.ts";
+import type { EngineArtifact } from "../src/workflow/types.ts";
 
 const fixture = <T>(name: string): T => JSON.parse(readFileSync(resolve(import.meta.dirname, "../src/fixtures", name), "utf8")) as T;
 
@@ -24,10 +25,39 @@ function mockPatch(request: Omit<PatchRequest, "diffHash"> & { "diff-hash": stri
   const compare = fixture<CompareResult>("compare.json");
   if (request["diff-hash"] !== compare.diffHash) throw new Error("schema drift: the reference or target changed since the comparison");
   const selected = new Set(request.select);
-  const acks = compare.changes.filter((change) => selected.has(change.id) && change.destructive).map((change) => change.id);
-  const sql = compare.steps.filter((step) => step.changes.some((id) => selected.has(id))).map((step) => step.sql).join("\n");
+  const changes = compare.changes.filter((change) => selected.has(change.id));
+  const acks = changes.filter((change) => change.destructive).map((change) => change.id);
+  const steps = compare.steps.filter((step) => step.changes.some((id) => selected.has(id)));
+  const sql = steps.map((step) => step.sql).join("\n");
   const hash = `sha256:mock-${selected.size}-${sql.length}`;
-  return { dialect: compare.dialect, artifact: { version: 1, dialect: compare.dialect, hash, selection: request.select }, sql, hash, acks, selection: request.select };
+  const object = (id: string) => {
+    const change = changes.find((candidate) => candidate.id === id);
+    if (!change) throw new Error(`step names change ${id}, which the selection does not contain`);
+    return change.object;
+  };
+  const artifact: EngineArtifact = {
+    version: 2,
+    dialect: compare.dialect,
+    capabilities: { fingerprint: "mock", transactionalDdl: true },
+    scope: { mode: "complete", schemas: compare.schemas },
+    baseline: { tables: [], definitions: [] },
+    desired: { tables: [], definitions: [] },
+    selection: request.select,
+    changes,
+    units: [{
+      id: "mock-unit",
+      changes: changes.map((change) => change.id),
+      objects: changes.map((change) => change.object),
+      transactional: true,
+      ops: steps.map((step, index) => {
+        const [change] = step.changes;
+        if (!change) throw new Error(`step ${index} names no change`);
+        return { id: `${change}/${index}`, change, phase: "alter", object: object(change), statements: [{ sql: step.sql }] };
+      }),
+    }],
+    hash,
+  };
+  return { dialect: compare.dialect, artifact, sql, hash, acks, selection: request.select };
 }
 
 // Every run the mock served, newest first: the stand-in for the server's run history.

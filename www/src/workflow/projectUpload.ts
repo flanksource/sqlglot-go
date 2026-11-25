@@ -2,7 +2,12 @@ import { post } from "../api";
 
 export const PROJECT_CONFIG = ".sqlglot-go.yaml";
 export type BundleFile = { path: string; content: string };
-export type ProjectPreview = { mapped: number; ignored: number };
+/** `deselected` counts the mapped sources the project's default label `select` left out; the server omits it when none. */
+export type ProjectPreview = { mapped: number; ignored: number; deselected?: number };
+
+export function previewText({ mapped, ignored, deselected = 0 }: ProjectPreview): string {
+  return `${mapped} mapped · ${ignored} ignored${deselected > 0 ? ` · ${deselected} deselected` : ""}`;
+}
 export type LocalProject = {
   config?: string;
   targets?: string[];

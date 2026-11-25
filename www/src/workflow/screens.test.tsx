@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { parseRoute } from "../compare/route";
+import { destructivePlan, scriptPlanFile } from "../fixtures/plan";
 import { json, renderWithClient, stubFetch } from "../test-utils";
 import { SQLTools } from "./SQLTools";
 import { MigrationReview } from "./MigrationReview";
@@ -74,10 +75,11 @@ describe("reviewed migrations", () => {
 
   it("shows script actions and treats country as a generic label", async () => {
     const script = { id: "seed-guid", name: "Seed catalog", path: "scripts/seed/data.xml", phase: "post" as const, sql: "SELECT 2;" };
+    const scriptPlan = scriptPlanFile([{ script, selected: true, reasons: ["new"] }]);
     const plan: ReviewedPlan = {
-      dialect: "sqlserver", schema: "dbo", artifact: { hash: "reviewed" }, hash: "reviewed",
+      dialect: "sqlserver", schema: "dbo", artifact: scriptPlan, hash: "reviewed",
       acks: [], steps: [], changes: [], warnings: [], applicable: true, sql: "",
-      scriptPlan: { actions: [{ script, selected: true, reasons: ["new"] }] },
+      scriptPlan,
       sources: [{ id: script.id, path: script.path, kind: "sql", labels: { country: ["ZW"], component: ["billing"] } }],
     };
     const apply = vi.fn();
@@ -97,13 +99,14 @@ describe("reviewed migrations", () => {
 
   it("shows an empty script as skipped while keeping other scripts runnable", () => {
     const path = "scripts/disabled/data.xml";
+    const scriptPlan = scriptPlanFile([
+      { script: { id: "empty", name: "Disabled", path, phase: "post", sql: "/* disabled */", noStatements: true }, selected: false },
+      { script: { id: "seed", name: "Seed", path: "seed.sql", phase: "post", sql: "SELECT 1;" }, selected: true },
+    ]);
     const plan: ReviewedPlan = {
-      dialect: "sqlserver", schema: "dbo", artifact: { hash: "reviewed" }, hash: "reviewed",
+      dialect: "sqlserver", schema: "dbo", artifact: scriptPlan, hash: "reviewed",
       acks: [], steps: [], changes: [], warnings: [`SQL script ${path} has no statements; skipped`], applicable: true, sql: "",
-      scriptPlan: { actions: [
-        { script: { id: "empty", name: "Disabled", path, phase: "post", sql: "/* disabled */", noStatements: true }, selected: false },
-        { script: { id: "seed", name: "Seed", path: "seed.sql", phase: "post", sql: "SELECT 1;" }, selected: true },
-      ] },
+      scriptPlan,
     };
     renderWithClient(<MigrationReview plan={plan} target="connection://local" onApply={vi.fn()} busy={false}
       route={parseRoute("/", "")} navigate={vi.fn()} />);
@@ -114,18 +117,7 @@ describe("reviewed migrations", () => {
   });
 
   it("requires individual acknowledgements and target confirmation, then applies without a reviewed hash", async () => {
-    const plan: ReviewedPlan = {
-      dialect: "sqlite",
-      schema: "main",
-      artifact: { hash: "reviewed" },
-      hash: "reviewed",
-      acks: ["drop-items"],
-      steps: [{ id: "drop-items", sql: "DROP TABLE items", destructive: true }],
-      changes: [],
-      warnings: [],
-      applicable: true,
-      sql: "DROP TABLE items",
-    };
+    const plan = destructivePlan;
     const apply = vi.fn();
     renderWithClient(
       <MigrationReview
