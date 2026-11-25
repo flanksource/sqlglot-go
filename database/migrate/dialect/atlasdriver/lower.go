@@ -149,17 +149,15 @@ func (p *planDiff) groupStatements(planned []*atlas.Change, nonTransactional boo
 			return nil, fmt.Errorf("%s: parameterized statement %q is not supported", p.d.Name(), c.Cmd)
 		}
 		stmt := engine.Statement{SQL: c.Cmd, NonTransactional: nonTransactional}
-		if c.Source == nil {
-			c.Source = p.dropIndexSource(c.Cmd)
-		}
-		if c.Source == nil {
+		source := p.statementSource(c, rebuilt)
+		if source == nil {
 			if last == nil {
 				return nil, fmt.Errorf("%s: statement %q has no source change", p.d.Name(), c.Cmd)
 			}
 			last.stmts = append(last.stmts, stmt)
 			continue
 		}
-		ids, phase, err := p.classify(c.Source, rebuilt)
+		ids, phase, err := p.classify(source, rebuilt)
 		if err != nil {
 			return nil, err
 		}
@@ -176,34 +174,62 @@ func (p *planDiff) groupStatements(planned []*atlas.Change, nonTransactional boo
 	return groups, nil
 }
 
-// dropIndexSource finds the DropIndex change a statement without a source
-// implements: Atlas's SQLite planner emits `DROP INDEX name` for an index
-// dropped from an altered table without naming the change, and a statement
-// attached to the one before it would leave the drop with no op of its own.
-func (p *planDiff) dropIndexSource(cmd string) schema.Change {
+// statementSource is the change a statement implements. Atlas names no change
+// for the `DROP INDEX name` its SQLite planner emits for an index dropped from
+// an altered table, and its PostgreSQL planner names the whole table
+// modification for the `DROP INDEX` of an index that is no constraint; either
+// would leave the drop with no op of its own (or an op of a sibling change), so
+// the statement resolves to the DropIndex it names.
+func (p *planDiff) statementSource(c *atlas.Change, rebuilt map[string][]string) schema.Change {
+	switch src := c.Source.(type) {
+	case nil:
+		return p.dropIndexSource(c.Cmd, p.tableMembers())
+	case *schema.ModifyTable:
+		if rebuilt[src.T.Name] == nil {
+			if drop := p.dropIndexSource(c.Cmd, src.Changes); drop != nil {
+				return drop
+			}
+		}
+	}
+	return c.Source
+}
+
+// tableMembers lists the member changes of every modified table of the diff.
+func (p *planDiff) tableMembers() []schema.Change {
+	var out []schema.Change
+	for _, c := range p.changes {
+		if m, ok := c.(*schema.ModifyTable); ok {
+			out = append(out, m.Changes...)
+		}
+	}
+	return out
+}
+
+// dropIndexSource finds, among candidates, the DropIndex a `DROP INDEX name`
+// statement (the name possibly quoted and schema-qualified) implements.
+func (p *planDiff) dropIndexSource(cmd string, candidates []schema.Change) schema.Change {
 	rest, ok := strings.CutPrefix(cmd, "DROP INDEX ")
 	if !ok {
 		return nil
 	}
-	name := strings.Trim(rest, "`\"")
-	for _, c := range p.changes {
-		m, ok := c.(*schema.ModifyTable)
-		if !ok {
-			continue
-		}
-		for _, child := range m.Changes {
-			if drop, ok := child.(*schema.DropIndex); ok && drop.I.Name == name {
-				return drop
-			}
+	name := strings.NewReplacer("`", "", `"`, "").Replace(rest)
+	for _, c := range candidates {
+		if drop, ok := c.(*schema.DropIndex); ok && (name == drop.I.Name || strings.HasSuffix(name, "."+drop.I.Name)) {
+			return drop
 		}
 	}
 	return nil
 }
 
 // rebuiltTables maps each table the planner rebuilds (a table-level change in
-// the plan) to the changes the rebuild implements.
+// the plan) to the changes the rebuild implements. Only a dialect that rebuilds
+// tables has any: elsewhere a planner names the table modification as the
+// source of statements that implement only some of its members.
 func (p *planDiff) rebuiltTables(planned []*atlas.Change) (map[string][]string, error) {
 	out := map[string][]string{}
+	if p.d.backend.Changes().Rebuilds == nil {
+		return out, nil
+	}
 	for _, c := range planned {
 		if m, ok := c.Source.(*schema.ModifyTable); ok {
 			ids, err := p.set.Lookup(m)
