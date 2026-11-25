@@ -82,8 +82,7 @@ tds-fixtures: ## Recapture proxy/tds fixtures through the CLI proxy; needs TDS_C
 
 build-database-tests: ## Build the disposable database integration suite
 	@mkdir -p .tmp
-	go test -c -tags integration -o .tmp/database-review.test ./database/migrate/review
-	go test -c -tags integration -o .tmp/database-sqlserver.test ./database/migrate/sqlserver
+	go test -c -tags integration -o .tmp/database-postgres.test ./database/migrate/dialect/postgres
 	go test -c -o .tmp/database-bundle.test ./database/migrate
 
 install: www/dist/index.html ## Install the sqlglot CLI, with the web UI, to GOBIN (or GOPATH/bin)

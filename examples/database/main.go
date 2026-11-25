@@ -8,7 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
+	"github.com/flanksource/sqlglot-go/database/migrate/dialect"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 	_ "modernc.org/sqlite"
 )
 
@@ -34,20 +35,30 @@ func run() (returnErr error) {
 	}
 	defer func() { returnErr = errors.Join(returnErr, db.Close()) }()
 	ctx := context.Background()
-	artifact, err := review.Build(ctx, db, review.Options{Dialect: "sqlite", Schema: "main", DesiredHCL: `schema "main" {}
+	desired, err := dialect.DesiredFromHCL("sqlite", `schema "main" {}
 table "items" {
  schema = schema.main
  column "id" { type = integer }
-}`})
+}`)
+	if err != nil {
+		return err
+	}
+	artifact, err := engine.PlanLive(ctx, db, engine.PlanLiveRequest{
+		Dialect: "sqlite", Scope: engine.Scope{Mode: engine.ScopeComplete, Schemas: []string{"main"}}, Desired: desired,
+	})
 	if err != nil {
 		return err
 	}
 	fmt.Println("reviewed hash:", artifact.Hash)
-	for _, step := range artifact.Steps {
-		fmt.Println(step.SQL)
+	for _, unit := range artifact.Units {
+		for _, op := range unit.Ops {
+			for _, statement := range op.Statements {
+				fmt.Println(statement.SQL)
+			}
+		}
 	}
 	for range 2 {
-		result, err := review.Apply(ctx, db, review.Request{Artifact: artifact, Hash: artifact.Hash})
+		result, err := engine.Apply(ctx, db, engine.ApplyRequest{Artifact: artifact, Hash: artifact.Hash, Acknowledgements: engine.Acknowledgements(artifact)})
 		if err != nil {
 			return err
 		}

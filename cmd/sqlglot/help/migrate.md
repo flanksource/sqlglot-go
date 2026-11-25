@@ -8,21 +8,25 @@ sqlglot migrate review .sqlglot-go/plan.json
 sqlglot migrate apply --dsn connection://inventory .sqlglot-go/plan.json
 ```
 
-`plan` writes the plan file to `--out`, `.sqlglot-go/plan.json` by default, prints a summary of what will change to stderr and the structured plan to stdout. Review the SQL, any destructive changes, and warnings. Executable bundle plans wrap the artifact under `artifact` for PostgreSQL and SQLite, under `sqlServerArtifact` for SQL Server schema-only bundles, and under `scriptPlan` for SQL Server bundles with scripts. Plans from `--desired` and `--csv-root` put the artifact at the top level.
+`plan` writes the plan file to `--out`, `.sqlglot-go/plan.json` by default, prints a summary of what will change to stderr and the structured plan to stdout. Review the SQL, any destructive changes, the checks that run first, and warnings. Every dialect writes the same schema artifact (version 2). Bundle plans wrap it under `artifact`, beside the `sources` and `warnings` they were planned from, and SQL Server bundles with scripts put their plan file under `scriptPlan`. Plans from `--desired` and `--csv-root` put the artifact at the top level.
 
-The plan file carries its own hash, which guards only its integrity: there is no separate approval. Repeat `--ack` once per reviewed destructive ID of a PostgreSQL, SQLite or CSV plan, quoting each complete ID as a single shell argument. PostgreSQL and SQLite report the IDs in `steps` marked `destructive`. A SQL Server script plan shows its destructive schema statements in the summary, and applying the file is their acknowledgement.
+A schema artifact lists its `changes`, with each forced rebuild (an index, key, check, default, statistic or view dropped and re-created around a change that touches its columns) named by its own change whose `cause` is the change that forced it. It lists the `units` it runs, one transaction each, with the `preconditions` each checks against the data before it changes anything: a query that must return no row, such as a text column that holds a value which is not a GUID before it becomes `uniqueidentifier`. Its `scope` is `complete`, where everything the desired state omits is dropped, or `declared`, where only the declared objects are managed and the drops of the rest are listed under `preserved` and never run.
 
-`--lock-timeout` accepts positive durations and defaults to `5s`. A schema artifact whose intended changes are already present reports `already-applied`. If the target changed since the plan, `apply` fails with `plan is stale`, naming what moved, and runs nothing: run `migrate plan` again.
+The plan file carries its own hash, which guards only its integrity: there is no separate approval. Repeat `--ack` once per destructive change of a schema or CSV plan, quoting each complete ID as a single shell argument. The IDs are listed in the plan's `acks`: for a schema plan each is a change ID, the JSON array `["drop","column","main","items","omitted"]` of action, kind, schema, name and member. A forced rebuild is never acknowledged by itself, its cause is. A SQL Server script plan shows its destructive schema statements in the summary, and applying the file is their acknowledgement.
+
+`--lock-timeout` accepts positive durations and defaults to `5s`. Apply runs the units in order, each in its own transaction where the database has transactional DDL. A unit whose changes are already present is skipped and reported `already-applied`, so an apply that stopped halfway resumes where it stopped. A failed precondition names the check and rolls back its unit. If the target changed since the plan, `apply` fails naming what moved (`drifted from the artifact baseline`, or `plan is stale` for a script plan) and runs nothing: run `migrate plan` again.
+
+A plan file written by an older version of sqlglot (a SQL Server artifact of version 1, or a PostgreSQL or SQLite artifact with HCL snapshots) is refused by `review` and `apply` with an error that says it must be re-planned. Plans are never converted: plan again against the live schema.
 
 ## Migration sources
 
 Set `--dsn` to a connection string, SQLite file path, or `connection://NAME`. The default schemas are `public` on PostgreSQL, `main` on SQLite, and `dbo` on SQL Server. Choose one source.
 
-- `--desired FILE` takes Atlas HCL in the target dialect or a complete migration snapshot. SQL Server requires a snapshot. This input describes the complete desired scope, so omissions can generate drops.
-- `--bundle DIR` loads HCL recursively as one declaration. Bundles preserve omitted tables and columns by default. Use `--allow-drops` to consider omitted objects for removal.
+- `--desired FILE` takes Atlas HCL in the target dialect or a complete schema snapshot. This input plans in complete scope, so every omission becomes a drop that must be acknowledged. SQL Server HCL declares tables only; a snapshot also carries its modules, sequences and table types.
+- `--bundle DIR` loads HCL recursively as one declaration. Bundles plan in declared scope by default: omitted tables and columns are preserved and listed under `preserved`. Use `--allow-drops` to plan in complete scope, where omitted objects are removed.
 - `--csv-root DIR` plans a SQL Server import from CSV files and `*.csv.yaml` mappings.
 
-To derive the desired schema from another SQL Server database, export a complete snapshot and plan against the target.
+To derive the desired schema from another database of the same dialect, export a complete snapshot and plan against the target. Objects the inspector cannot read faithfully are left out of the snapshot and listed under `refusals`; planning fails when a change would touch one.
 
 ```sh
 sqlglot schema inspect --dsn connection://warehouse-reference --snapshot > ./desired.json

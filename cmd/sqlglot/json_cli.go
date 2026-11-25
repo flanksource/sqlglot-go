@@ -43,6 +43,9 @@ func jsonCLICommand(cmd *cobra.Command) {
 		case ApplyOutput:
 			return writeDatabaseJSON(cmd, "", result.Value)
 		case InspectionOutput:
+			if hcl, ok := result.Value.(HCLOutput); ok {
+				return hcl.print(cmd)
+			}
 			return writeDatabaseJSON(cmd, "", result.Value)
 		default:
 			return fmt.Errorf("unexpected command result %T", value)

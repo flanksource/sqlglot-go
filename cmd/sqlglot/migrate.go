@@ -54,8 +54,9 @@ type MigrationOptions struct {
 	Desired         string            `json:"desired,omitempty" flag:"desired" help:"Desired HCL or snapshot JSON file (CLI only)"`
 	Output          string            `json:"out,omitempty" flag:"out" help:"Plan file to write (CLI only, default .sqlglot-go/plan.json)"`
 	Paths           []string          `json:"paths,omitempty" args:"true" split:"false" help:"Plan sources: SQL or HCL files and directories, each file detected by its content (plan); the plan file (apply, review). CLI only"`
-	Acks            []string          `json:"ack,omitempty" flag:"ack" split:"false" help:"Acknowledged destructive step IDs"`
+	Acks            []string          `json:"ack,omitempty" flag:"ack" split:"false" help:"Acknowledged destructive change IDs, as listed in the plan's acks"`
 	LockTimeout     string            `json:"lock-timeout,omitempty" flag:"lock-timeout" default:"5s" help:"Maximum migration lock wait"`
+	Labels          []string          `json:"label,omitempty" flag:"label" split:"false" help:"Select project sources by label as key=pattern or !key=pattern (repeatable, replaces the project select)"`
 	Variables       []string          `json:"var,omitempty" flag:"var" split:"false" help:"Bundle variable as name=HCL-literal"`
 	Routines        string            `json:"routines,omitempty" flag:"routines" help:"Routine directory within the bundle"`
 	AllowDrops      bool              `json:"allow-drops,omitempty" flag:"allow-drops" help:"Include omitted objects as removals in a bundle"`
@@ -84,6 +85,19 @@ func (p PlanOutput) Pretty() api.Text {
 			marker, style = "  ! destructive ", "text-red-600"
 		}
 		out = out.NewLine().Append(marker, style).Append(strings.TrimSpace(step.SQL))
+	}
+	for _, change := range p.Changes {
+		for _, rebuild := range change.Rebuilds {
+			out = out.NewLine().Append("  ~ ", "text-blue-600").Append(rebuild.Reason)
+		}
+	}
+	for _, unit := range p.Units {
+		for _, check := range unit.Preconditions {
+			out = out.NewLine().Append("  ? checked first: ", "text-blue-600").Append(check.Message)
+		}
+	}
+	for _, change := range p.Preserved {
+		out = out.NewLine().Append("  - left alone: ", "text-muted").Append(change.ID)
 	}
 	for _, warning := range p.Warnings {
 		out = out.NewLine().Append("  ! ", "text-yellow-600").Append(warning)
@@ -206,6 +220,9 @@ func migrationInput(ctx context.Context, opts MigrationOptions, role pathRole) (
 	if role == pathIsPlanFile && (opts.Bundle != "" || opts.Desired != "" || opts.CSVRoot != "") {
 		return opts, fmt.Errorf("apply and review read their sources from the plan file; pass only the plan file")
 	}
+	if role == pathIsPlanFile && len(opts.Labels) > 0 {
+		return opts, fmt.Errorf("--label selects sources when planning; a plan file already holds its selection")
+	}
 	if role == pathIsPlanFile && len(opts.Paths) > 1 {
 		return opts, fmt.Errorf("expected one plan file, got %d paths", len(opts.Paths))
 	}
@@ -246,7 +263,7 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 			if dir == "" {
 				dir = compareConnectionsDir
 			}
-			plan := workflow.Options{Source: opts.Source, Project: opts.project, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
+			plan := workflow.Options{Source: opts.Source, Project: opts.project, Labels: opts.Labels, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
 			filters, err := migrationLayerFilters(opts)
 			if err != nil {
 				return workflow.RunResult{}, err
