@@ -15,7 +15,6 @@ import (
 	"github.com/flanksource/clicky"
 	"github.com/flanksource/clicky/task"
 	flanksourceContext "github.com/flanksource/commons/context"
-	"github.com/flanksource/sqlglot-go/database/connections"
 	"github.com/flanksource/sqlglot-go/database/history"
 	dialects "github.com/flanksource/sqlglot-go/database/migrate/dialect"
 	dbtarget "github.com/flanksource/sqlglot-go/database/target"
@@ -145,7 +144,7 @@ func result[T any](t task.TypedTask[any]) (T, error) {
 // label names a side in task output without credentials: the connection
 // name, the SQLite file, or the host and path of a URL DSN.
 func label(dsn string) string {
-	if name, ok := strings.CutPrefix(dsn, connections.Prefix); ok {
+	if name, ok := strings.CutPrefix(dsn, dbtarget.ConnectionPrefix); ok {
 		return name
 	}
 	if strings.HasPrefix(strings.ToLower(dsn), "sqlite://") {
@@ -175,7 +174,7 @@ func label(dsn string) string {
 func inspectSide(ctx context.Context, t *task.Task, role, dsn string, opts Options) (side, error) {
 	t.SetProgress(0, 0)
 	t.SetDescription("connecting")
-	conn, err := dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: dsn, ConnectionsDir: opts.ConnectionsDir, ReadOnly: true, Schema: first(opts.Schemas)})
+	conn, err := dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: dsn, ResolveConnection: opts.ResolveConnection, ReadOnly: true, Schema: first(opts.Schemas)})
 	if err != nil {
 		return side{}, fmt.Errorf("open %s %s: %w", role, history.Redact(dsn), err)
 	}

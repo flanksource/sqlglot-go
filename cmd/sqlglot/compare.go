@@ -7,6 +7,7 @@ import (
 	"github.com/flanksource/sqlglot-go/database/compare"
 	"github.com/flanksource/sqlglot-go/database/connections"
 	"github.com/flanksource/sqlglot-go/database/history"
+	dbtarget "github.com/flanksource/sqlglot-go/database/target"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -31,16 +32,21 @@ type PatchOptions struct {
 // same layered connections the UI lists.
 var compareConnectionsDir = connections.DefaultDir()
 
-func (o CompareOptions) options(store *history.Store) compare.Options {
-	dir := o.ConnectionsDir
+// connectionResolver resolves connection:// references against dir, or
+// compareConnectionsDir when a request names none.
+func connectionResolver(dir string) dbtarget.ResolveConnection {
 	if dir == "" {
 		dir = compareConnectionsDir
 	}
+	return connections.Resolver(dir)
+}
+
+func (o CompareOptions) options(store *history.Store) compare.Options {
 	run := o.Run
 	if run == "" {
 		run = uuid.NewString()
 	}
-	return compare.Options{Reference: o.Reference, Target: o.Target, Schemas: o.Schemas, Run: run, ConnectionsDir: dir, History: store}
+	return compare.Options{Reference: o.Reference, Target: o.Target, Schemas: o.Schemas, Run: run, ResolveConnection: connectionResolver(o.ConnectionsDir), History: store}
 }
 
 func addCompareCommands(schemaCmd *cobra.Command) {

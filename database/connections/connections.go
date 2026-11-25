@@ -14,10 +14,8 @@ import (
 	dbcontext "github.com/flanksource/commons-db/context"
 	dutyKubernetes "github.com/flanksource/commons-db/kubernetes"
 	"github.com/flanksource/commons-db/models"
+	dbtarget "github.com/flanksource/sqlglot-go/database/target"
 )
-
-// Prefix marks a --dsn value as a named connection reference.
-const Prefix = "connection://"
 
 // App names sqlglot's own connection layer, <config>/sqlglot-go/connections.
 const App = "sqlglot-go"
@@ -76,11 +74,19 @@ var (
 	passwordTemplate = regexp.MustCompile(`\$\(password\)|\{\{\s*\.password\s*\}\}`)
 )
 
+// Resolver resolves references against the store Open(dir) layers, for
+// dbtarget.OpenOptions.
+func Resolver(dir string) dbtarget.ResolveConnection {
+	return func(ctx context.Context, reference string) (string, error) {
+		return Resolve(ctx, ResolveOptions{Dir: dir, Reference: reference})
+	}
+}
+
 // Resolve hydrates a connection://[<namespace>/]<name> reference and returns
 // its templated URL as a DSN.
 func Resolve(ctx context.Context, opts ResolveOptions) (string, error) {
-	if !strings.HasPrefix(opts.Reference, Prefix) {
-		return "", fmt.Errorf("connection reference %q must start with %s", opts.Reference, Prefix)
+	if !strings.HasPrefix(opts.Reference, dbtarget.ConnectionPrefix) {
+		return "", fmt.Errorf("connection reference %q must start with %s", opts.Reference, dbtarget.ConnectionPrefix)
 	}
 	connections, err := Open(opts.Dir)
 	if err != nil {
@@ -95,7 +101,7 @@ func Resolve(ctx context.Context, opts ResolveOptions) (string, error) {
 		return "", err
 	}
 	if connection == nil {
-		return "", fmt.Errorf("connection %q not found in the connection store layers %v", strings.TrimPrefix(opts.Reference, Prefix), connections.Layers())
+		return "", fmt.Errorf("connection %q not found in the connection store layers %v", strings.TrimPrefix(opts.Reference, dbtarget.ConnectionPrefix), connections.Layers())
 	}
 	if len(connection.Warnings) > 0 {
 		return "", fmt.Errorf("connection %q cannot be used: %s", connection.Name, strings.Join(connection.Warnings, "; "))

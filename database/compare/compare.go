@@ -30,8 +30,8 @@ type Options struct {
 	Schemas   []string `json:"schemas,omitempty"`
 	// Run names this run: its clicky group id and its history record id.
 	Run string `json:"run"`
-	// ConnectionsDir resolves connection:// references.
-	ConnectionsDir string `json:"-"`
+	// ResolveConnection resolves connection:// references.
+	ResolveConnection dbtarget.ResolveConnection `json:"-"`
 	// History records the run and its result.
 	History *history.Store `json:"-"`
 }
