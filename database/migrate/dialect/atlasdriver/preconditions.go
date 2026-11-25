@@ -21,7 +21,7 @@ func (d *Dialect) Preconditions(change migrate.Change, current, desired migrate.
 	case change.Kind == "column" && change.Action == "modify":
 		return nullToNotNull(change, current, desired), nil
 	case (change.Kind == "index" || change.Kind == "primary-key") && (change.Action == "add" || change.Action == "modify"):
-		return d.uniqueness(change, desired)
+		return d.uniqueness(change, current, desired)
 	}
 	return nil, nil
 }
@@ -56,7 +56,11 @@ func nullToNotNull(change migrate.Change, current, desired migrate.Schema) []eng
 	}}
 }
 
-func (d *Dialect) uniqueness(change migrate.Change, desired migrate.Schema) ([]engine.Precondition, error) {
+// uniqueness guards a new unique index or primary key against rows that
+// already exist. It is skipped when the key reaches a column the current table
+// lacks, which the same plan adds: no existing row has a value for it, and the
+// statement itself is the check inside the unit's transaction.
+func (d *Dialect) uniqueness(change migrate.Change, current, desired migrate.Schema) ([]engine.Precondition, error) {
 	s, err := d.decodeCached(desired.Native)
 	if err != nil {
 		return nil, err
@@ -76,6 +80,11 @@ func (d *Dialect) uniqueness(change migrate.Change, desired migrate.Schema) ([]e
 	}
 	if idx == nil || (!primary && !idx.Unique) {
 		return nil, nil
+	}
+	for _, p := range idx.Parts {
+		if p.C != nil && findColumn(current, change.Object, p.C.Name) == nil {
+			return nil, nil
+		}
 	}
 	return d.uniquePreconditions(change, idx, primary)
 }
