@@ -1,80 +1,77 @@
 ---
-title: The .sqlglot-go.yaml project file
-description: Map project files to migration sources, label them, and select which labelled sources a plan includes.
+title: Project YAML reference
+description: Configure migration sources, transforms, labels, and target aliases in .sqlglot-go.yaml.
 ---
 
-# The `.sqlglot-go.yaml` project file
+# Project YAML reference
 
-`.sqlglot-go.yaml` maps the files of a project to migration sources. `sqlglot migrate plan` reads it from the project directory, or from the Git root when the current directory has none. Other Go modules load it with `workflow.LoadProject` and read each source's ID, name, phase, labels, path and content through `Project.Files`.
+Place `.sqlglot-go.yaml` in a migration project. Use it to select HCL and SQL sources and give your database targets stable names. Use [CSV mapping YAML](./csv-yaml) for CSV imports.
+
+## Complete example
 
 ```yaml
 version: 1
 connections:
-  dev: 'connection://inventory-dev'
+  dev: 'connection://inventory/inventory-sqlserver'
+  local: './inventory.db'
 mappings:
-  - match: 'schema/tenant/**/*.hcl'
-    labels: {scope: [tenant]}
-  - match: 'schema/vendor/**/*.hcl'
-    labels: {scope: [vendor]}
-  - match: 'migrations/**/*.sql'
-    transform: '{"sql": file.content, "labels": {"country": file.path.startsWith("migrations/zw_") ? ["ZW"] : []}}'
-select: ['!scope=vendor']
+  - match: 'schema/**/*.hcl'
+  - match: 'scripts/**/*.sql'
+    labels:
+      component: [inventory]
+  - match: 'descriptors/**/*.xml'
+    kind: sql
+    transform: >-
+      {"sql": read(xmlpath(file.content, "/migration/@script")),
+       "id": xmlpath(file.content, "/migration/@id").trim().lower(),
+       "phase": "post"}
 ignore:
-  - 'migrations/archive/**'
+  - 'scripts/archive/**'
 ```
 
-## Fields
-
-| Field | Meaning |
-| --- | --- |
-| `version` | Must be `1`. |
-| `connections` | Target aliases for `--target`, as `connection://` references or database DSNs. |
-| `mappings` | Rules that turn matching files into sources. A file may match only one rule. |
-| `select` | The default label selectors. See [Selecting sources by label](#selecting-sources-by-label). |
-| `ignore` | Globs of files and directories that never become sources. |
-
-Each mapping takes these fields.
-
-| Field | Meaning |
-| --- | --- |
-| `match` | A case-sensitive, project-relative glob. |
-| `kind` | `sql` or `hcl`. Without it the file extension decides, or the transform's result key. |
-| `labels` | Named lists of strings attached to every source of the rule. Labels appear in the plan's source list and in each planned script, and `select` and `--label` can select on them. |
-| `transform` | A gomplate CEL expression over `file.path` and `file.content` that returns `sql` or `hcl` and can set `id`, `labels`, and the SQL `name` and `phase`. A transform replaces a rule's label with its own list, and an empty list removes it. |
-
-## Selecting sources by label
-
-A plan includes every mapped source unless selectors narrow it. `select` in the file is the default, and each `--label` on `sqlglot migrate plan` replaces the whole default.
-
-| Selector | Keeps |
-| --- | --- |
-| `key=pattern` | Sources with a value for `key` that matches `pattern`. |
-| `!key=pattern` | Sources with no value for `key` that matches `pattern`. |
-
-A pattern is one value, optionally starting or ending with `*`, and matches case-insensitively. A list in one entry, such as `country=BW,ZW`, is an error: write one entry per value. An entry without `=`, or with an empty key or pattern, is an error that names the entry.
-
-A source is kept when, for every key that has selectors, none of its values for that key matches an exclude, and, if the key has any include, at least one of its values matches an include. Several includes for one key are alternatives. A source with no value for a key passes the exclude-only selectors and fails the includes.
-
-With the example above, `select: ['!scope=vendor']` plans the tenant tables and every script, because unlabelled scripts have no `scope` value. Planning only the tenant tables takes `--label scope=tenant`. Planning the vendor tables as a deliberate step takes `--label scope=vendor`, which ignores the default exclude.
+The descriptor rule reads a file such as `descriptors/labels.xml` containing `<migration id="seed-labels" script="labels.sql"/>`. Keep `labels.sql` beside the XML file and outside the direct `scripts/**/*.sql` match. Its ledger ID is `seed-labels`. `dev` uses a [saved SQL Server connection](../connections); `local` is an example alias for projects with SQLite-compatible sources.
 
 ```sh
-sqlglot migrate plan --target dev
-sqlglot migrate plan --target dev --label 'scope=tenant'
-sqlglot migrate plan --target dev --label '!scope=vendor' --label 'country=ZW'
+sqlglot migrate plan --target dev --out ./reviewed.json
+sqlglot migrate review ./reviewed.json
+sqlglot migrate apply --target dev ./reviewed.json
 ```
 
-The plan fails when the selection leaves no source, naming the selectors. The project preview reports how many mapped sources the selection left out beside the ignored count.
+## Root fields
 
-## Using a project from Go
+| Field | Type | Rule |
+| --- | --- | --- |
+| `version` | Integer | Required. Must be `1`. |
+| `connections` | Map of alias to string | Each value is a nonempty DSN, SQLite `.db` path, or `connection://` reference. Alias names start with an ASCII letter or digit and may continue with letters, digits, `_`, `.`, or `-`. |
+| `mappings` | List of mapping rules | Selects the HCL and SQL sources. With mappings configured, only matched files enter the bundle. |
+| `ignore` | List of globs | Excludes matching files and directories, including companion files read by transforms. |
 
-```go
-project, err := workflow.LoadProject(fsys)
-tenant, err := project.Select([]string{"scope=tenant"})
-for _, file := range tenant.Files() {
-    fmt.Println(file.ID, file.Name, file.Phase, file.Labels, file.Path, file.BundlePath, len(file.Content))
-}
-```
+Use one YAML document. Unknown keys fail validation. At least one mapping or connection is required. `--target` is mutually exclusive with `--dsn`. Relative SQLite `.db` paths in an alias are resolved beside this YAML file. `connection://` aliases use the normal saved connection layers.
 
-`ProjectFile.Inputs` lists every project-relative path whose bytes went into the source's content, the mapped file first and then each companion its transform read with `read()`, sorted and listed once, so a consumer can map an edit to a companion file back to its source.
+Without a source argument, `migrate plan` searches the working directory first and the Git root second. `migrate plan DIR` and `migrate plan --bundle DIR` look for the file in `DIR`. An explicit `--desired` or `--csv-root` selects its own source, and can use `--target` for the database.
 
-`workflow.ParseProjectConfig` reads a config from bytes, so a caller can supply a default when the filesystem has none. `ProjectConfig.Load` maps a filesystem with a config built in code. `Project.Bundle` returns the bundle filesystem, the script metadata and the source inventory that `workflow.Plan` uses.
+## Mapping fields
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `match` | Glob | Required. Match a case-sensitive, project-relative path using `/`; `**` spans directories. |
+| `kind` | `hcl` or `sql` | Optional. Defaults to the `.hcl` or `.sql` extension, or to the transform result for another extension. |
+| `labels` | Map of name to string list | Optional metadata shown in the structured plan and script review. Label names and list entries must be nonempty. |
+| `transform` | CEL expression | Optional source conversion and metadata projection. It receives `file.path` and `file.content`. |
+
+Hidden files and directories are skipped during discovery. A file can match at most one mapping, and every selected source needs a unique ID and bundle path. By default the ID is the matched path normalized to the source extension. Planning fails if configured mappings select no sources.
+
+## Transform result
+
+Return a map with exactly one content field, `sql` or `hcl`. Its kind must agree with any explicit or inferred kind.
+
+| Key | Type | Rule |
+| --- | --- | --- |
+| `sql` | String | SQL text to plan. |
+| `hcl` | String | HCL declaration to plan. |
+| `id` | String | Optional stable source ID. For HCL it must be a project-relative `.hcl` path. For SQL it is the ledger ID and the name other scripts use in `dependsOn`. |
+| `name` | String | Optional SQL display name. Defaults to the ID and determines the order of ready scripts within a phase. |
+| `phase` | `pre` or `post` | Optional SQL phase. If the SQL also declares `-- phase:`, the two values must agree. |
+| `labels` | Map of name to string list | Overrides individual mapping labels. An empty list removes the label. |
+
+`read(path)` reads a regular file relative to the matched source's directory. Use a relative path within the project. If that companion matches an ignore rule, the mapping is skipped. `xmlpath(xml, selector)` returns the text or attribute value from exactly one XPath match. Zero or multiple matches fail the plan.

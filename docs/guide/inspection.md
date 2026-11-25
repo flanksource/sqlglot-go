@@ -5,7 +5,7 @@ description: Save your database connections, test them, inspect their schemas, a
 
 # Add connections and inspect a database
 
-Save a connection once, then choose it whenever you want to inspect a database or compare its schema. This guide creates two connections, checks that they work, and shows how to return to them in your next session.
+Save a connection once, then choose it whenever you want to inspect a database or compare its schema. This guide creates two connections, checks that they work, and shows how to return to them in your next session. See [Set up database connections](./connections) for DSN formats, credential references, and Connection YAML.
 
 ## 1. Open sqlglot
 

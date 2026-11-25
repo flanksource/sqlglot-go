@@ -35,6 +35,18 @@ make docs-build
 make docs-preview
 ```
 
-The check validates the TypeScript configuration. The production build checks internal links and writes the static site to `doc_build/`. Preview serves that output locally. CI runs the same frozen install, configuration check, and build.
+The check validates the TypeScript configuration. The production build checks internal links and writes the static site to `doc_build/`. Preview serves that output locally.
 
-The default deployment base is `/`. For a host that serves the site under a subpath, set Rspress's `base` in `rspress.config.ts` to that path before building. Serve `doc_build/` with a static host; deployment is separate from the build.
+The default deployment base is `/`. Build for the GitHub Pages project path with `pnpm docs:build --base /sqlglot-go/` and publish the contents of `doc_build/` from the root of the `gh-pages` branch.
+
+## Render the migration diagrams
+
+The editable Facet templates are in `docs/diagrams/`. Regenerate the static figures with the [Facet CLI](https://github.com/flanksource/facet) from the repository root.
+
+```sh
+mkdir -p .tmp/migration-diagrams
+facet png docs/diagrams/reviewed-lifecycle.tsx docs/diagrams/selected-changes.tsx \
+  --selector '#migration-diagram' --viewport 800x480 --width 1488 \
+  -o .tmp/migration-diagrams
+cp .tmp/migration-diagrams/reviewed-lifecycle.png .tmp/migration-diagrams/selected-changes.png docs/public/images/migrations/
+```
