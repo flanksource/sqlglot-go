@@ -126,6 +126,10 @@ func fromAtlasTable(t *schema.Table) (migrate.Table, error) {
 		result.ForeignKeys = append(result.ForeignKeys, key)
 	}
 	for _, a := range t.Attrs {
+		if _, ok := a.(*atlas.Partial); ok {
+			result.Partial = true
+			continue
+		}
 		check, ok := a.(*schema.Check)
 		if !ok || len(check.Attrs) > 0 {
 			return result, fmt.Errorf("unsupported table attribute %T", a)

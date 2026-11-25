@@ -14,7 +14,7 @@ These packages own the database implementation previously provided by commons-db
 | `database/migrate/csvdata` | [Reviewed SQL Server CSV migrations](migrate/README.md#reviewed-csv-data) |
 | `database/migrate/sqlite` | Programmatic SQLite table reconciliation |
 
-commons-db preserves its migration and inspection APIs through aliases and forwarding functions. Its catalog cache, refresh policy and metadata remain in commons-db. Supported SQLite rebuilds are automatic; the previous `WithRebuilds` and `AllowRebuilds` names remain accepted. Column and table drops remain opt-in for bundle reconciliation.
+commons-db preserves its migration and inspection APIs through aliases and forwarding functions. Its catalog cache, refresh policy and metadata remain in commons-db. Supported SQLite rebuilds are automatic; the previous `WithRebuilds` and `AllowRebuilds` names remain accepted. An unreviewed bundle apply never drops a column or a table unless `WithDrops` is set: it reports each undeclared column it left in place, and a table marked `partial = true` keeps every member it does not name.
 
 ## CLI
 
@@ -65,7 +65,7 @@ spec:
 .tmp/sqlglot schema inspect --dsn connection://tenant-x --snapshot --schema dbo
 ```
 
-`migrate plan` accepts a desired schema with `--desired`, a schema bundle with `--bundle`, or a [SQL Server CSV folder](migrate/README.md#reviewed-csv-data) with `--csv-root`. Desired input is backend HCL or a saved snapshot JSON. SQL Server uses its typed snapshot JSON. `--out` writes the reviewed JSON and creates new files with owner-only permissions. Bundle directories retain omitted columns and tables by default. `--allow-drops` considers those omissions for removal in the reviewed plan. Use `--routines` to select SQL Server routine files relative to the bundle directory.
+`migrate plan` accepts a desired schema with `--desired`, a schema bundle with `--bundle`, or a [SQL Server CSV folder](migrate/README.md#reviewed-csv-data) with `--csv-root`. Desired input is backend HCL or a saved snapshot JSON. SQL Server uses its typed snapshot JSON. `--out` writes the reviewed JSON and creates new files with owner-only permissions. Bundle directories never drop an omitted table by default, and `--allow-drops` considers omitted tables for removal. A table a bundle declares is complete unless it says `partial = true`: the reviewed plan lists the drops of its omitted columns, indexes, keys and checks as destructive changes to acknowledge, and a partial table keeps them. Use `--routines` to select SQL Server routine files relative to the bundle directory.
 
 Supply bundle variables with repeatable `--var 'name=HCL-literal'`, for example `--var 'prefix="app"'` or `--var 'limit=10'`. Variables, routines and the drop option require a bundle input. SQLite apply opens an existing file with `mode=rw`; the reviewed executor owns its temporary connection pragmas.
 

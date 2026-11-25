@@ -118,7 +118,7 @@ func planBundle(ctx context.Context, db *sql.DB, opts Options) (PlanResult, erro
 	if err != nil {
 		return PlanResult{}, err
 	}
-	options = append(options, bundle.WithVariables(variables))
+	options = append(options, bundle.WithVariables(variables), bundle.WithReviewedPlan())
 	if opts.Schema != "main" {
 		options = append(options, bundle.WithSchema(opts.Schema))
 	}

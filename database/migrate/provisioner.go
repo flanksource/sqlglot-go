@@ -54,7 +54,7 @@ func (p *SchemaProvisioner) Fingerprint(ctx context.Context) (string, error) {
 	if _, err := loadScripts(p.schemaFS, p.config); err != nil {
 		return "", err
 	}
-	if _, _, err := loadHCL(p.schemaFS, p.config.dir, p.config.input); err != nil {
+	if _, err := loadHCL(hclSource{FS: p.schemaFS, Dir: p.config.dir, Input: p.config.input}); err != nil {
 		return "", err
 	}
 
@@ -103,14 +103,14 @@ func (p *SchemaProvisioner) PrepareInstance(ctx context.Context, connection stri
 	if err != nil {
 		return err
 	}
-	_, security, err := loadHCL(p.schemaFS, p.config.dir, p.config.input)
+	loaded, err := loadHCL(hclSource{FS: p.schemaFS, Dir: p.config.dir, Input: p.config.input})
 	if err != nil {
 		return err
 	}
 	if err := ValidateSchemaName(p.config.schema); err != nil {
 		return fmt.Errorf("migration schema: %w", err)
 	}
-	security = remapSecuritySchema(security, p.config.schema)
+	security := remapSecuritySchema(loaded.Security, p.config.schema)
 	scopedConnection, err := prepareSchemaConnection(ctx, schemaConnectionOptions{Connection: connection, Schema: p.config.schema})
 	if err != nil {
 		return err

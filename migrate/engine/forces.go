@@ -34,6 +34,11 @@ func forcedRebuilds(d Dialect, diff Diff, selected []migrate.Change, req PlanReq
 				return nil, err
 			}
 		}
+		if !found {
+			if err := checkDroppedColumns(dep, hits); err != nil {
+				return nil, err
+			}
+		}
 		if found {
 			continue
 		}
@@ -174,6 +179,29 @@ func checkPartners(dep Dependent, hits []Forcing, retyped map[ColumnRef]bool) er
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// checkDroppedColumns refuses a dependent on a column the plan drops that no
+// selected change drops with it: it would have to be re-created over a column
+// that is gone, so the plan fails before anything runs and names it. A
+// dependent a selected change already acts on (an index or foreign key the plan
+// drops, on this table or on another one declared in the same plan) is never
+// asked about here.
+func checkDroppedColumns(dep Dependent, hits []Forcing) error {
+	for _, f := range hits {
+		i := slices.IndexFunc(f.Columns, func(c ColumnRef) bool { return c.Dropped != "" && slices.Contains(dep.On, c) })
+		if i < 0 {
+			continue
+		}
+		dropped := f.Columns[i]
+		what := nameLabel(dropped.Table) + "." + dropped.Column
+		if dep.Refusal != "" {
+			return fmt.Errorf("engine: cannot rebuild %s %s (forced by %s): %s", dep.Kind, dependentLabel(dep), f.Change, dep.Refusal)
+		}
+		return fmt.Errorf("engine: %s %s depends on column %s, which %s drops, so it cannot be re-created afterwards: drop it in the same plan or declare it away",
+			dep.Kind, dependentLabel(dep), what, f.Change)
 	}
 	return nil
 }

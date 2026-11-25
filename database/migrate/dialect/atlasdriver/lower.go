@@ -150,6 +150,9 @@ func (p *planDiff) groupStatements(planned []*atlas.Change, nonTransactional boo
 		}
 		stmt := engine.Statement{SQL: c.Cmd, NonTransactional: nonTransactional}
 		if c.Source == nil {
+			c.Source = p.dropIndexSource(c.Cmd)
+		}
+		if c.Source == nil {
 			if last == nil {
 				return nil, fmt.Errorf("%s: statement %q has no source change", p.d.Name(), c.Cmd)
 			}
@@ -171,6 +174,30 @@ func (p *planDiff) groupStatements(planned []*atlas.Change, nonTransactional boo
 		last = g
 	}
 	return groups, nil
+}
+
+// dropIndexSource finds the DropIndex change a statement without a source
+// implements: Atlas's SQLite planner emits `DROP INDEX name` for an index
+// dropped from an altered table without naming the change, and a statement
+// attached to the one before it would leave the drop with no op of its own.
+func (p *planDiff) dropIndexSource(cmd string) schema.Change {
+	rest, ok := strings.CutPrefix(cmd, "DROP INDEX ")
+	if !ok {
+		return nil
+	}
+	name := strings.Trim(rest, "`\"")
+	for _, c := range p.changes {
+		m, ok := c.(*schema.ModifyTable)
+		if !ok {
+			continue
+		}
+		for _, child := range m.Changes {
+			if drop, ok := child.(*schema.DropIndex); ok && drop.I.Name == name {
+				return drop
+			}
+		}
+	}
+	return nil
 }
 
 // rebuiltTables maps each table the planner rebuilds (a table-level change in

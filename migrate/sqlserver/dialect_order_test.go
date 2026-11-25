@@ -64,9 +64,10 @@ var _ = Describe("SQL Server dialect ordering around keys", func() {
 		}))
 	})
 
-	It("plans no ops and no units when a declared scope preserves every change, and the artifact validates", func() {
+	It("plans no ops and no units when a declared scope preserves every change of a partial table, and the artifact validates", func() {
 		current := schemaOf(charTable(charOrders, charColumn("id", "int", false), charColumn("legacy", "int", true)))
 		desired := schemaOf(charTable(charOrders, charColumn("id", "int", false)))
+		desired.Tables[0].Partial = true
 		request := completeRequest(current, desired)
 		request.Scope = engine.Scope{Mode: engine.ScopeDeclared, Schemas: []string{"dbo"}, Objects: []migrate.Name{charOrders}}
 
@@ -74,6 +75,19 @@ var _ = Describe("SQL Server dialect ordering around keys", func() {
 		Expect(artifact.Units).To(BeEmpty())
 		Expect(artifact.Changes).To(BeEmpty())
 		Expect(artifact.Preserved).To(HaveLen(1))
+		Expect(engine.Validate(artifact)).To(Succeed())
+	})
+
+	It("plans the drop of the undeclared column of a complete table in declared scope, destructive and acknowledged", func() {
+		current := schemaOf(charTable(charOrders, charColumn("id", "int", false), charColumn("legacy", "int", true)))
+		desired := schemaOf(charTable(charOrders, charColumn("id", "int", false)))
+		request := completeRequest(current, desired)
+		request.Scope = engine.Scope{Mode: engine.ScopeDeclared, Schemas: []string{"dbo"}, Objects: []migrate.Name{charOrders}}
+
+		artifact := planArtifact(request)
+		Expect(artifact.Preserved).To(BeEmpty())
+		Expect(statementsOf(artifact)).To(Equal([]string{"ALTER TABLE [dbo].[orders] DROP COLUMN [legacy]"}))
+		Expect(engine.Acknowledgements(artifact)).To(Equal([]string{changeID("drop", "column", "orders", "legacy")}))
 		Expect(engine.Validate(artifact)).To(Succeed())
 	})
 })

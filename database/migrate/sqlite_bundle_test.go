@@ -33,8 +33,8 @@ const (
 `
 )
 
-func changeIDOf(action, kind, table, member string) string {
-	id, err := json.Marshal([]string{action, kind, "main", table, member})
+func columnChangeID(action, member string) string {
+	id, err := json.Marshal([]string{action, "column", "main", "items", member})
 	Expect(err).NotTo(HaveOccurred())
 	return string(id)
 }
@@ -62,22 +62,59 @@ var _ = Describe("SQLite bundle planned through the engine", func() {
 	}
 	retyped := strings.Replace(itemsTable, `column "label" { type = text }`, `column "label" { type = integer }`, 1)
 
-	It("keeps an undeclared column, with its data and its index, through a rebuild, and WithDrops removes them", func(ctx context.Context) {
+	partial := func(hcl string) string {
+		return strings.Replace(hcl, "  schema = schema.public\n", "  schema = schema.public\n  partial = true\n", 1)
+	}
+	withNotes := func(ctx context.Context) {
 		exec(ctx,
 			`ALTER TABLE items ADD COLUMN notes TEXT`,
 			`CREATE INDEX items_notes ON items (notes)`,
 			`INSERT INTO items (id, label, notes) VALUES ('i1', '7', 'dba note')`)
+	}
+
+	It("keeps an undeclared column with its data through a rebuild without WithDrops, drops its index, names it in a warning, and WithDrops removes it", func(ctx context.Context) {
+		withNotes(ctx)
+
+		preview, err := PreviewBundle(ctx, database, "sqlite", bundleOf(retyped))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(preview.Warnings).To(ConsistOf(`column "notes" of table main.items is in the database but not declared, and was not dropped: declare the column, mark the table ` + "`partial = true`" + `, or apply with WithDrops`))
 
 		Expect(Apply(ctx, dsn, bundleOf(retyped))).To(Succeed())
 		Expect(columnNames(ctx, database, "items")).To(Equal([]string{"id", "label", "notes"}))
 		var label, note string
 		Expect(database.QueryRowContext(ctx, `SELECT typeof(label), notes FROM items WHERE id = 'i1'`).Scan(&label, &note)).To(Succeed())
 		Expect([]string{label, note}).To(Equal([]string{"integer", "dba note"}))
-		Expect(schemaObjects(ctx, database)).To(ContainElement(sqliteObject{"index", "items_notes", "items"}))
+		Expect(schemaObjects(ctx, database)).NotTo(ContainElement(sqliteObject{"index", "items_notes", "items"}))
+
+		again, err := PreviewBundle(ctx, database, "sqlite", bundleOf(retyped))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(again.Artifact.Units).To(BeEmpty(), "nothing is left to run, and the warning is reported again")
+		Expect(engine.Validate(*again.Artifact)).To(Succeed())
+		Expect(again.Warnings).To(HaveLen(1))
 
 		Expect(Apply(ctx, dsn, bundleOf(retyped), WithDrops())).To(Succeed())
 		Expect(columnNames(ctx, database, "items")).To(Equal([]string{"id", "label"}))
-		Expect(schemaObjects(ctx, database)).NotTo(ContainElement(sqliteObject{"index", "items_notes", "items"}))
+	})
+
+	It("keeps an undeclared column and its index through a rebuild of a partial table, with nothing to report", func(ctx context.Context) {
+		withNotes(ctx)
+
+		preview, err := PreviewBundle(ctx, database, "sqlite", bundleOf(partial(retyped)))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(preview.Warnings).To(BeEmpty())
+
+		Expect(Apply(ctx, dsn, bundleOf(partial(retyped)))).To(Succeed())
+		Expect(columnNames(ctx, database, "items")).To(Equal([]string{"id", "label", "notes"}))
+		Expect(schemaObjects(ctx, database)).To(ContainElement(sqliteObject{"index", "items_notes", "items"}))
+
+		Expect(Apply(ctx, dsn, bundleOf(partial(retyped)), WithDrops())).To(Succeed())
+		Expect(columnNames(ctx, database, "items")).To(Equal([]string{"id", "label", "notes"}), "WithDrops never drops what a partial table does not name")
+	})
+
+	It("drops an undeclared index of a complete declaration without WithDrops", func(ctx context.Context) {
+		exec(ctx, `CREATE INDEX items_label ON items (label)`)
+		Expect(Apply(ctx, dsn, bundleOf(itemsTable))).To(Succeed())
+		Expect(schemaObjects(ctx, database)).NotTo(ContainElement(sqliteObject{"index", "items_label", "items"}))
 	})
 
 	It("hides an excluded table from the live schema and the declared one, even under WithDrops", func(ctx context.Context) {
@@ -128,21 +165,32 @@ table "docs" {
 		Expect(Apply(ctx, dsn, files)).To(MatchError(ContainSubstring("state")), "an unset variable is an error, not an empty default")
 	})
 
-	It("previews a rebuild with the drops the declared scope preserves", func(ctx context.Context) {
+	It("previews a rebuild without the column drop an unreviewed apply leaves out, and the reviewed plan with it", func(ctx context.Context) {
 		exec(ctx, `ALTER TABLE items ADD COLUMN notes TEXT`)
 
 		preview, err := PreviewBundle(ctx, database, "sqlite", bundleOf(retyped))
 		Expect(err).NotTo(HaveOccurred())
 		artifact := preview.Artifact
 		Expect(artifact.Scope.Mode).To(Equal(engine.ScopeDeclared))
-		Expect(artifact.Changes).To(ConsistOf(HaveField("ID", changeIDOf("modify", "column", "items", "label"))))
-		Expect(artifact.Preserved).To(ConsistOf(HaveField("ID", changeIDOf("drop", "column", "items", "notes"))))
+		Expect(artifact.Changes).To(ConsistOf(HaveField("ID", columnChangeID("modify", "label"))))
 		Expect(artifact.Units).To(HaveLen(1))
 		Expect(engine.Validate(*artifact)).To(Succeed())
+		Expect(preview.Warnings).To(HaveLen(1))
+
+		reviewed, err := PreviewBundle(ctx, database, "sqlite", bundleOf(retyped), WithReviewedPlan())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reviewed.Warnings).To(BeEmpty())
+		Expect(reviewed.Artifact.Preserved).To(BeEmpty())
+		Expect(engine.Acknowledgements(*reviewed.Artifact)).To(ContainElement(columnChangeID("drop", "notes")))
+		Expect(engine.Validate(*reviewed.Artifact)).To(Succeed())
+
+		held, err := PreviewBundle(ctx, database, "sqlite", bundleOf(partial(retyped)), WithReviewedPlan())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(held.Artifact.Preserved).To(ConsistOf(HaveField("ID", columnChangeID("drop", "notes"))))
 
 		complete, err := PreviewBundle(ctx, database, "sqlite", bundleOf(retyped), WithDrops())
 		Expect(err).NotTo(HaveOccurred())
-		Expect(complete.Artifact.Preserved).To(BeEmpty())
-		Expect(engine.Acknowledgements(*complete.Artifact)).To(ContainElement(changeIDOf("drop", "column", "items", "notes")))
+		Expect(complete.Warnings).To(BeEmpty())
+		Expect(engine.Acknowledgements(*complete.Artifact)).To(ContainElement(columnChangeID("drop", "notes")))
 	})
 })

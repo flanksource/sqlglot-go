@@ -25,6 +25,8 @@ type Artifact struct {
 	// are never planned or preserved.
 	Context   []migrate.Name `json:"context,omitempty"`
 	Selection []string       `json:"selection,omitempty"`
+	// SelectNone says the plan was limited to no change at all.
+	SelectNone bool `json:"selectNone,omitempty"`
 	// Dependents are the dependents the plan rebuilds, with the definitions to re-create and verify.
 	Dependents []Dependent `json:"dependents,omitempty"`
 	// Refusals are the inspection refusals no planned change touches.
@@ -33,7 +35,8 @@ type Artifact struct {
 	Warnings []string `json:"warnings,omitempty"`
 	// Changes are the planned changes, forced rebuilds included.
 	Changes []migrate.Change `json:"changes"`
-	// Preserved are the drops left unplanned because the scope is declared.
+	// Preserved are the drops left unplanned because the table is declared
+	// partial (or, for a whole object, because the scope is declared).
 	Preserved []migrate.Change `json:"preserved,omitempty"`
 	Units     []Unit           `json:"units"`
 	Atomic    bool             `json:"atomic,omitempty"`
@@ -65,7 +68,7 @@ func Validate(a Artifact) error {
 	}
 	expected, err := Plan(PlanRequest{
 		Dialect: a.Dialect, Scope: a.Scope, Context: a.Context, Current: a.Baseline, Desired: a.Desired,
-		Selection: a.Selection, Dependents: a.Dependents, Refusals: a.Refusals, Capabilities: a.Capabilities, Atomic: a.Atomic,
+		Selection: a.Selection, SelectNone: a.SelectNone, Dependents: a.Dependents, Refusals: a.Refusals, Capabilities: a.Capabilities, Atomic: a.Atomic,
 	})
 	if err != nil {
 		return fmt.Errorf("engine: re-plan migration artifact: %w", err)

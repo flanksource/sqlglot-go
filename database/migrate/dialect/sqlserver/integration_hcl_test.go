@@ -77,9 +77,10 @@ var _ = Describe("the HCL model against the live schema", Ordered, Label("integr
 		Expect(again.Units).To(BeEmpty())
 	})
 
-	It("adds a declared column, keeping a DBA's index and an undeclared column", func(ctx SpecContext) {
+	It("adds a column of a partial declaration, keeping a DBA's index and an undeclared column", func(ctx SpecContext) {
 		mustExec(ctx, db, "CREATE INDEX IX_dba_tuning ON hclnew.acme_orders (status)", "ALTER TABLE hclnew.acme_orders ADD dba_note nvarchar(20) NULL")
 		desired := parityDesired("hclnew", parityNote)
+		desired.Tables[0].Partial = true
 		artifact, err := planLive(ctx, db, scope, desired)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(artifact.Changes).To(HaveLen(1))

@@ -78,7 +78,7 @@ var _ = Describe("schema inspect --hcl", func() {
 		root.SetErr(&bytes.Buffer{})
 		root.SetArgs([]string{"schema", "inspect", "--help", "--no-color"})
 		Expect(root.Execute()).To(Succeed())
-		for _, want := range []string{"--hcl", "--table", "--columns", "--out", "--document", "--omit-unsupported", "ROWGUIDCOL", "# omitted:"} {
+		for _, want := range []string{"--hcl", "--table", "--columns", "--out", "--document", "--omit-unsupported", "ROWGUIDCOL", "# omitted:", "partial = true"} {
 			Expect(out.String()).To(ContainSubstring(want))
 		}
 	})

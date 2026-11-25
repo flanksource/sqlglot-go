@@ -12,7 +12,6 @@ import (
 	"ariga.io/atlas/sql/schema"
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect/atlasdriver"
 	pgdialect "github.com/flanksource/sqlglot-go/database/migrate/dialect/postgres"
-	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
 // metadataTables are the tables the bundle itself keeps in the migration
@@ -53,22 +52,22 @@ func loadPostgresBundle(schemaFS fs.FS, cfg options) (postgresBundle, error) {
 	if err != nil {
 		return postgresBundle{}, err
 	}
-	parser, security, err := loadHCL(schemaFS, cfg.dir, cfg.input)
+	loaded, err := loadHCL(hclSource{FS: schemaFS, Dir: cfg.dir, Input: cfg.input})
 	if err != nil {
 		return postgresBundle{}, err
 	}
-	step, err := postgresStep(parser, cfg)
+	step, err := postgresStep(loaded, cfg)
 	if err != nil {
 		return postgresBundle{}, err
 	}
-	return postgresBundle{scripts: scripts, security: remapSecuritySchema(security, cfg.schema), step: step}, nil
+	return postgresBundle{scripts: scripts, security: remapSecuritySchema(loaded.Security, cfg.schema), step: step}, nil
 }
 
 // postgresStep evaluates the HCL (variables included), moves its public schema
 // to the target one and plans toward the result.
-func postgresStep(parser *hclparse.Parser, cfg options) (schemaStep, error) {
+func postgresStep(loaded loadedHCL, cfg options) (schemaStep, error) {
 	realm := &schema.Realm{}
-	if err := postgres.EvalHCL.Eval(parser, realm, cfg.input); err != nil {
+	if err := postgres.EvalHCL.Eval(loaded.Parser, realm, cfg.input); err != nil {
 		return schemaStep{}, fmt.Errorf("evaluate HCL schemas: %w", err)
 	}
 	if err := remapDesiredSchema(realm, cfg.schema); err != nil {
@@ -85,7 +84,7 @@ func postgresStep(parser *hclparse.Parser, cfg options) (schemaStep, error) {
 		return schemaStep{}, err
 	}
 	return schemaStep{
-		Dialect: pgdialect.Name, Schema: cfg.schema, Desired: desired,
+		Dialect: pgdialect.Name, Schema: cfg.schema, Desired: atlasdriver.WithPartial(desired, loaded.Partial),
 		AllowDrops: cfg.allowDrops, Exclude: append(append([]string(nil), cfg.exclude...), metadataTables...),
 	}, nil
 }

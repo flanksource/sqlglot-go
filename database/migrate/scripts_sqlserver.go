@@ -67,9 +67,12 @@ type PendingScript struct {
 // scripts it would run, and the plan file holding both. It inspects only the
 // objects the bundle names.
 type SQLServerPending struct {
-	Statements []string          `json:"statements,omitempty"`
-	Scripts    []PendingScript   `json:"scripts,omitempty"`
-	Plan       *backend.PlanFile `json:"plan"`
+	Statements []string        `json:"statements,omitempty"`
+	Scripts    []PendingScript `json:"scripts,omitempty"`
+	// Warnings name each column of a declared table that is in the database but
+	// not declared: Apply does not drop it and reports it every time.
+	Warnings []string          `json:"warnings,omitempty"`
+	Plan     *backend.PlanFile `json:"plan"`
 }
 
 // Changed reports whether Apply would change anything beyond running its
@@ -78,11 +81,11 @@ func (p SQLServerPending) Changed() bool { return p.Plan.Changed() }
 
 // PendingSQLServer plans Apply on db without executing or recording anything.
 func PendingSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, opts ...Option) (SQLServerPending, error) {
-	file, err := planSQLServer(ctx, db, schemaFS, resolveOptions(opts))
+	file, warnings, err := planSQLServer(ctx, db, schemaFS, resolveOptions(opts))
 	if err != nil {
 		return SQLServerPending{}, err
 	}
-	pending := SQLServerPending{Plan: &file}
+	pending := SQLServerPending{Plan: &file, Warnings: warnings}
 	for _, statement := range file.SchemaStatements() {
 		pending.Statements = append(pending.Statements, statement.SQL)
 	}

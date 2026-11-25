@@ -3,6 +3,7 @@ package atlasdriver
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/flanksource/sqlglot-go/migrate"
 	"github.com/flanksource/sqlglot-go/migrate/engine"
@@ -43,5 +44,9 @@ func (d *Dialect) Reconcile(ctx context.Context, q engine.Querier, current, desi
 	}
 	out := desired
 	out.Native, out.Tables = native, projected.Tables
+	for i := range out.Tables {
+		j := slices.IndexFunc(desired.Tables, func(t migrate.Table) bool { return t.Name == out.Tables[i].Name })
+		out.Tables[i].Partial = desired.Tables[j].Partial
+	}
 	return out, nil
 }

@@ -21,7 +21,8 @@ artifact, err := engine.PlanLive(ctx, db, engine.PlanLiveRequest{
 | `context` | Objects read only because a dependent sits on them. They are never planned or preserved. |
 | `selection` | The change IDs the plan was limited to; empty plans every change. |
 | `changes` | Every planned change: `id`, `action`, `kind`, `object`, `member`, `destructive`, `reason`, `requires` and, for a forced rebuild, `cause`. |
-| `preserved` | The drops a declared scope leaves unplanned. |
+| `preserved` | The drops left unplanned because the table is declared partial (`partial = true`) or, for a whole object, because the scope is declared. Each carries the rule that applied in its `reason`. |
+| `selectNone` | The plan was limited to no change at all: it records what it left out and runs nothing. |
 | `dependents` | The definitions of the dependents the plan rebuilds, which each unit re-creates and then verifies. |
 | `units` | The transactions of the plan, each with its ops, statements and preconditions. |
 | `refusals`, `warnings` | The objects inspection refused that no change touches, and the definitions compared as written because their bodies are not understood. |
@@ -32,13 +33,13 @@ A change ID is the JSON array `[action, kind, schema, name, member]`. A forced r
 
 ## Scope
 
-`complete` manages every object of the named schemas: whatever the desired schema omits is dropped, and each drop is destructive and must be acknowledged. `declared` manages only the named objects and members: an undeclared object, column, index, key or check is never dropped, and the drops it would have needed are listed under `preserved` and never run. One rule replaces the earlier per-dialect "preserve omitted" options.
+`complete` manages every object of the named schemas: whatever the desired schema omits is dropped, and each drop is destructive and must be acknowledged. `declared` manages only the named objects: an undeclared table or other object is never dropped, and its drop is listed under `preserved` and never run. What a table declares is a separate rule, the same in both scopes. A table declaration is complete unless it says `partial = true` inside the `table` block (`migrate.Table.Partial`): the column, index, key, foreign key, check or default of a complete table that the declaration omits is dropped, as a destructive change that must be acknowledged, while every such drop of a partial table is preserved. A partial table the target does not have fails the plan ("table X is declared partial and does not exist: a partial declaration cannot create a table"). A dependent that cannot be re-created over a dropped column, and an inbound foreign key from another table on it, refuse the plan by name unless the same plan drops that key or declares it away. A partial table is still rebuilt where a changed column forces it, and the undeclared members it holds are re-created. One rule replaces the earlier per-dialect "preserve omitted" options.
 
 The workflow maps its sources as follows. A pasted or `--desired` HCL file and an inspected snapshot plan in complete scope, because they describe the whole schema. A bundle plans in declared scope, and in complete scope with `--allow-drops`. A database comparison (`database/compare`) plans in complete scope toward its reference, and its selection limits what is carried into the patch.
 
 ## Changes, selection and acknowledgements
 
-`Selection` limits the plan to a subset of change IDs, and `changes` then lists only the selected ones. Plan without a selection to see every candidate with the `requires` IDs that must be selected with it: a new foreign key needs its new referenced table, a new index its new column, a dropped column the drops of what references it, and on SQLite a column drop carries every other change of the table it rebuilds. An unknown ID, a change on a preserved drop, or a missing requirement fails before anything is planned.
+`Selection` limits the plan to a subset of change IDs, and `changes` then lists only the selected ones. Plan without a selection to see every candidate with the `requires` IDs that must be selected with it: a new foreign key needs its new referenced table, a new index its new column, a dropped column the drops of what references it, and on SQLite a column drop carries every other change of the table it rebuilds. An unknown ID, a change on a preserved drop, or a missing requirement fails before anything is planned. `SelectNone` plans no change at all and cannot be combined with a selection.
 
 `engine.Acknowledgements(artifact)` lists the destructive changes of the plan, sorted. Apply requires each exactly once and refuses anything else. A forced rebuild is never acknowledged on its own: its cause is. The IDs are the changes' own, so they are stable between plans of the same difference; they are no longer a hash of a statement's position and text.
 

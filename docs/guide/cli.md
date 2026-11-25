@@ -97,7 +97,7 @@ table "items" {
 
 PostgreSQL and SQLite bundles use PostgreSQL-shaped HCL and declare `schema "public" {}`. PostgreSQL remaps that declaration when you pass `--schema`. SQLite projects supported HCL types and constraints onto `main`. With `--desired`, supply HCL in the target dialect and declare the target schema directly.
 
-Bundle variables are declared with HCL `variable` blocks and supplied with repeatable `--var 'name=HCL-literal'` flags, for example `--var 'label="Inventory"'`. Bundles preserve omitted tables and columns by default. Pass `--allow-drops` when omissions should be considered for removal and review the resulting destructive changes. Treat a `--desired` file as the complete desired schema. Its omissions can generate drops without `--allow-drops`.
+Bundle variables are declared with HCL `variable` blocks and supplied with repeatable `--var 'name=HCL-literal'` flags, for example `--var 'label="Inventory"'`. A bundle never drops an omitted table by default, and `--allow-drops` considers omitted tables for removal. A table a bundle declares is complete unless its block says `partial = true`: the omitted columns, indexes, keys and checks of a complete table appear as destructive changes to review, and a partial table keeps them. Review the resulting destructive changes. Treat a `--desired` file as the complete desired schema. Its omissions can generate drops without `--allow-drops`.
 
 Plan against the existing database. The summary goes to stderr and the plan file to `.sqlglot-go/plan.json`; inspect it with `jq`.
 

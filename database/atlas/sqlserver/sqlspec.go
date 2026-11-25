@@ -86,7 +86,7 @@ func (c *Codec) MarshalSpec(v any) ([]byte, error) {
 var scanFuncs = &specutil.ScanFuncs{Table: convertTable}
 
 func convertTable(spec *sqlspec.Table, parent *schema.Schema) (*schema.Table, error) {
-	if err := onlyKeys(spec.Extra, nil, nil); err != nil {
+	if err := onlyKeys(spec.Extra, []string{"partial"}, nil); err != nil {
 		return nil, fmt.Errorf("table %q: %w", spec.Name, err)
 	}
 	t, err := specutil.Table(spec, parent, specutil.TableConvertFuncs{
@@ -101,7 +101,23 @@ func convertTable(spec *sqlspec.Table, parent *schema.Schema) (*schema.Table, er
 	if slices.ContainsFunc(t.Attrs, isComment) {
 		return nil, fmt.Errorf("table %q: comments are %w", spec.Name, errUnsupported)
 	}
-	return t, nil
+	return t, partialAttr(spec, t)
+}
+
+// partialAttr reads `partial = true`: the table names only some of its members.
+func partialAttr(spec *sqlspec.Table, t *schema.Table) error {
+	attr, ok := spec.Extra.Attr("partial")
+	if !ok {
+		return nil
+	}
+	partial, err := attr.Bool()
+	if err != nil {
+		return fmt.Errorf("table %q: partial must be true or false: %w", spec.Name, err)
+	}
+	if partial {
+		t.AddAttrs(&planner.Partial{})
+	}
+	return nil
 }
 
 func isComment(a schema.Attr) bool {

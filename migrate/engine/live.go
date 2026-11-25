@@ -13,7 +13,9 @@ type PlanLiveRequest struct {
 	Scope     Scope
 	Desired   migrate.Schema
 	Selection []string
-	Atomic    bool
+	// SelectNone plans no change at all (see PlanRequest.SelectNone).
+	SelectNone bool
+	Atomic     bool
 }
 
 // PlanLive reads capabilities, the current schema and the live dependents of
@@ -44,7 +46,7 @@ func PlanLive(ctx context.Context, q Querier, req PlanLiveRequest) (Artifact, er
 	}
 	plan := PlanRequest{
 		Dialect: req.Dialect, Scope: scope, Current: insp.Schema, Desired: desired,
-		Selection: req.Selection, Refusals: insp.Refusals, Capabilities: caps, Atomic: req.Atomic,
+		Selection: req.Selection, SelectNone: req.SelectNone, Refusals: insp.Refusals, Capabilities: caps, Atomic: req.Atomic,
 	}
 	columns, err := selectedForcingColumns(d, plan)
 	if err != nil {

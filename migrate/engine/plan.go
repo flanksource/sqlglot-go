@@ -20,10 +20,14 @@ type PlanRequest struct {
 	Scope   Scope
 	// Context lists objects present in Current only because a dependent sits on
 	// them. They are not managed: no diff change on them is planned or preserved.
-	Context      []migrate.Name
-	Current      migrate.Schema
-	Desired      migrate.Schema
-	Selection    []string
+	Context []migrate.Name
+	Current migrate.Schema
+	Desired migrate.Schema
+	// Selection limits the plan to those change IDs; empty plans every change.
+	Selection []string
+	// SelectNone plans no change at all (an artifact that records what it left
+	// out and runs nothing). It excludes Selection.
+	SelectNone   bool
 	Dependents   []Dependent
 	Refusals     []Refusal
 	Capabilities Capabilities
@@ -72,7 +76,7 @@ func Plan(req PlanRequest) (Artifact, error) {
 	}
 	a := Artifact{
 		Version: ArtifactVersion, Dialect: req.Dialect, Capabilities: req.Capabilities, Scope: req.Scope, Context: req.Context,
-		Baseline: req.Current, Desired: req.Desired, Selection: req.Selection, Dependents: rebuiltDependents(rebuilds),
+		Baseline: req.Current, Desired: req.Desired, Selection: req.Selection, SelectNone: req.SelectNone, Dependents: rebuiltDependents(rebuilds),
 		Refusals: untouched, Warnings: sortedUnique(diff.Warnings()),
 		Changes: sortedChanges(changes), Preserved: sortedChanges(res.preserved), Atomic: req.Atomic,
 		Units: buildUnits(ops, changes, pre, req.Capabilities.TransactionalDDL, req.Atomic),
@@ -118,26 +122,31 @@ func canonicalRequest(req PlanRequest) (PlanRequest, error) {
 	req.Context = canonicalNames(req.Context)
 	req.Refusals = canonicalRefusals(req.Refusals)
 	req.Selection = sortedUnique(req.Selection)
+	if req.SelectNone && len(req.Selection) > 0 {
+		return req, fmt.Errorf("engine: SelectNone and a selection of %d changes exclude each other", len(req.Selection))
+	}
 	if req.Scope.Mode == ScopeDeclared {
 		if len(req.Scope.Objects) == 0 {
 			return req, fmt.Errorf("engine: a declared scope must name the objects it manages in Scope.Objects (PlanLive defaults them to the desired schema's)")
 		}
 		req.Desired = narrow(req.Desired, req.Scope.Objects)
 	}
-	return req, nil
+	return req, checkPartialTables(req)
 }
 
 type resolved struct {
 	selected  []migrate.Change // diff order
 	preserved []migrate.Change
-	context   []migrate.Change
+	// preservedWhy says, by change ID, which rule left each preserved drop unplanned.
+	preservedWhy map[string]string
+	context      []migrate.Change
 }
 
 // excluded names why each change the plan leaves out cannot be selected or required.
 func (r resolved) excluded() map[string]string {
 	out := map[string]string{}
 	for _, c := range r.preserved {
-		out[c.ID] = "a drop that the declared scope preserves"
+		out[c.ID] = r.preservedWhy[c.ID]
 	}
 	for _, c := range r.context {
 		out[c.ID] = "a change on context object " + nameLabel(c.Object)
@@ -145,11 +154,11 @@ func (r resolved) excluded() map[string]string {
 	return out
 }
 
-// resolveChanges leaves out the changes on context objects, applies the
-// scope's drop policy, then the selection, and fails closed when a selected
-// change needs one that is not selected.
+// resolveChanges leaves out the changes on context objects, applies the drop
+// policy, then the selection, and fails closed when a selected change needs one
+// that is not selected.
 func resolveChanges(diff Diff, req PlanRequest) (resolved, error) {
-	var res resolved
+	res := resolved{preservedWhy: map[string]string{}}
 	var planned []migrate.Change
 	seen := map[string]bool{}
 	for _, c := range diff.Changes() {
@@ -158,14 +167,17 @@ func resolveChanges(diff Diff, req PlanRequest) (resolved, error) {
 		}
 		seen[c.ID] = true
 		c.Requires = sortedUnique(c.Requires)
-		switch {
-		case slices.Contains(req.Context, c.Object):
+		if slices.Contains(req.Context, c.Object) {
 			res.context = append(res.context, c)
-		case req.Scope.Mode == ScopeDeclared && c.Action == actionDrop:
+		} else if why := preservedBecause(c, req); why != "" {
 			res.preserved = append(res.preserved, c)
-		default:
+			res.preservedWhy[c.ID] = why
+		} else {
 			planned = append(planned, c)
 		}
+	}
+	if req.SelectNone {
+		return res, nil
 	}
 	if len(req.Selection) == 0 {
 		res.selected = planned

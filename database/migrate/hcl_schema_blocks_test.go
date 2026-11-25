@@ -31,11 +31,11 @@ var bundleDialects = []bundleDialect{
 	}},
 	{name: "postgres", schema: "public", desired: func(files fs.FS) (migrate.Schema, error) {
 		cfg := resolveOptions(nil)
-		parser, _, err := loadHCL(files, cfg.dir, cfg.input)
+		loaded, err := loadHCL(hclSource{FS: files, Dir: cfg.dir, Input: cfg.input})
 		if err != nil {
 			return migrate.Schema{}, err
 		}
-		step, err := postgresStep(parser, cfg)
+		step, err := postgresStep(loaded, cfg)
 		return step.Desired, err
 	}},
 	{name: "sqlite", schema: "public", desired: func(files fs.FS) (migrate.Schema, error) {
@@ -114,6 +114,57 @@ var _ = Describe("a bundle whose HCL files each declare the schema block", func(
 			Expect(err).To(MatchError(SatisfyAll(
 				ContainSubstring(fmt.Sprintf("schema %q is declared differently", d.schema)),
 				ContainSubstring("a.hcl:1"), ContainSubstring("b.hcl:1"))))
+		},
+		Entry("SQL Server", bundleDialects[0]),
+		Entry("PostgreSQL", bundleDialects[1]),
+		Entry("SQLite", bundleDialects[2]),
+	)
+
+	partialTable := func(d bundleDialect, name, value string) string {
+		return strings.Replace(d.table(name), "  schema = schema."+d.schema+"\n", "  schema = schema."+d.schema+"\n  partial = "+value+"\n", 1)
+	}
+
+	DescribeTable("reads a table's partial flag from its file, whatever the evaluator ignores",
+		func(d bundleDialect) {
+			files := fstest.MapFS{
+				"a.hcl": &fstest.MapFile{Data: []byte(d.block("") + partialTable(d, "alpha", "true"))},
+				"b.hcl": &fstest.MapFile{Data: []byte(d.block("") + d.table("beta"))},
+			}
+			desired, err := d.desired(files)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(desired.Tables).To(HaveLen(2))
+			Expect([]bool{desired.Tables[0].Partial, desired.Tables[1].Partial}).To(Equal([]bool{true, false}))
+			Expect(desired.Tables[0].Name.Name).To(Equal("alpha"))
+		},
+		Entry("SQL Server", bundleDialects[0]),
+		Entry("PostgreSQL", bundleDialects[1]),
+		Entry("SQLite", bundleDialects[2]),
+	)
+
+	DescribeTable("refuses a partial value that is not a boolean, naming the file and the table",
+		func(d bundleDialect) {
+			files := fstest.MapFS{
+				"a.hcl": &fstest.MapFile{Data: []byte(d.block("") + d.table("alpha"))},
+				"b.hcl": &fstest.MapFile{Data: []byte(d.block("") + partialTable(d, "beta", `"yes"`))},
+			}
+			_, err := d.desired(files)
+			Expect(err).To(MatchError(ContainSubstring(`b.hcl:4: table "beta": partial must be true or false`)))
+		},
+		Entry("SQL Server", bundleDialects[0]),
+		Entry("PostgreSQL", bundleDialects[1]),
+		Entry("SQLite", bundleDialects[2]),
+	)
+
+	DescribeTable("refuses the same table declared in two files, naming both",
+		func(d bundleDialect) {
+			files := fstest.MapFS{
+				"a.hcl": &fstest.MapFile{Data: []byte(d.block("") + d.table("alpha"))},
+				"b.hcl": &fstest.MapFile{Data: []byte(d.block("") + partialTable(d, "alpha", "true"))},
+			}
+			_, err := d.desired(files)
+			Expect(err).To(MatchError(SatisfyAll(
+				ContainSubstring(fmt.Sprintf("table %q is declared twice", d.schema+".alpha")),
+				ContainSubstring("a.hcl:2"), ContainSubstring("b.hcl:2"))))
 		},
 		Entry("SQL Server", bundleDialects[0]),
 		Entry("PostgreSQL", bundleDialects[1]),

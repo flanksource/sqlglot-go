@@ -28,8 +28,10 @@ type HCLOptions struct {
 	// the table, the member and the attribute.
 	OmitUnsupported bool
 	// Columns declares only the named columns of a table, keyed by table name: a
-	// partial declaration, with no keys, indexes, foreign keys or checks, for a
-	// table the declaration does not own.
+	// partial declaration (`partial = true`), with no keys, indexes, foreign keys
+	// or checks, for a table the declaration does not own. A table declared
+	// without Columns is declared in full and carries no attribute, unless its
+	// schema marks it Partial.
 	Columns map[string][]string
 	// DatabaseCollation is the database's default collation. A column carrying
 	// it is written without a collation, so the HCL stays valid on a database
@@ -173,6 +175,9 @@ func (w *hclWriter) table(t migrate.Table) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table %s {\n  schema = schema.%s\n", hclString(t.Name.Name), t.Name.Schema)
 	partial, isPartial := w.opts.Columns[t.Name.Name]
+	if isPartial || t.Partial {
+		b.WriteString("  partial = true\n")
+	}
 	for _, c := range t.Columns {
 		if isPartial && !slices.Contains(partial, c.Name) {
 			continue

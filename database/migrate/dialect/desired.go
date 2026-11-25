@@ -11,6 +11,7 @@ import (
 
 	"ariga.io/atlas/sql/schema"
 	atlashcl "github.com/flanksource/sqlglot-go/database/atlas/sqlserver"
+	"github.com/flanksource/sqlglot-go/database/migrate/dialect/atlasdriver"
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect/postgres"
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect/sqlite"
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect/sqlserver"
@@ -45,7 +46,13 @@ func DesiredFromHCL(name, hcl string) (migrate.Schema, error) {
 	return read(hcl)
 }
 
+// sqlServerFromHCL evaluates with the repo's own spec, which reads `partial`
+// itself; it is read here as well so that a value that is not a boolean is
+// reported with its file, line and table like the other dialects'.
 func sqlServerFromHCL(hcl string) (migrate.Schema, error) {
+	if _, _, err := atlasdriver.SplitPartial(atlasdriver.DesiredHCLFile, hcl); err != nil {
+		return migrate.Schema{}, fmt.Errorf("evaluate sqlserver HCL: %w", err)
+	}
 	realm := &schema.Realm{}
 	if err := atlashcl.EvalHCLBytes([]byte(hcl), realm, nil); err != nil {
 		return migrate.Schema{}, fmt.Errorf("evaluate sqlserver HCL: %w", err)

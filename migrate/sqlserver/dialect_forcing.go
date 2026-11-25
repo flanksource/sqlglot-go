@@ -37,11 +37,7 @@ func (p *planDiff) findForcing() ([]engine.Forcing, error) {
 			continue
 		}
 		for _, child := range modify.Changes {
-			change, ok := child.(*schema.ModifyColumn)
-			if !ok {
-				continue
-			}
-			f, forced, err := p.forcingOf(modify.T, change)
+			f, forced, err := p.forcingOfChild(modify.T, child)
 			if err != nil {
 				return nil, err
 			}
@@ -51,6 +47,31 @@ func (p *planDiff) findForcing() ([]engine.Forcing, error) {
 		}
 	}
 	return out, nil
+}
+
+func (p *planDiff) forcingOfChild(t *schema.Table, child schema.Change) (engine.Forcing, bool, error) {
+	switch child := child.(type) {
+	case *schema.ModifyColumn:
+		return p.forcingOf(t, child)
+	case *schema.DropColumn:
+		return p.droppedColumn(t, child)
+	}
+	return engine.Forcing{}, false, nil
+}
+
+// droppedColumn forces every dependent of a dropped column, so the engine can
+// match the ones the plan drops with it and refuse the rest (an inbound foreign
+// key of a table the plan does not declare, a user statistic) before anything runs.
+func (p *planDiff) droppedColumn(t *schema.Table, drop *schema.DropColumn) (engine.Forcing, bool, error) {
+	ids, err := p.set.Lookup(drop)
+	if err != nil {
+		return engine.Forcing{}, false, fmt.Errorf("sqlserver: column drop %s.%s: %w", t.Name, drop.C.Name, err)
+	}
+	if len(ids) != 1 {
+		return engine.Forcing{}, false, fmt.Errorf("sqlserver: column drop %s.%s names %d changes", t.Name, drop.C.Name, len(ids))
+	}
+	ref := engine.ColumnRef{Table: tableNameOf(t), Column: drop.C.Name, Dropped: engine.DroppedColumn}
+	return engine.Forcing{Change: ids[0], Columns: []engine.ColumnRef{ref}}, true, nil
 }
 
 func (p *planDiff) forcingOf(t *schema.Table, change *schema.ModifyColumn) (engine.Forcing, bool, error) {

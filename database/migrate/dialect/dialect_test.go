@@ -39,6 +39,47 @@ table "items" {
 		Entry("SQLite", "sqlite", sqliteHCL, "main", "items", 1),
 	)
 
+	partialHCL := func(schemaName, partial string) string {
+		return `schema "` + schemaName + `" {}
+table "t" {
+  schema = schema.` + schemaName + partial + `
+  column "id" { type = int }
+}
+table "u" {
+  schema = schema.` + schemaName + `
+  column "id" { type = int }
+}`
+	}
+
+	DescribeTable("reads `partial = true` of a table into Table.Partial, and a declaration is complete without it",
+		func(name, schemaName string) {
+			desired, err := dialect.DesiredFromHCL(name, partialHCL(schemaName, "\n  partial = true"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect([]bool{desired.Tables[0].Partial, desired.Tables[1].Partial}).To(Equal([]bool{true, false}))
+
+			explicit, err := dialect.DesiredFromHCL(name, partialHCL(schemaName, "\n  partial = false"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect([]bool{explicit.Tables[0].Partial, explicit.Tables[1].Partial}).To(Equal([]bool{false, false}))
+
+			absent, err := dialect.DesiredFromHCL(name, partialHCL(schemaName, ""))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(absent).To(Equal(explicit), "the flag is the only difference a declaration carries, and false is the default")
+		},
+		Entry("SQL Server", "sqlserver", "dbo"),
+		Entry("PostgreSQL", "postgres", "public"),
+		Entry("SQLite", "sqlite", "main"),
+	)
+
+	DescribeTable("refuses a partial value that is not a boolean, naming the file and the table",
+		func(name, schemaName string) {
+			_, err := dialect.DesiredFromHCL(name, partialHCL(schemaName, "\n  partial = \"yes\""))
+			Expect(err).To(MatchError(ContainSubstring(`desired.hcl:4: table "t": partial must be true or false`)))
+		},
+		Entry("SQL Server", "sqlserver", "dbo"),
+		Entry("PostgreSQL", "postgres", "public"),
+		Entry("SQLite", "sqlite", "main"),
+	)
+
 	It("refuses a dialect that reads no HCL and empty HCL", func() {
 		_, err := dialect.DesiredFromHCL("mysql", sqliteHCL)
 		Expect(err).To(MatchError(ContainSubstring(`dialect "mysql" cannot read desired HCL (supported: postgres, sqlite, sqlserver)`)))

@@ -184,15 +184,28 @@ table "orders" {
 		Expect(db.PingContext(ctx)).To(Succeed())
 	})
 
-	It("keeps undeclared objects in the declared scope, drops them with WithDrops, and never drops its own metadata", func(ctx SpecContext) {
+	It("keeps an undeclared table and type in the declared scope, runs the drop of an undeclared index but reports an undeclared column, drops it with WithDrops, and never drops its own metadata", func(ctx SpecContext) {
 		bundle := hclBundle(jobsHCL(`"new", "done"`, ""), fstest.MapFS{"db/seed.sql": bundleFile("SELECT 1")})
 		Expect(apply(ctx, bundle)).To(Succeed())
 		mustExecAll(ctx, db,
-			"ALTER TABLE jobs ADD COLUMN notes text", "CREATE INDEX jobs_notes ON jobs (notes)",
+			"ALTER TABLE jobs ADD COLUMN notes text", "CREATE INDEX jobs_notes ON jobs (notes)", "CREATE INDEX jobs_state ON jobs (state)",
 			"CREATE TABLE other (value text)", "CREATE TYPE mood AS ENUM ('ok')")
+
+		preview, err := PreviewBundle(ctx, db, "postgres", bundle, WithDir("db"), WithName("acme/planner"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(preview.Warnings).To(ContainElement(`column "notes" of table public.jobs is in the database but not declared, and was not dropped: declare the column, mark the table ` + "`partial = true`" + `, or apply with WithDrops`))
+		Expect(preview.Artifact.Units).NotTo(BeEmpty(), "the index drops are still planned")
+
 		Expect(apply(ctx, bundle)).To(Succeed())
-		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_indexes WHERE indexname = 'jobs_notes'")).To(Equal("1"))
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'notes'")).To(Equal("1"))
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_indexes WHERE indexname = 'jobs_state'")).To(Equal("0"))
 		Expect(scalarOf(ctx, db, "SELECT to_regclass('other')::text")).To(Equal("other"))
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_type WHERE typname = 'mood'")).To(Equal("1"))
+
+		again, err := PreviewBundle(ctx, db, "postgres", bundle, WithDir("db"), WithName("acme/planner"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(again.Warnings).To(ContainElement(ContainSubstring(`column "notes" of table public.jobs`)), "the column is reported every time")
+		Expect(again.Artifact.Units).To(BeEmpty())
 
 		Expect(apply(ctx, bundle, WithDrops())).To(Succeed())
 		Expect(scalarOf(ctx, db, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'notes'")).To(Equal("0"))
@@ -200,6 +213,27 @@ table "orders" {
 		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_type WHERE typname = 'mood'")).To(Equal("0"))
 		Expect(scalarOf(ctx, db, "SELECT to_regclass('schema_migration_scripts')::text")).To(Equal("schema_migration_scripts"))
 		Expect(apply(ctx, bundle, WithDrops())).To(Succeed())
+	})
+
+	It("keeps every member a partial table does not name, with nothing reported, even under WithDrops", func(ctx SpecContext) {
+		partial := hclBundle(strings.Replace(jobsHCL(`"new", "done"`, ""), "table \"jobs\" {\n  schema = schema.public\n", "table \"jobs\" {\n  schema = schema.public\n  partial = true\n", 1), nil)
+		Expect(apply(ctx, hclBundle(jobsHCL(`"new", "done"`, ""), nil))).To(Succeed())
+		mustExecAll(ctx, db, "ALTER TABLE jobs ADD COLUMN notes text", "CREATE INDEX jobs_notes ON jobs (notes)", "CREATE INDEX jobs_state ON jobs (state)")
+
+		preview, err := PreviewBundle(ctx, db, "postgres", partial, WithDir("db"), WithName("acme/planner"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(preview.Warnings).To(BeEmpty())
+		Expect(preview.Artifact.Units).To(BeEmpty())
+
+		Expect(apply(ctx, partial)).To(Succeed())
+		Expect(apply(ctx, partial, WithDrops())).To(Succeed())
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'notes'")).To(Equal("1"))
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_indexes WHERE indexname IN ('jobs_notes', 'jobs_state')")).To(Equal("2"))
+	})
+
+	It("refuses a partial table the database does not have", func(ctx SpecContext) {
+		partial := hclBundle(strings.Replace(jobsHCL(`"new", "done"`, ""), "table \"jobs\" {\n  schema = schema.public\n", "table \"jobs\" {\n  schema = schema.public\n  partial = true\n", 1), nil)
+		Expect(apply(ctx, partial)).To(MatchError(ContainSubstring("table public.jobs is declared partial and does not exist: a partial declaration cannot create a table")))
 	})
 
 	It("hides an excluded table from both sides, even under WithDrops", func(ctx SpecContext) {

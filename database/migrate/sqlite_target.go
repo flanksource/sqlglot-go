@@ -13,7 +13,6 @@ import (
 	atlassqlite "ariga.io/atlas/sql/sqlite"
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect/atlasdriver"
 	sqlitedialect "github.com/flanksource/sqlglot-go/database/migrate/dialect/sqlite"
-	"github.com/hashicorp/hcl/v2/hclparse"
 	_ "modernc.org/sqlite"
 
 	native "github.com/flanksource/sqlglot-go/migrate"
@@ -64,20 +63,20 @@ func sqliteSchemaStep(schemaFS fs.FS, config options) (schemaStep, error) {
 	if len(scripts) > 0 {
 		return schemaStep{}, errors.New("SQLite migrations do not support SQL migration files")
 	}
-	parser, security, err := loadHCL(schemaFS, config.dir, config.input)
+	loaded, err := loadHCL(hclSource{FS: schemaFS, Dir: config.dir, Input: config.input})
 	if err != nil {
 		return schemaStep{}, err
 	}
-	if len(security.Roles) > 0 || len(security.Permissions) > 0 {
+	if len(loaded.Security.Roles) > 0 || len(loaded.Security.Permissions) > 0 {
 		return schemaStep{}, errors.New("SQLite migrations do not support roles or permissions")
 	}
-	return sqliteStep(parser, config)
+	return sqliteStep(loaded, config)
 }
 
 // sqliteStep evaluates the parsed HCL with the bundle's variables and plans
 // toward the result.
-func sqliteStep(parser *hclparse.Parser, config options) (schemaStep, error) {
-	desired, err := sqliteDesired(parser, config)
+func sqliteStep(loaded loadedHCL, config options) (schemaStep, error) {
+	desired, err := sqliteDesired(loaded, config)
 	if err != nil {
 		return schemaStep{}, err
 	}
@@ -87,12 +86,12 @@ func sqliteStep(parser *hclparse.Parser, config options) (schemaStep, error) {
 	}, nil
 }
 
-func sqliteDesired(parser *hclparse.Parser, config options) (native.Schema, error) {
+func sqliteDesired(loaded loadedHCL, config options) (native.Schema, error) {
 	if err := refuseSQLiteMemberExclusions(config.exclude); err != nil {
 		return native.Schema{}, err
 	}
 	realm := &schema.Realm{}
-	if err := postgres.EvalHCL.Eval(parser, realm, config.input); err != nil {
+	if err := postgres.EvalHCL.Eval(loaded.Parser, realm, config.input); err != nil {
 		return native.Schema{}, fmt.Errorf("evaluate HCL schemas for SQLite: %w", err)
 	}
 	projected, err := projectSQLiteRealm(realm)
@@ -102,7 +101,8 @@ func sqliteDesired(parser *hclparse.Parser, config options) (native.Schema, erro
 	if err := atlasdriver.Exclude(projected, config.exclude); err != nil {
 		return native.Schema{}, err
 	}
-	return sqlitedialect.SchemaFromAtlas(projected)
+	desired, err := sqlitedialect.SchemaFromAtlas(projected)
+	return atlasdriver.WithPartial(desired, loaded.Partial), err
 }
 
 // refuseSQLiteMemberExclusions allows whole tables only: SQLite rebuilds a table

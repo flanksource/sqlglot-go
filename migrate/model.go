@@ -40,8 +40,15 @@ type Sequence struct {
 	CacheSize int64  `json:"cacheSize,omitempty"`
 }
 
+// Table is a table declaration. A declaration is complete: the columns, indexes,
+// keys and checks it omits are dropped from a table that has them. Partial says
+// it names only some of the table's members, so the plan leaves every other
+// member of the live table alone and never creates the table. It is read from
+// the desired declaration; an inspected table never sets it, and the diff does
+// not compare it.
 type Table struct {
 	Name        Name         `json:"name"`
+	Partial     bool         `json:"partial,omitempty"`
 	Columns     []Column     `json:"columns"`
 	Indexes     []Index      `json:"indexes,omitempty"`
 	ForeignKeys []ForeignKey `json:"foreignKeys,omitempty"`

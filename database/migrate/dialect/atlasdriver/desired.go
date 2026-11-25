@@ -7,14 +7,24 @@ import (
 	"github.com/flanksource/sqlglot-go/migrate"
 )
 
+// DesiredHCLFile names declared HCL given as text in the errors that read it.
+const DesiredHCLFile = "desired.hcl"
+
 // SchemaFromHCL turns declared Atlas HCL into the schema the engine plans
-// toward: canonical Native plus the projection of every table and enum type.
+// toward: canonical Native plus the projection of every table and enum type. A
+// table's `partial = true` is read from the HCL before the Atlas evaluator sees
+// it and kept on the projection (see partialAttr).
 func (d *Dialect) SchemaFromHCL(hcl string) (migrate.Schema, error) {
-	s, err := d.decode(hcl)
+	source, partial, err := SplitPartial(DesiredHCLFile, hcl)
+	if err != nil {
+		return migrate.Schema{}, fmt.Errorf("%s: %w", d.Name(), err)
+	}
+	s, err := d.decode(source)
 	if err != nil {
 		return migrate.Schema{}, err
 	}
-	return d.SchemaFromAtlas(s)
+	desired, err := d.SchemaFromAtlas(s)
+	return WithPartial(desired, partial), err
 }
 
 // SchemaFromAtlas is SchemaFromHCL for a schema the caller already evaluated

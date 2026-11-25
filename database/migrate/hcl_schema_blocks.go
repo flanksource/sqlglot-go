@@ -43,6 +43,32 @@ func repeatedSchemaBlocks(files []parsedHCLFile) (map[*hclsyntax.Block]bool, err
 	return repeated, nil
 }
 
+// refuseDuplicateTables fails when one table is declared twice, in two files or
+// in one, naming both places: a declaration is the whole truth about its table,
+// so two of them (one possibly partial) have no meaning. A table is named by its
+// schema and name; files must be in evaluation order.
+func refuseDuplicateTables(files []parsedHCLFile) error {
+	first := map[string]string{}
+	for _, file := range files {
+		for _, block := range file.body.Blocks {
+			if block.Type != "table" || len(block.Labels) == 0 {
+				continue
+			}
+			name := block.Labels[len(block.Labels)-1]
+			schemaName := blockSchema(block, "")
+			if len(block.Labels) > 1 {
+				schemaName = block.Labels[0]
+			}
+			key, here := schemaName+"."+name, fmt.Sprintf("%s:%d", file.name, block.Range().Start.Line)
+			if earlier, seen := first[key]; seen {
+				return fmt.Errorf("table %q is declared twice, in %s and %s: declare it once", key, earlier, here)
+			}
+			first[key] = here
+		}
+	}
+	return nil
+}
+
 // evaluableSource is the file with what the schema evaluator must not see
 // blanked out, keeping every line and offset: the role and permission blocks
 // (decoded separately) and the repeated schema blocks.

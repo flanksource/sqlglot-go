@@ -42,8 +42,9 @@ permission {
   grantable  = true
 }
 `)}}
-	parser, securitySpec, err := loadHCL(filesystem, "migrations", nil)
+	loaded, err := loadHCL(hclSource{FS: filesystem, Dir: "migrations"})
 	require.NoError(t, err)
+	parser, securitySpec := loaded.Parser, loaded.Security
 	require.Len(t, securitySpec.Roles, 2)
 	assert.Equal(t, []string{"base"}, securitySpec.Roles[1].MemberOf)
 	require.Len(t, securitySpec.Permissions, 3)
@@ -79,8 +80,9 @@ permission {
 		"role_comment": cty.StringVal("from input"),
 		"can_grant":    cty.True,
 	}
-	parser, securitySpec, err := loadHCL(filesystem, ".", input)
+	loaded, err := loadHCL(hclSource{FS: filesystem, Dir: ".", Input: input})
 	require.NoError(t, err)
+	parser, securitySpec := loaded.Parser, loaded.Security
 	assert.Equal(t, "from input", securitySpec.Roles[0].Comment)
 	assert.True(t, securitySpec.Permissions[0].Grantable)
 	realm := &schema.Realm{}
@@ -97,7 +99,7 @@ permission {
   privileges = [SELECT]
 }
 `)}}
-	_, _, err := loadHCL(filesystem, ".", nil)
+	_, err := loadHCL(hclSource{FS: filesystem, Dir: "."})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported permission target kind")
 }

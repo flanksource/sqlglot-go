@@ -65,6 +65,12 @@ type (
 	QuotedIdentifierOff struct {
 		schema.Attr
 	}
+
+	// Partial marks a declared table that names only some of its members (`partial = true`).
+	// The differ never compares it.
+	Partial struct {
+		schema.Attr
+	}
 )
 
 func fillFactorOf(attrs []schema.Attr) int {
