@@ -172,4 +172,26 @@ table "items" {
 		Expect(errors.As(err, &pre)).To(BeTrue(), "got %v", err)
 		Expect(pre.Message).To(ContainSubstring("duplicate"))
 	})
+
+	It("adds a unique index over a column the same plan adds without checking rows for a column they lack", func(ctx SpecContext) {
+		mustExec(db, "CREATE TABLE items (id integer NOT NULL, label text NOT NULL)", "INSERT INTO items VALUES (1, 'same'), (2, 'same')")
+		desired := `schema "main" {}
+table "items" {
+  schema = schema.main
+  column "id" { type = integer }
+  column "label" { type = text }
+  column "digest" {
+    type = text
+    null = true
+  }
+  index "items_label_digest_key" {
+    unique = true
+    columns = [column.label, column.digest]
+  }
+}`
+		a := mustPlan(ctx, db, completeScope(), desired)
+		Expect(mustApply(ctx, db, a, engine.Acknowledgements(a)...).Outcome).To(Equal(engine.Applied))
+		Expect(columnNames(db, "items")).To(Equal([]string{"id", "label", "digest"}))
+		Expect(mustPlan(ctx, db, completeScope(), desired).Changes).To(BeEmpty())
+	})
 })
