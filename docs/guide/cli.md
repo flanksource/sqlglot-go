@@ -157,6 +157,19 @@ A PostgreSQL script bundle, or a PostgreSQL bundle with `role` or `permission` d
 
 On SQL Server, use SQL Server-shaped HCL with `schema "dbo" {}`. For routines, pass `--routines routines` to treat that bundle subdirectory as declarations. Each file must be named after the routine and contain one `CREATE [OR ALTER] PROCEDURE` or `FUNCTION` batch, optionally followed by `GO`. The planner compares parsed definitions with the live routines. Script files outside that directory accept `GO` batch separators. SQLCMD directives and `$(...)` variables are rejected.
 
+### Lint SQL scripts
+
+sqlglot has no lint command. Use [`uir lint`](https://github.com/flanksource/uir/blob/main/docs/lint.md), which parses each script with sqlglot and reports findings at their source location. For the example above, save this `.uir.yaml` next to `bundle/`.
+
+```yaml
+version: 1
+sources:
+  - match: bundle/**/*.sql
+    dialect: postgres
+```
+
+Run `uir lint` from that directory. A statement sqlglot cannot parse is a `sql-parse` error, and error findings make the command exit nonzero. `dialect` accepts `tsql`, `postgres`, or `sqlite`. For SQL Server scripts, set `lint.compatibility_level` to report features that need a higher level as `sql-compatibility-level` errors. For example, `GENERATE_SERIES` needs level 160. Add `lint.rules` for project checks. Run `gavel lint uir` instead for Gavel baselines, snapshots, and the results UI.
+
 ### Plan and apply SQL Server scripts
 
 A SQL Server bundle with scripts plans in one pass: the pre scripts, the schema statements that reconcile the declared tables and routines, then the post scripts. sqlglot derives what each script reads, writes and calls from its SQL, so a script reaching an object an earlier selected script (or the schema step) writes is re-run too. The summary looks like this.
