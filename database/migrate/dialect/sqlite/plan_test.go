@@ -17,6 +17,14 @@ table "items" {
   column "label" { type = text }
 }`
 
+const partialItemsHCL = `schema "main" {}
+table "items" {
+  schema  = schema.main
+  partial = true
+  column "id" { type = integer }
+  column "label" { type = text }
+}`
+
 var _ = Describe("SQLite plans through the engine", func() {
 	var db *sql.DB
 	BeforeEach(func() { db = openDB("") })
@@ -72,18 +80,34 @@ var _ = Describe("SQLite plans through the engine", func() {
 		Expect(mustPlan(ctx, db, completeScope(), itemsHCL).Changes).To(BeEmpty())
 	})
 
-	It("keeps an undeclared column and table untouched in declared scope", func(ctx SpecContext) {
+	It("keeps an undeclared column and table untouched in declared scope when the table is declared partial", func(ctx SpecContext) {
 		mustExec(db,
 			"CREATE TABLE items (id integer NOT NULL, label text NOT NULL, omitted text)", "INSERT INTO items VALUES (1, 'kept', 'dba value')",
 			"CREATE TABLE scratch (value text)", "INSERT INTO scratch VALUES ('dba table')")
-		a := mustPlan(ctx, db, declaredScope("items"), itemsHCL)
+		a := mustPlan(ctx, db, declaredScope("items"), partialItemsHCL)
 		Expect(a.Changes).To(BeEmpty())
-		Expect(a.Preserved).To(HaveLen(1))
+		Expect(changeIDs(engine.Artifact{Changes: a.Preserved})).To(Equal([]string{changeID("drop", "column", "items", "omitted")}))
 		Expect(mustApply(ctx, db, a).Outcome).To(Equal(engine.AlreadyApplied))
 		var omitted, scratch string
 		Expect(db.QueryRow("SELECT omitted FROM items").Scan(&omitted)).To(Succeed())
 		Expect(db.QueryRow("SELECT value FROM scratch").Scan(&scratch)).To(Succeed())
 		Expect([]string{omitted, scratch}).To(Equal([]string{"dba value", "dba table"}))
+	})
+
+	It("drops an undeclared column of a complete declaration in declared scope, and still leaves an undeclared table alone", func(ctx SpecContext) {
+		mustExec(db,
+			"CREATE TABLE items (id integer NOT NULL, label text NOT NULL, omitted text)", "INSERT INTO items VALUES (1, 'kept', 'dba value')",
+			"CREATE TABLE scratch (value text)", "INSERT INTO scratch VALUES ('dba table')")
+		a := mustPlan(ctx, db, declaredScope("items"), itemsHCL)
+		drop := changeID("drop", "column", "items", "omitted")
+		Expect(changeIDs(a)).To(Equal([]string{drop}))
+		Expect(a.Preserved).To(BeEmpty())
+		Expect(engine.Acknowledgements(a)).To(Equal([]string{drop}))
+		mustApply(ctx, db, a, drop)
+		Expect(columnNames(db, "items")).To(Equal([]string{"id", "label"}))
+		var scratch string
+		Expect(db.QueryRow("SELECT value FROM scratch").Scan(&scratch)).To(Succeed())
+		Expect(scratch).To(Equal("dba table"))
 	})
 
 	It("refuses an artifact once a declared table changed after the preview and changes nothing", func(ctx SpecContext) {

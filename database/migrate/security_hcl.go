@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/flanksource/sqlglot-go/database/migrate/dialect/atlasdriver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -47,8 +48,66 @@ type parsedHCLFile struct {
 	body *hclsyntax.Body
 }
 
-func loadHCL(schemaFS fs.FS, dir string, input map[string]cty.Value) (*hclparse.Parser, securitySpec, error) {
+// hclSource is where a bundle's HCL is read from and how its target evaluates it.
+type hclSource struct {
+	FS    fs.FS
+	Dir   string
+	Input map[string]cty.Value
+	// PartialInSource keeps the `partial` table attribute in the evaluated source
+	// for a target whose own evaluator reads it (SQL Server). The Atlas
+	// evaluators of PostgreSQL and SQLite ignore it, so it is read here and left out.
+	PartialInSource bool
+}
+
+// loadedHCL is a bundle's HCL, read and checked before the database is touched.
+type loadedHCL struct {
+	// Parser holds the files the schema evaluator reads.
+	Parser   *hclparse.Parser
+	Security securitySpec
+	// Partial names the tables declared `partial = true`.
+	Partial map[string]bool
+}
+
+func loadHCL(src hclSource) (loadedHCL, error) {
+	files, err := readHCLFiles(src)
+	if err != nil {
+		return loadedHCL{}, err
+	}
+	ctx := securityEvalContext(files, src.Input)
+	security, err := decodeSecurity(files, ctx)
+	if err != nil {
+		return loadedHCL{}, err
+	}
+	if err := refuseDuplicateTables(files); err != nil {
+		return loadedHCL{}, err
+	}
+	repeated, err := repeatedSchemaBlocks(files)
+	if err != nil {
+		return loadedHCL{}, err
+	}
+	out := loadedHCL{Parser: hclparse.NewParser(), Security: security, Partial: map[string]bool{}}
+	for _, file := range files {
+		partial, err := atlasdriver.ReadPartial(file.name, file.body, ctx)
+		if err != nil {
+			return loadedHCL{}, err
+		}
+		for name := range atlasdriver.PartialNames(partial) {
+			out.Partial[name] = true
+		}
+		source := evaluableSource(file, repeated)
+		if !src.PartialInSource {
+			source = atlasdriver.BlankPartial(source, partial)
+		}
+		if _, diagnostics := out.Parser.ParseHCL(source, file.name); diagnostics.HasErrors() {
+			return loadedHCL{}, diagnostics
+		}
+	}
+	return out, nil
+}
+
+func readHCLFiles(src hclSource) ([]parsedHCLFile, error) {
 	var files []parsedHCLFile
+	schemaFS, dir := src.FS, src.Dir
 	err := fs.WalkDir(schemaFS, dir, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -68,30 +127,13 @@ func loadHCL(schemaFS fs.FS, dir string, input map[string]cty.Value) (*hclparse.
 		return nil
 	})
 	if err != nil {
-		return nil, securitySpec{}, fmt.Errorf("load HCL schemas: %w", err)
+		return nil, fmt.Errorf("load HCL schemas: %w", err)
 	}
 	if len(files) == 0 {
-		return nil, securitySpec{}, fmt.Errorf("no HCL schema files found in %q", dir)
+		return nil, fmt.Errorf("no HCL schema files found in %q", dir)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
-
-	ctx := securityEvalContext(files, input)
-	security, err := decodeSecurity(files, ctx)
-	if err != nil {
-		return nil, securitySpec{}, err
-	}
-
-	repeated, err := repeatedSchemaBlocks(files)
-	if err != nil {
-		return nil, securitySpec{}, err
-	}
-	parser := hclparse.NewParser()
-	for _, file := range files {
-		if _, diagnostics := parser.ParseHCL(evaluableSource(file, repeated), file.name); diagnostics.HasErrors() {
-			return nil, securitySpec{}, diagnostics
-		}
-	}
-	return parser, security, nil
+	return files, nil
 }
 
 func securityEvalContext(files []parsedHCLFile, input map[string]cty.Value) *hcl.EvalContext {

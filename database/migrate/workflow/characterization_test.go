@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect"
 	"github.com/flanksource/sqlglot-go/migrate/engine"
@@ -108,11 +109,12 @@ var _ = Describe("SQLite workflow characterization", func() {
 		Expect(planCharacterized(ctx, db).Changes).To(BeEmpty())
 	})
 
-	It("keeps an undeclared column, plans nothing for it and leaves the table untouched, in declared scope", func(ctx SpecContext) {
+	It("keeps an undeclared column, plans nothing for it and leaves the table untouched, in declared scope, when the table is declared partial", func(ctx SpecContext) {
 		_, err := db.Exec("CREATE TABLE items (id integer NOT NULL, label text NOT NULL, omitted text); INSERT INTO items VALUES (1, 'kept', 'dba value')")
 		Expect(err).NotTo(HaveOccurred())
-		desired, err := dialect.DesiredFromHCL("sqlite", characterizedHCL)
+		desired, err := dialect.DesiredFromHCL("sqlite", strings.Replace(characterizedHCL, "schema = schema.main\n", "schema = schema.main\n  partial = true\n", 1))
 		Expect(err).NotTo(HaveOccurred())
+		Expect(desired.Tables[0].Partial).To(BeTrue())
 		artifact, err := engine.PlanLive(ctx, db, engine.PlanLiveRequest{Dialect: "sqlite", Scope: engine.Scope{Mode: engine.ScopeDeclared, Schemas: []string{"main"}}, Desired: desired})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(artifact.Changes).To(BeEmpty())

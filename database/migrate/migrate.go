@@ -33,6 +33,7 @@ type options struct {
 	db            *sql.DB
 	scriptPolicy  *ScriptPolicy
 	scriptSources map[string]scripts.Source
+	reviewedPlan  bool
 }
 
 // Option configures an HCL migration.
@@ -72,12 +73,22 @@ func WithExclude(patterns ...string) Option {
 
 // WithDrops makes the bundle the complete description of its schema: the plan
 // is planned in the engine's complete scope, so anything the HCL does not
-// declare (tables, types, columns, indexes, keys, checks) is dropped. Without
-// it the scope is declared: only what the HCL names is managed, and nothing
-// undeclared is ever dropped, so a partial bundle cannot delete objects owned by
-// consumers. The bundle's own metadata tables are never dropped.
+// declare (tables, types, columns, indexes, keys, checks) is dropped, and every
+// drop it plans runs. Without it the scope is declared: only what the HCL names
+// is managed, so an undeclared table or type is never dropped, and the columns
+// a declared table lacks stay (they are reported, each time, as a warning). A
+// table declared `partial = true` keeps every member it does not name, with or
+// without WithDrops. The bundle's own metadata tables are never dropped.
 func WithDrops() Option {
 	return func(o *options) { o.allowDrops = true }
+}
+
+// WithReviewedPlan plans every change the scope allows, column drops included,
+// for a reviewer to select and acknowledge. Without it a plan is what an
+// unreviewed Apply runs, which leaves out the drop of a column of a declared
+// table (unless WithDrops).
+func WithReviewedPlan() Option {
+	return func(o *options) { o.reviewedPlan = true }
 }
 
 // WithRebuilds retains source compatibility. Supported SQLite rebuilds are now automatic.
@@ -103,17 +114,21 @@ func WithDB(db *sql.DB) Option {
 // Apply is the unreviewed path: it plans the schema against the live database
 // with the shared planner (engine.PlanLive) and applies the plan in the same
 // call, acknowledging every destructive change of its own plan
-// (engine.Acknowledgements). Nothing but the scope bounds what it may destroy:
-// declared by default, where only the objects the HCL names are managed and
-// nothing undeclared is dropped, and complete with WithDrops. Use the reviewed
-// workflow when a person must approve the changes first.
+// (engine.Acknowledgements). A table declaration is complete unless it says
+// `partial = true`, so the members it omits are dropped: its indexes, keys and
+// checks run, but the drop of a column does not, unless WithDrops. Each such
+// column is reported as a warning every time, naming the three ways to settle
+// it (declare it, mark the table partial, or WithDrops). The scope bounds the
+// rest: declared by default, where an undeclared table or type is never
+// dropped, and complete with WithDrops. Use the reviewed workflow when a person
+// must approve the changes first.
 //
 // PostgreSQL supports the complete HCL, SQL, security, and destructive-change
 // lifecycle; the views that depend on a retyped column are dropped and
 // re-created around the change from their live definitions. SQLite projects
 // portable PostgreSQL-shaped HCL to tables, columns, and indexes, rebuilding
-// tables when needed and keeping undeclared columns and tables unless
-// WithDrops is enabled.
+// tables when needed; undeclared tables are kept and undeclared columns are
+// reported, not dropped, unless WithDrops is enabled.
 // SQL Server (sqlserver:// URLs, ADO and odbc: strings) reconciles SQL Server HCL tables and the
 // stored procedures and functions declared with WithRoutines, inspecting only
 // the objects the bundle names; it refuses SQL scripts, security blocks,

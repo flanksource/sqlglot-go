@@ -210,12 +210,29 @@ var _ = Describe("exporting SQL Server HCL", func() {
 		})
 	})
 
-	It("declares only the named columns of a table, with no keys, indexes or checks", func() {
+	It("declares only the named columns of a table, partial, with no keys, indexes or checks", func() {
 		files := export(exportedSchema(), native.HCLOptions{Columns: map[string][]string{"orders": {"status", "qty"}}})
-		partial := evaluate(files[0].Content).Tables[1]
+		Expect(strings.Count(files[0].Content, "partial = true")).To(Equal(1), "only the table that is declared in part carries the attribute")
+		evaluated := evaluate(files[0].Content)
+		partial := evaluated.Tables[1]
+		Expect(partial.Partial).To(BeTrue())
+		Expect(evaluated.Tables[0].Partial).To(BeFalse())
 		Expect(partial.Columns).To(HaveLen(2))
 		Expect([]any{partial.Indexes, partial.ForeignKeys, partial.Checks}).To(Equal([]any{[]migrate.Index(nil), []migrate.ForeignKey(nil), []migrate.Check(nil)}))
 		Expect(partial.Columns[0].Default).To(Equal(&migrate.Default{Name: "DF_orders_status", Expression: "(N'new')"}))
+	})
+
+	It("never writes the attribute for a full export, and the partial export it makes plans no change to the table it was read from", func() {
+		Expect(export(exportedSchema(), exportOptions)[0].Content).NotTo(ContainSubstring("partial"))
+
+		original := exportedSchema()
+		declared := evaluate(export(original, native.HCLOptions{Columns: map[string][]string{"orders": {"status", "qty"}}})[0].Content)
+		artifact := planBetween(original, declared)
+		Expect(artifact.Changes).To(BeEmpty(), "everything the declaration leaves out is preserved, not dropped")
+		Expect(artifact.Preserved).NotTo(BeEmpty())
+		for _, c := range artifact.Preserved {
+			Expect(c.Object).To(Equal(orders))
+		}
 	})
 
 	DescribeTable("the evaluator refuses the attributes it reads when they contradict the declaration",

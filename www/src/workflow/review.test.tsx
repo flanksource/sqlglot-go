@@ -69,9 +69,9 @@ describe("reviewing a schema plan", () => {
     expect(within(second).queryByRole("list", { name: "Checks that run before any change" })).toBeNull();
   });
 
-  it("shows the drops the declared scope keeps and the objects the planner refuses to touch, with the reason", () => {
+  it("shows the drops the plan leaves out, each with its rule as a hover title, and the objects the planner refuses to touch, with the reason", () => {
     review(reviewedPlan);
-    const scope = screen.getByRole("region", { name: "Kept by the declared scope" });
+    const scope = screen.getByRole("region", { name: "Drops the plan leaves out" });
     expect(texts(within(scope).getByRole("list"))).toEqual(["drop table dbo.legacy_audit"]);
     const refusals = screen.getByRole("region", { name: "Objects the planner will not touch" });
     expect(texts(within(refusals).getByRole("list"))).toEqual([`dbo.fn_orders_total: ${refusal.reason}`]);
@@ -85,7 +85,7 @@ describe("reviewing a schema plan", () => {
   it("omits the preserved and refusal sections when the plan has none", () => {
     const { preserved: _preserved, refusals: _refusals, ...rest } = reviewedPlan;
     review(rest);
-    expect(screen.queryByRole("region", { name: "Kept by the declared scope" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Drops the plan leaves out" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Objects the planner will not touch" })).toBeNull();
   });
 

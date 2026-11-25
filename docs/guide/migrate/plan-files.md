@@ -16,7 +16,7 @@ description: What a reviewed schema plan holds, how its scope decides drops, wha
 | `dialect`, `schema` | What the plan is for. `schema` lists every schema of the scope. |
 | `scope` | `complete` or `declared`, the schemas and, for `declared`, the managed objects. |
 | `changes` | The planned changes. Each is `id`, `action`, `kind`, `object`, `member`, `destructive`, `reason` and `requires`. A forced rebuild is listed under the change that forced it, in `rebuilds`. |
-| `preserved` | The drops a `declared` scope leaves alone. Nothing here runs. |
+| `preserved` | The drops the plan leaves out: those of a table declared `partial = true`, and, in a `declared` scope, those of an object nothing declares. Each says which rule applied. Nothing here runs. |
 | `units` | The transactions of the plan: `id`, the `changes` and `objects` it covers, whether it is `transactional`, its `preconditions` and the IDs of its `steps`. |
 | `steps` | Every statement in execution order: `id`, `sql`, `destructive`, the `change` and `unit` it belongs to, its `phase` (`drop`, `alter` or `create`) and `nonTransactional` when it cannot share a transaction. |
 | `acks` | The change IDs `apply` requires acknowledged. |
@@ -26,7 +26,9 @@ description: What a reviewed schema plan holds, how its scope decides drops, wha
 
 ## Scope
 
-A `complete` scope manages every object of the schema. Whatever the desired state omits is dropped, and each drop is a destructive change. A `declared` scope manages only the objects the desired state names: an undeclared column, index, key, check or table is never dropped, and the drops it would have needed appear under `preserved`.
+A `complete` scope manages every object of the schema. Whatever the desired state omits is dropped, and each drop is a destructive change. A `declared` scope manages only the objects the desired state names: an undeclared table or other object is never dropped, and its drop appears under `preserved`.
+
+Inside a table the desired state names, the rule is the same in both scopes. A table declaration is complete unless its `table` block says `partial = true`. A complete table loses every column, index, key, foreign key and check it omits, each as a destructive change you acknowledge. A partial table loses none: those drops appear under `preserved`, and a changed column still rebuilds the dependents it forces and re-creates the members the declaration does not name. A partial table that does not exist is an error, because a partial declaration cannot create a table. A column drop that would leave a view or an inbound foreign key without what it needs fails the plan, naming it, unless the same plan drops or declares it away.
 
 | Source | Scope |
 | --- | --- |

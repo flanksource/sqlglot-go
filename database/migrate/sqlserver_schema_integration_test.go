@@ -99,13 +99,14 @@ var _ = Describe("SQL Server schema step", Ordered, Label("integration"), func()
 		Expect(scalar(ctx, "SELECT CAST(compatibility_level AS varchar(10)) FROM sys.databases WHERE name = DB_NAME()")).To(Equal("100"))
 	})
 
-	It("retypes a varchar(36) column to uniqueidentifier under a primary key and a DBA index, keeping rows and both indexes", func(ctx SpecContext) {
+	It("retypes a varchar(36) column to uniqueidentifier under a primary key and a DBA index a partial declaration leaves, keeping rows and both indexes", func(ctx SpecContext) {
 		Expect(apply(ctx, retypeBundle("varchar(36)"))).To(Succeed())
 		exec(ctx,
 			"INSERT INTO dbo.acme_items (ref, label) VALUES ('0A1B2C3D-0000-4000-8000-00000000AAAA', N'first'), ('0A1B2C3D-0000-4000-8000-00000000BBBB', N'second')",
 			"CREATE NONCLUSTERED INDEX IX_dba_ref ON dbo.acme_items (ref)")
 
 		retyped := retypeBundle("uniqueidentifier")
+		retyped["db/schema.hcl"] = file(strings.Replace(string(retyped["db/schema.hcl"].Data), "  schema = schema.dbo\n", "  schema = schema.dbo\n  partial = true\n", 1))
 		changes := changeKinds(pendingSQLServerChanges(ctx, db, retyped))
 		Expect(changes).To(ContainElements("modify column dbo.acme_items.ref"))
 		Expect(changes).To(ContainElement(HavePrefix("rebuild ")))
@@ -242,7 +243,10 @@ table "acme_legacy" {
 		Expect(planned.Plan.Bundle.Schema).NotTo(BeNil())
 		Expect(*planned.Plan.Bundle.Schema).To(Equal(artifact))
 		Expect(planned.Plan.Version).To(Equal(backend.PlanFileVersion))
-		Expect(planned.Statements).To(Equal([]string{"ALTER TABLE [dbo].[acme_items] ADD [stamp] int NULL"}))
+		Expect(planned.Statements).To(Equal([]string{
+			"DROP INDEX [IX_dba_ref] ON [dbo].[acme_items]",
+			"ALTER TABLE [dbo].[acme_items] ADD [stamp] int NULL",
+		}), "the bundle declares acme_items completely, so the DBA index an earlier spec left is dropped")
 		Expect(planned.Plan.Pretty().String()).To(ContainSubstring("add column dbo.acme_items.stamp"))
 
 		encoded, err := json.Marshal(planned.Plan)

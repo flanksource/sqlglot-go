@@ -47,9 +47,9 @@ export function SchemaPlan({ plan }: { plan: ReviewedPlan }) {
       {plan.scope && <p className="text-sm text-muted-foreground">{scopeText(plan.scope)}</p>}
       {plan.changes.length > 0 && <PlannedChanges changes={plan.changes} />}
       {!!plan.preserved?.length && (
-        <section aria-label="Kept by the declared scope" className="space-y-1">
-          <h3 className="text-sm font-medium">Kept by the declared scope</h3>
-          <p className="text-xs text-muted-foreground">The target has these objects and the plan does not list them, so the declared scope leaves them in place instead of dropping them.</p>
+        <section aria-label="Drops the plan leaves out" className="space-y-1">
+          <h3 className="text-sm font-medium">Drops the plan leaves out</h3>
+          <p className="text-xs text-muted-foreground">The target has these objects and members and the plan does not drop them: either their table is declared partial, or no declaration covers them and the scope is declared. Hover an entry for the rule that applied.</p>
           <ul className="list-inside list-disc text-sm">
             {plan.preserved.map((change) => <li key={change.id} title={change.reason}>{describeChange(change)}</li>)}
           </ul>

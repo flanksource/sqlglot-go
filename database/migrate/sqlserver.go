@@ -24,40 +24,48 @@ const (
 // applySQLServer plans the bundle and applies that plan: its pre scripts, the
 // reconciliation of its HCL tables and WithRoutines routines against the dbo
 // schema, then its post scripts. It inspects only the objects the bundle
-// names, never drops an object the bundle does not declare, and runs no DDL
-// when the database already matches. Scripts are recorded in
+// names, never drops an object the bundle does not declare, never drops a
+// column (each column a declared table lacks is a logged warning), and runs no
+// DDL when the database already matches. Scripts are recorded in
 // dbo.sqlglot_migrations. The caller owns db.
 func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) error {
-	file, err := planSQLServer(ctx, db, schemaFS, cfg)
+	file, warnings, err := planSQLServer(ctx, db, schemaFS, cfg)
 	if err != nil {
 		return err
+	}
+	log := logger.GetLogger("migrate")
+	for _, warning := range warnings {
+		log.Warnf("%s", warning)
 	}
 	result, err := backend.Apply(ctx, db, file)
 	if err != nil {
 		return err
 	}
-	logger.GetLogger("migrate").V(1).Infof("SQL Server migration %s: %d scripts applied", result.Outcome, len(result.Applied))
+	log.V(1).Infof("SQL Server migration %s: %d scripts applied", result.Outcome, len(result.Applied))
 	return nil
 }
 
-// planSQLServer is the read-only plan file of the bundle on db.
-func planSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) (backend.PlanFile, error) {
+// planSQLServer is the read-only plan file of the bundle on db, and the
+// warnings for the undeclared columns its schema step leaves in place.
+func planSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) (backend.PlanFile, []string, error) {
 	bundle, err := loadSQLServerBundle(schemaFS, cfg)
 	if err != nil {
-		return backend.PlanFile{}, err
+		return backend.PlanFile{}, nil, err
 	}
 	options, err := scriptOptions(db, bundle, cfg)
 	if err != nil {
-		return backend.PlanFile{}, err
+		return backend.PlanFile{}, nil, err
 	}
+	var warnings []string
 	if bundle.declaresObjects() {
-		artifact, err := planSchemaArtifact(ctx, db, bundle)
+		selected, err := planSchemaStep(ctx, db, bundle, cfg)
 		if err != nil {
-			return backend.PlanFile{}, err
+			return backend.PlanFile{}, nil, err
 		}
-		options.Schema = &artifact
+		options.Schema, warnings = selected.Artifact, selected.Warnings
 	}
-	return backend.Plan(ctx, options)
+	file, err := backend.Plan(ctx, options)
+	return file, warnings, err
 }
 
 // sqlServerDesired builds the desired dbo schema from the HCL tables and the
@@ -122,15 +130,15 @@ func sqlServerTables(schemaFS fs.FS, cfg options) (*schema.Realm, error) {
 	if !found {
 		return schema.NewRealm(schema.New(sqlServerSchema)), nil
 	}
-	parser, security, err := loadHCL(schemaFS, cfg.dir, cfg.input)
+	loaded, err := loadHCL(hclSource{FS: schemaFS, Dir: cfg.dir, Input: cfg.input, PartialInSource: true})
 	if err != nil {
 		return nil, err
 	}
-	if len(security.Roles) > 0 || len(security.Permissions) > 0 {
+	if len(loaded.Security.Roles) > 0 || len(loaded.Security.Permissions) > 0 {
 		return nil, errors.New("SQL Server migrations do not support roles or permissions")
 	}
 	realm := &schema.Realm{}
-	if err := sqlserver.EvalHCL.Eval(parser, realm, cfg.input); err != nil {
+	if err := sqlserver.EvalHCL.Eval(loaded.Parser, realm, cfg.input); err != nil {
 		return nil, fmt.Errorf("evaluate HCL schemas for SQL Server: %w", err)
 	}
 	if len(realm.Schemas) != 1 || realm.Schemas[0].Name != sqlServerSchema {

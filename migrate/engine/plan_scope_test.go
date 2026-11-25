@@ -33,21 +33,69 @@ var _ = Describe("Plan scope and selection", func() {
 		)
 	}
 
-	It("preserves every kind of drop in declared scope and plans only the rest", func() {
+	// declare plans toward a complete declaration of the orders table, which the
+	// fake's scope manages and the database has, with the other tables of the
+	// diff left undeclared.
+	declare := func(req engine.PlanRequest) engine.PlanRequest {
+		req.Current = worldSchema(map[string]string{"orders": "int"})
+		req.Desired = worldSchema(map[string]string{"orders": "int"})
+		return req
+	}
+
+	It("plans the drop of every member a complete declaration omits in declared scope, and preserves the drop of an undeclared table", func() {
 		setup()
-		a, err := engine.Plan(f.request(engine.ScopeDeclared))
+		a, err := engine.Plan(declare(f.request(engine.ScopeDeclared)))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(changeIDs(a.Changes)).To(Equal([]string{changeID("add", "column", "orders", "note")}))
-		Expect(changeIDs(a.Preserved)).To(ConsistOf(dropped()))
-		Expect(engine.Acknowledgements(a)).To(BeEmpty())
+		Expect(changeIDs(a.Changes)).To(ConsistOf(
+			changeID("add", "column", "orders", "note"),
+			changeID("drop", "column", "orders", "legacy"),
+			changeID("drop", "index", "orders", "ix_legacy"),
+			changeID("drop", "foreign-key", "orders", "fk_legacy"),
+			changeID("drop", "check", "orders", "ck_legacy")))
+		Expect(changeIDs(a.Preserved)).To(Equal([]string{changeID("drop", "table", "retired", "")}))
+		Expect(engine.Acknowledgements(a)).To(ConsistOf(dropped()[:4]))
 	})
 
 	It("plans every drop in complete scope and requires each to be acknowledged", func() {
 		setup()
-		a, err := engine.Plan(f.request(engine.ScopeComplete))
+		a, err := engine.Plan(declare(f.request(engine.ScopeComplete)))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(a.Preserved).To(BeEmpty())
 		Expect(engine.Acknowledgements(a)).To(ConsistOf(dropped()))
+	})
+
+	DescribeTable("preserves the drop of every member of a partial table, in either scope, plans the rest, and replans byte for byte",
+		func(mode engine.ScopeMode, preserved []string) {
+			setup()
+			req := declare(f.request(mode))
+			req.Desired.Tables[0].Partial = true
+			a, err := engine.Plan(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changeIDs(a.Preserved)).To(ConsistOf(preserved))
+			Expect(changeIDs(a.Changes)).To(ContainElement(changeID("add", "column", "orders", "note")))
+			Expect(engine.Acknowledgements(a)).NotTo(ContainElement(ContainSubstring(`"orders"`)))
+			Expect(a.Desired.Tables[0].Partial).To(BeTrue())
+			Expect(engine.Validate(a)).To(Succeed())
+		},
+		// the declared scope also keeps the table nothing declares
+		Entry("declared", engine.ScopeDeclared, dropped()),
+		Entry("complete", engine.ScopeComplete, dropped()[:4]),
+	)
+
+	It("fails a plan that declares a partial table the target does not have", func() {
+		req := declare(f.request(engine.ScopeDeclared))
+		req.Current = migrate.Schema{}
+		req.Desired.Tables[0].Partial = true
+		_, err := engine.Plan(req)
+		Expect(err).To(MatchError("engine: table dbo.orders is declared partial and does not exist: a partial declaration cannot create a table"))
+	})
+
+	It("refuses to select the drop of a member of a partial table", func() {
+		setup()
+		req := declare(f.request(engine.ScopeComplete, changeID("drop", "index", "orders", "ix_legacy")))
+		req.Desired.Tables[0].Partial = true
+		_, err := engine.Plan(req)
+		Expect(err).To(MatchError(ContainSubstring("a drop of a member of table dbo.orders, which is declared partial")))
 	})
 
 	It("rejects an unknown scope mode", func() {
@@ -55,19 +103,30 @@ var _ = Describe("Plan scope and selection", func() {
 		Expect(err).To(MatchError(ContainSubstring(`scope mode must be "declared" or "complete"`)))
 	})
 
-	It("refuses to select a drop the declared scope preserves", func() {
+	It("refuses to select the drop of a table the declared scope preserves", func() {
 		setup()
-		_, err := engine.Plan(f.request(engine.ScopeDeclared, changeID("drop", "index", "orders", "ix_legacy")))
+		_, err := engine.Plan(declare(f.request(engine.ScopeDeclared, changeID("drop", "table", "retired", ""))))
 		Expect(err).To(MatchError(ContainSubstring("declared scope preserves")))
 	})
 
 	It("fails when a planned change requires a drop the declared scope preserves", func() {
 		f.changes = []migrate.Change{
+			change("modify", "table", "orders", "", changeID("drop", "table", "retired", "")),
+			change("drop", "table", "retired", ""),
+		}
+		_, err := engine.Plan(declare(f.request(engine.ScopeDeclared)))
+		Expect(err).To(MatchError(And(ContainSubstring("requires"), ContainSubstring("declared scope preserves"))))
+	})
+
+	It("fails when a planned change requires a drop a partial table preserves", func() {
+		f.changes = []migrate.Change{
 			change("modify", "column", "orders", "id", changeID("drop", "index", "orders", "ix_id")),
 			change("drop", "index", "orders", "ix_id"),
 		}
-		_, err := engine.Plan(f.request(engine.ScopeDeclared))
-		Expect(err).To(MatchError(And(ContainSubstring("requires"), ContainSubstring("declared scope preserves"))))
+		req := declare(f.request(engine.ScopeComplete))
+		req.Desired.Tables[0].Partial = true
+		_, err := engine.Plan(req)
+		Expect(err).To(MatchError(And(ContainSubstring("requires"), ContainSubstring("which is declared partial"))))
 	})
 
 	It("plans every change when the selection is empty", func() {
@@ -94,6 +153,22 @@ var _ = Describe("Plan scope and selection", func() {
 		a, err := engine.Plan(f.request(engine.ScopeComplete, addIndex.ID, addColumn.ID))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(changeIDs(a.Changes)).To(ConsistOf(addColumn.ID, addIndex.ID))
+	})
+
+	It("plans no change at all when told to select none, and replans that artifact", func() {
+		setup()
+		req := declare(f.request(engine.ScopeComplete))
+		req.SelectNone = true
+		a, err := engine.Plan(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(a.Changes).To(BeEmpty())
+		Expect(a.Units).To(BeEmpty())
+		Expect(a.SelectNone).To(BeTrue())
+		Expect(engine.Validate(a)).To(Succeed())
+
+		req.Selection = []string{changeID("add", "column", "orders", "note")}
+		_, err = engine.Plan(req)
+		Expect(err).To(MatchError(ContainSubstring("exclude each other")))
 	})
 
 	It("plans only the selected changes", func() {

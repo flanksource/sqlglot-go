@@ -22,9 +22,12 @@ type Querier interface {
 type ScopeMode string
 
 const (
-	// ScopeDeclared manages only the named objects; nothing undeclared is dropped.
+	// ScopeDeclared manages only the named objects: an undeclared table or other
+	// object is never dropped. A declared table is complete unless it is marked
+	// partial, so its undeclared members are dropped.
 	ScopeDeclared ScopeMode = "declared"
-	// ScopeComplete manages every object of the schemas; drops are planned.
+	// ScopeComplete manages every object of the schemas; drops are planned,
+	// except for the members of a partial table.
 	ScopeComplete ScopeMode = "complete"
 )
 

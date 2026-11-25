@@ -167,11 +167,35 @@ var _ = Describe("SQLite table rebuilds through the engine", func() {
 		Expect(mustPlan(ctx, db, declaredScope("projects"), projectsOnly()).Units).To(BeEmpty())
 	})
 
-	It("keeps an undeclared column, index and table with their data through a declared-scope rebuild", func(ctx SpecContext) {
+	It("drops an undeclared column and index of a complete declaration through a declared-scope rebuild, keeping the rows and an undeclared table", func(ctx SpecContext) {
 		seed(ctx)
 		mustExec(db, `ALTER TABLE projects ADD COLUMN notes TEXT`, `UPDATE projects SET notes = 'dba note'`,
 			`CREATE INDEX projects_notes_idx ON projects (notes)`, `CREATE TABLE scratch (value TEXT)`, `INSERT INTO scratch VALUES ('dba table')`)
 		a := mustPlan(ctx, db, declaredScope("projects"), projectsOnly())
+		Expect(a.Preserved).To(BeEmpty())
+		Expect(changeIDs(a)).To(ConsistOf(
+			changeID("modify", "column", "projects", "payload"),
+			changeID("drop", "column", "projects", "notes"),
+			changeID("drop", "index", "projects", "projects_notes_idx")))
+		Expect(engine.Acknowledgements(a)).To(ConsistOf(changeID("drop", "column", "projects", "notes"), changeID("drop", "index", "projects", "projects_notes_idx")))
+
+		mustApply(ctx, db, a, engine.Acknowledgements(a)...)
+		var key, scratch string
+		Expect(db.QueryRow(`SELECT external_key FROM projects WHERE id = 'p1'`).Scan(&key)).To(Succeed())
+		Expect(db.QueryRow(`SELECT value FROM scratch`).Scan(&scratch)).To(Succeed())
+		Expect(columnNames(db, "projects")).To(Equal([]string{"id", "external_key", "payload"}))
+		Expect([]string{key, scratch}).To(Equal([]string{"kept", "dba table"}))
+		Expect(mustPlan(ctx, db, declaredScope("projects"), projectsOnly()).Units).To(BeEmpty())
+	})
+
+	It("keeps an undeclared column, index and table with their data through a declared-scope rebuild of a partial table", func(ctx SpecContext) {
+		seed(ctx)
+		mustExec(db, `ALTER TABLE projects ADD COLUMN notes TEXT`, `UPDATE projects SET notes = 'dba note'`,
+			`CREATE INDEX projects_notes_idx ON projects (notes)`, `CREATE TABLE scratch (value TEXT)`, `INSERT INTO scratch VALUES ('dba table')`)
+		partialProjects := func() string {
+			return strings.Replace(projectsOnly(), "  schema = schema.main\n", "  schema = schema.main\n  partial = true\n", 1)
+		}
+		a := mustPlan(ctx, db, declaredScope("projects"), partialProjects())
 		Expect(changeIDs(a)).To(Equal([]string{changeID("modify", "column", "projects", "payload")}))
 		preserved := []string{}
 		for _, c := range a.Preserved {
@@ -186,7 +210,7 @@ var _ = Describe("SQLite table rebuilds through the engine", func() {
 		Expect(db.QueryRow(`SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'projects_notes_idx'`).Scan(&indexed)).To(Succeed())
 		Expect(tableSQL(db, "projects")).To(ContainSubstring("'[]'"))
 		Expect([]string{note, scratch}).To(Equal([]string{"dba note", "dba table"}))
-		Expect(mustPlan(ctx, db, declaredScope("projects"), projectsOnly()).Units).To(BeEmpty())
+		Expect(mustPlan(ctx, db, declaredScope("projects"), partialProjects()).Units).To(BeEmpty())
 	})
 
 	It("keeps a column whose drop is left out of the selection in complete scope, and leaves that drop pending", func(ctx SpecContext) {

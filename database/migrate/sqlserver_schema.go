@@ -16,8 +16,10 @@ import (
 // tables and WithRoutines routines against the live dbo schema, as the engine
 // artifact Apply embeds in its plan file. It reads only the declared objects
 // and what depends on the columns a change forces, never drops an object the
-// bundle does not declare, and changes nothing. The bundle's scripts are not
-// loaded. The caller owns db.
+// bundle does not declare, and changes nothing. A table the bundle declares
+// without `partial = true` is complete, so the plan holds the drops of its
+// undeclared columns, indexes, keys and checks as destructive changes for a
+// reviewer to acknowledge. The bundle's scripts are not loaded. The caller owns db.
 func PlanSchema(ctx context.Context, db *sql.DB, schemaFS fs.FS, opts ...Option) (engine.Artifact, error) {
 	if db == nil {
 		return engine.Artifact{}, errors.New("database is nil")
@@ -26,12 +28,13 @@ func PlanSchema(ctx context.Context, db *sql.DB, schemaFS fs.FS, opts ...Option)
 	if err != nil {
 		return engine.Artifact{}, err
 	}
-	return planSchemaArtifact(ctx, db, sqlServerBundle{realm: realm})
+	return planSchemaArtifact(ctx, db, sqlServerBundle{realm: realm}, changeSelection{})
 }
 
 // planSchemaArtifact plans the bundle's declared tables and routines in one
-// declared-scope batch, so that ordering, forced rebuilds and units span them all.
-func planSchemaArtifact(ctx context.Context, db *sql.DB, bundle sqlServerBundle) (engine.Artifact, error) {
+// declared-scope batch, so that ordering, forced rebuilds and units span them
+// all; selection limits it to some of the changes.
+func planSchemaArtifact(ctx context.Context, db *sql.DB, bundle sqlServerBundle, selection changeSelection) (engine.Artifact, error) {
 	if !bundle.declaresObjects() {
 		return engine.Artifact{}, errors.New("SQL Server bundle declares no tables or routines to plan")
 	}
@@ -40,9 +43,24 @@ func planSchemaArtifact(ctx context.Context, db *sql.DB, bundle sqlServerBundle)
 		return engine.Artifact{}, err
 	}
 	return engine.PlanLive(ctx, db, engine.PlanLiveRequest{
-		Dialect: "sqlserver",
-		Scope:   engine.Scope{Mode: engine.ScopeDeclared, Schemas: []string{sqlServerSchema}, Objects: bundle.declaredNames()},
-		Desired: desired,
+		Dialect:    "sqlserver",
+		Scope:      engine.Scope{Mode: engine.ScopeDeclared, Schemas: []string{sqlServerSchema}, Objects: bundle.declaredNames()},
+		Desired:    desired,
+		Selection:  selection.IDs,
+		SelectNone: selection.None,
+	})
+}
+
+// planSchemaStep is the schema plan an unreviewed apply runs: the reviewed plan
+// without the drops of undeclared columns (SQL Server bundles cannot ask for
+// them with WithDrops), or the whole plan under WithReviewedPlan.
+func planSchemaStep(ctx context.Context, db *sql.DB, bundle sqlServerBundle, cfg options) (unreviewedSelection, error) {
+	full, err := planSchemaArtifact(ctx, db, bundle, changeSelection{})
+	if err != nil || cfg.reviewedPlan {
+		return unreviewedSelection{Artifact: &full}, err
+	}
+	return selectUnreviewed(full, false, func(selection changeSelection) (engine.Artifact, error) {
+		return planSchemaArtifact(ctx, db, bundle, selection)
 	})
 }
 

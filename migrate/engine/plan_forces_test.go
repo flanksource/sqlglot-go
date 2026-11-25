@@ -116,6 +116,51 @@ var _ = Describe("Forced rebuilds", func() {
 		Expect(a.Changes).To(HaveLen(1))
 	})
 
+	Describe("a dropped column", func() {
+		dropChange := change("drop", "column", "orders", "ref")
+		inbound := func() engine.Dependent {
+			dropped := col("orders", "ref")
+			dropped.Dropped = engine.DroppedColumn
+			return foreignKey("items", "fk_items_orders", "order_ref", "orders", "ref", dropped)
+		}
+
+		BeforeEach(func() {
+			dropped := col("orders", "ref")
+			dropped.Dropped = engine.DroppedColumn
+			f.changes = []migrate.Change{dropChange}
+			f.forcing = []engine.Forcing{{Change: dropChange.ID, Columns: []engine.ColumnRef{dropped}}}
+		})
+
+		It("refuses a foreign key of another table that nothing in the plan drops, naming the child", func() {
+			f.offline = []engine.Dependent{inbound()}
+			_, err := engine.Plan(f.request(engine.ScopeComplete))
+			Expect(err).To(MatchError(And(
+				ContainSubstring("foreign-key dbo.items.fk_items_orders"), ContainSubstring("dbo.orders.ref"), ContainSubstring(dropChange.ID),
+				ContainSubstring("cannot be re-created"))))
+		})
+
+		It("accepts that foreign key when the same plan drops it, and re-creates nothing", func() {
+			fkDrop := change("drop", "foreign-key", "items", "fk_items_orders")
+			f.changes = append(f.changes, fkDrop)
+			f.offline = []engine.Dependent{inbound()}
+			a, err := engine.Plan(f.request(engine.ScopeComplete))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changeIDs(a.Changes)).To(ConsistOf(dropChange.ID, fkDrop.ID))
+		})
+
+		It("is not asked about a dependent when the drop of its column is preserved", func() {
+			f.offline = []engine.Dependent{inbound()}
+			req := f.request(engine.ScopeComplete)
+			req.Current = worldSchema(map[string]string{"orders": "int"})
+			req.Desired = worldSchema(map[string]string{"orders": "int"})
+			req.Desired.Tables[0].Partial = true
+			a, err := engine.Plan(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(a.Changes).To(BeEmpty())
+			Expect(changeIDs(a.Preserved)).To(Equal([]string{dropChange.ID}))
+		})
+	})
+
 	It("acknowledges a rebuild through its destructive cause, never on its own", func() {
 		destructive := refChange
 		destructive.Destructive = true
