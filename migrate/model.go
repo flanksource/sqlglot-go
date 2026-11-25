@@ -10,6 +10,8 @@ type Schema struct {
 	Definitions []Definition `json:"definitions"`
 	Sequences   []Sequence   `json:"sequences,omitempty"`
 	TableTypes  []TableType  `json:"tableTypes,omitempty"`
+	// Native is a dialect's own lossless description of the schema (Atlas HCL) when the fields above cannot hold it; the fields are then a projection of the same objects.
+	Native string `json:"native,omitempty"`
 }
 
 // TableType is a CREATE TYPE ... AS TABLE user-defined table type. SQL Server
@@ -83,6 +85,17 @@ type Index struct {
 	Filter     string        `json:"filter,omitempty"`
 	// FillFactor is 1-99; 0 is the server default, which FILLFACTOR = 100 equals.
 	FillFactor int `json:"fillFactor,omitempty"`
+	// The options below are read from a live index so a rebuild re-creates it
+	// faithfully; the diff does not compare them.
+	PadIndex     bool `json:"padIndex,omitempty"`
+	IgnoreDupKey bool `json:"ignoreDupKey,omitempty"`
+	NoRowLocks   bool `json:"noRowLocks,omitempty"`
+	NoPageLocks  bool `json:"noPageLocks,omitempty"`
+	NoRecompute  bool `json:"noRecompute,omitempty"`
+	// Compression is ROW or PAGE; empty is none.
+	Compression string `json:"compression,omitempty"`
+	// Filegroup is set only when the index is not on the default filegroup.
+	Filegroup string `json:"filegroup,omitempty"`
 }
 type ForeignKey struct {
 	Name              string   `json:"name"`
@@ -91,10 +104,14 @@ type ForeignKey struct {
 	ReferencedColumns []string `json:"referencedColumns"`
 	OnDelete          string   `json:"onDelete,omitempty"`
 	OnUpdate          string   `json:"onUpdate,omitempty"`
+	// NotForReplication is read from a live key so a rebuild keeps it; the diff does not compare it.
+	NotForReplication bool `json:"notForReplication,omitempty"`
 }
 type Check struct {
 	Name       string `json:"name"`
 	Expression string `json:"expression"`
+	// NotForReplication is read from a live check so a rebuild keeps it; the diff does not compare it.
+	NotForReplication bool `json:"notForReplication,omitempty"`
 }
 type Definition struct {
 	Name     Name   `json:"name"`
@@ -119,12 +136,6 @@ type RuntimeDependency struct {
 	Name     string `json:"name"`
 }
 
-type Request struct {
-	Current Schema `json:"current"`
-	Desired Schema `json:"desired"`
-	// Selection limits the plan to these change IDs; empty plans every change.
-	Selection []string `json:"selection,omitempty"`
-}
 type Change struct {
 	ID          string `json:"id"`
 	Action      string `json:"action"`
@@ -137,15 +148,6 @@ type Change struct {
 	RuntimeDependencies []RuntimeDependency `json:"runtimeDependencies,omitempty"`
 	// Requires lists the change IDs that must be selected with this one.
 	Requires []string `json:"requires,omitempty"`
-}
-type Step struct {
-	Change Change `json:"change"`
-	SQL    string `json:"sql"`
-}
-type Plan struct {
-	Steps   []Step   `json:"steps"`
-	Changes []Change `json:"changes"`
-	// Warnings names each definition whose body is not understood. It is
-	// compared and created as written.
-	Warnings []string `json:"warnings,omitempty"`
+	// Cause is the ID of the change that forced this rebuild.
+	Cause string `json:"cause,omitempty"`
 }

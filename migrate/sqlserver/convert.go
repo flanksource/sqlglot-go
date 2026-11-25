@@ -12,6 +12,11 @@ import (
 	atlas "github.com/flanksource/sqlglot-go/migrate/atlas/sqlserver"
 )
 
+// realm converts a schema, which may be narrowed to some objects, to an Atlas
+// realm. A foreign key may reference a table the schema does not hold: the
+// reference becomes a stub that holds the referenced columns and is never part
+// of the realm, so the diff never reports it. A module's dependency outside the
+// schema is likewise left unbound.
 func realm(input migrate.Schema, namespaces []string, warn warnUnparsed) (*schema.Realm, error) {
 	if err := uniqueObjects(input); err != nil {
 		return nil, err
@@ -48,11 +53,12 @@ func realm(input migrate.Schema, namespaces []string, warn warnUnparsed) (*schem
 		}
 		s.AddTables(t)
 	}
+	stubs := &stubTables{byName: map[migrate.Name]*schema.Table{}}
 	for _, table := range input.Tables {
 		s, _ := r.Schema(table.Name.Schema)
 		t, _ := s.Table(table.Name.Name)
 		for _, fk := range table.ForeignKeys {
-			if err := foreignKey(r, t, fk); err != nil {
+			if err := foreignKey(r, t, fk, stubs); err != nil {
 				return nil, fmt.Errorf("sqlserver: table %s.%s: %w", s.Name, t.Name, err)
 			}
 		}
@@ -252,18 +258,11 @@ func index(t *schema.Table, input migrate.Index) error {
 	return nil
 }
 
-func foreignKey(r *schema.Realm, t *schema.Table, input migrate.ForeignKey) error {
+func foreignKey(r *schema.Realm, t *schema.Table, input migrate.ForeignKey, stubs *stubTables) error {
 	if _, ok := t.ForeignKey(input.Name); ok || input.Name == "" || len(input.Columns) == 0 || len(input.Columns) != len(input.ReferencedColumns) {
 		return fmt.Errorf("foreign key %q requires a unique name and matching columns", input.Name)
 	}
-	s, ok := r.Schema(input.References.Schema)
-	if !ok {
-		return fmt.Errorf("foreign key %s: missing referenced schema %s", input.Name, input.References.Schema)
-	}
-	ref, ok := s.Table(input.References.Name)
-	if !ok {
-		return fmt.Errorf("foreign key %s: missing referenced table %s", input.Name, input.References.Name)
-	}
+	ref := referencedTable(r, input, stubs)
 	f := schema.NewForeignKey(input.Name).SetTable(t).SetRefTable(ref)
 	for i, name := range input.Columns {
 		c, ok := t.Column(name)
@@ -271,6 +270,9 @@ func foreignKey(r *schema.Realm, t *schema.Table, input migrate.ForeignKey) erro
 			return fmt.Errorf("foreign key %s: missing column %s", input.Name, name)
 		}
 		rc, ok := ref.Column(input.ReferencedColumns[i])
+		if !ok && stubs.holds(ref) {
+			rc, ok = stubs.addColumn(ref, input.ReferencedColumns[i]), true
+		}
 		if !ok {
 			return fmt.Errorf("foreign key %s: missing referenced column %s", input.Name, input.ReferencedColumns[i])
 		}
