@@ -5,13 +5,9 @@ description: Use saved connections to compare databases, create a patch, resume 
 
 # Compare, review, and apply a migration
 
-This guide follows one complete migration: choose two saved connections, inspect the differences, create a patch, leave and resume the review, then apply it to the target. Start with [Add connections and inspect a database](./inspection) if you have not saved your connections yet. For migrations sourced from HCL, SQL scripts, snapshots or CSV, see [the migration CLI guide](./cli#migrate).
+This guide follows one complete migration: choose two saved connections, inspect the differences, create a patch, leave and resume the review, then apply it to the target. Start with [Add connections and inspect a database](./inspection) if you have not saved your connections yet. For file-based migrations, see the [migration guides](./migrate/index.md).
 
 The example uses `inventory-reference` and `inventory-target`. The reference's `items` table has a `notes` column that the target is missing. Both databases already contain two rows.
-
-![Inspect the database, plan SQL, review the artifact, then apply. Only apply changes the target database.](/images/migrations/reviewed-lifecycle.png)
-
-*Generated illustration of the workflow. Inspecting, comparing, and creating a patch do not apply changes to either database.*
 
 ## 1. Choose the saved connections
 
@@ -46,9 +42,7 @@ ALTER TABLE `items` ADD COLUMN `notes` text NULL
 
 Review the checked changes even if they were selected automatically. Leave changes you do not want unchecked. Destructive changes are identified in the review; they require explicit acknowledgement before apply.
 
-![Reference and target feed a comparison. Selected changes become a reviewed patch, which is applied only to the target.](/images/migrations/selected-changes.png)
-
-*Generated illustration. The selected changes become the patch; unselected changes stay out of it.*
+![Compare the reference and target, select changes, save the reviewed patch, and apply it to the target.](/images/migrations/selected-changes.png)
 
 ## 3. Create the patch
 

@@ -36,9 +36,11 @@ printf 'SELECT id FROM users' | sqlglot tokens --format json
 
 ## Database commands
 
-Use `sqlglot schema inspect` to read a catalog, export a migration snapshot (`--snapshot`) or write SQL Server tables as HCL (`--hcl`). See [Database inspection](./inspection).
+Use `sqlglot schema inspect` to read a catalog or export a migration snapshot. See [Set up database connections](./connections) for DSNs and saved connection files, and [Database inspection](./inspection) for a local walkthrough.
 
 ## Migrate
+
+The [migration guides](./migrate/index.md) include separate walkthroughs for [HCL schema migrations](./migrate/hcl), [SQL script migrations](./migrate/sql), and [CSV data migrations](./migrate/csv).
 
 Migrations work terraform-style. `sqlglot migrate plan` compares a desired schema or dataset with a target, writes a plan file (`--out`, `.sqlglot-go/plan.json` by default), prints a summary of what will change to stderr and the structured plan to stdout. `sqlglot migrate review PLAN` opens a plan file offline and prints the same summary. `sqlglot migrate apply PLAN` runs it: the file's own hash guards only its integrity, so there is no separate approval, and apply refuses the file with `plan is stale … run sqlglot migrate plan again`, running nothing, when the target changed since the plan. PostgreSQL, SQLite and CSV plans still take one `--ack` per destructive step.
 
@@ -172,7 +174,7 @@ Run `uir lint` from that directory. A statement sqlglot cannot parse is a `sql-p
 
 ### Plan and apply SQL Server scripts
 
-A SQL Server bundle with scripts plans in one pass: the pre scripts, the schema statements that reconcile the declared tables and routines, then the post scripts. sqlglot derives what each script reads, writes and calls from its SQL, so a script reaching an object an earlier selected script (or the schema step) writes is re-run too. The summary looks like this.
+A SQL Server bundle with scripts plans in one pass: the pre scripts, the schema statements that reconcile the declared tables and routines, then the post scripts. sqlglot derives what each script reads, writes and calls from its SQL. The summary looks like this.
 
 ```text
 Plan for sql01/inventory (scope dbo:default)
