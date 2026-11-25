@@ -255,7 +255,7 @@ func migrationInput(ctx context.Context, opts MigrationOptions, role pathRole) (
 func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workflow.RunResult, error) {
 	return withHistory(func(store *history.Store) (workflow.RunResult, error) {
 		return operation.Run(ctx, operation.Options{Run: opts.Run, Parent: opts.Parent, Kind: history.KindMigration, Target: opts.DSN, Name: "Migration " + mode, Store: store}, func(ctx context.Context, record *history.Record, t *task.Task) (result workflow.RunResult, returnErr error) {
-			plan := workflow.Options{Source: opts.Source, Project: opts.project, Labels: opts.Labels, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
+			plan := workflow.Options{Source: opts.Source, Project: opts.project, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
 			filters, err := migrationLayerFilters(opts)
 			if err != nil {
 				return workflow.RunResult{}, err
