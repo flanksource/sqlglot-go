@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import dashboardFixture from "../fixtures/connections-dashboard.json";
+import { failedAfterFirstUnit } from "../fixtures/plan";
 import { COMPARISON_RUN, PATCH_RUN, comparisonRecord, patchRecord, record, runSnapshots } from "../fixtures/records";
 import { failure, json, renderWithClient, stubFetch } from "../test-utils";
 import type { Route } from "../compare/route";
@@ -99,7 +100,7 @@ describe("History record view", () => {
   it("shows an inspection's metadata, object counts, HCL and the run log of its comparison", async () => {
     const hcl = 'table "customers" {\n  schema = schema.main\n}';
     stubFetch({
-      [`/api/v1/history/${encodeURIComponent(inspection.id)}`]: json({ ...inspection, payload: { dialect: "sqlite", schema: "main", hcl } }),
+      [`/api/v1/history/${encodeURIComponent(inspection.id)}`]: json({ ...inspection, payload: { dialect: "sqlite", schemas: ["main"], schema: { tables: [], definitions: [], native: hcl } } }),
       [`/api/v1/tasks/${COMPARISON_RUN}`]: json(runSnapshots(COMPARISON_RUN, "success")),
     });
     renderWithClient(<History route={view(inspection.id)} navigate={vi.fn()} />);
@@ -111,20 +112,26 @@ describe("History record view", () => {
     expect(await screen.findByText("Plan all differences")).toBeTruthy();
   });
 
-  it("shows a SQL Server inspection's catalogue as JSON", async () => {
-    const catalogue = { tables: [{ name: "customers" }], definitions: [], sequences: [], tableTypes: [] };
+  it("shows a SQL Server snapshot, which has no HCL, as JSON with the objects the inspector refused", async () => {
+    const snapshot = {
+      dialect: "sqlserver",
+      schemas: ["dbo"],
+      schema: { tables: [{ name: { schema: "dbo", name: "customers" }, columns: [] }], definitions: [], sequences: [], tableTypes: [] },
+      refusals: [{ object: { schema: "dbo", name: "fn_orders_total" }, reason: "a CLR function cannot be read faithfully" }],
+    };
     stubFetch({
-      "/api/v1/history/insp-mssql": json(record({ id: "insp-mssql", kind: "inspection", dialect: "tsql", payload: catalogue })),
+      "/api/v1/history/insp-mssql": json(record({ id: "insp-mssql", kind: "inspection", dialect: "sqlserver", payload: snapshot })),
       "/api/v1/tasks/insp-mssql": failure("run not found", 404),
     });
     renderWithClient(<History route={view("insp-mssql")} navigate={vi.fn()} />);
     expect(await screen.findByText("Inspected schema")).toBeTruthy();
     expect(document.body.textContent).toContain("tableTypes");
+    expect(screen.getByText("dbo.fn_orders_total: a CLR function cannot be read faithfully")).toBeTruthy();
   });
 
-  it("shows a failed migration's error and the partial result it kept", async () => {
+  it("shows a failed migration's error, its acknowledgements and the per-unit outcomes of the partial result it kept", async () => {
     stubFetch({
-      "/api/v1/history/mig-1": json({ ...failedMigration, payload: { mode: "apply", hash: "sha256:abc", acks: ["drop column"], result: { applied: 6, failedAt: "0007" } } }),
+      "/api/v1/history/mig-1": json({ ...failedMigration, payload: { mode: "apply", hash: "sha256:abc", acks: ["drop column"], result: failedAfterFirstUnit } }),
       "/api/v1/tasks/mig-1": failure("run not found", 404),
     });
     renderWithClient(<History route={view("mig-1")} navigate={vi.fn()} />);
@@ -133,7 +140,10 @@ describe("History record view", () => {
     expect(screen.getByText("sha256:abc")).toBeTruthy();
     expect(screen.getByText("drop column")).toBeTruthy();
     expect(await screen.findByText("Result")).toBeTruthy();
-    expect(document.body.textContent).toContain('failedAt: "0007"');
+    expect(within(screen.getByRole("list", { name: "Unit outcomes" })).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "unit-retype-orders applied 7 statements",
+      "unit-index-events failed 0 statements",
+    ]);
   });
 
   it("says a record that is not in the history was not found and goes back to the list", async () => {

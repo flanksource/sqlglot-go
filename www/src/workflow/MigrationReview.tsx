@@ -7,12 +7,13 @@ import {
   Panel,
   useConfirm,
 } from "@flanksource/clicky-ui/components";
-import { Badge, Callout, CodeBlock } from "@flanksource/clicky-ui/data";
+import { Callout } from "@flanksource/clicky-ui/data";
 import { PLAN_FILE } from "../compare/model";
 import type { Navigate, Route } from "../compare/route";
 import { downloadText } from "../download";
 import { MigrationScripts } from "./MigrationScripts";
 import { PROJECT_TARGET_PREFIX } from "./projectUpload";
+import { SchemaPlan } from "./SchemaPlan";
 import type { ReviewedPlan, ApplyInput } from "./types";
 
 function targetLabel(target: string): string {
@@ -145,8 +146,8 @@ export function MigrationReview({
         </Callout>
       )}
       {plan.scriptPlan ? (
-        <MigrationScripts plan={plan} route={route} navigate={navigate} schema={<SchemaSteps steps={plan.steps} />} />
-      ) : <SchemaSteps steps={plan.steps} />}
+        <MigrationScripts plan={plan} route={route} navigate={navigate} schema={<SchemaPlan plan={plan} />} />
+      ) : <SchemaPlan plan={plan} />}
       <section
         aria-label="Application approval"
         className="space-y-3 rounded-lg border border-border p-4"
@@ -219,24 +220,8 @@ function migrationCounts(plan: ReviewedPlan) {
   return counts;
 }
 
-function downloadablePlan(plan: ReviewedPlan): unknown {
-  if (!plan.sources?.length) return plan.artifact;
-  if (plan.scriptPlan) return { scriptPlan: plan.artifact, sources: plan.sources };
-  if (plan.artifact && typeof plan.artifact === "object" && "sqlServerPlan" in plan.artifact) return plan.artifact;
-  return { artifact: plan.artifact, sources: plan.sources };
-}
-
-function SchemaSteps({ steps }: { steps: ReviewedPlan["steps"] }) {
-  return <section aria-label="Schema changes" className="space-y-2">
-    <h2 className="text-sm font-semibold">Schema changes</h2>
-    {steps.length === 0 && <p className="text-sm text-muted-foreground">No schema changes</p>}
-    {steps.map((step, index) => (
-      <Panel key={`${index}:${step.id}`} title={<span className="flex items-center gap-2">
-        Step {index + 1} {step.destructive && <Badge tone="danger">Destructive</Badge>}
-      </span>}>
-        <code className="mb-2 block break-all text-xs text-muted-foreground">{step.id}</code>
-        <CodeBlock language="sql" source={step.sql} copyable />
-      </Panel>
-    ))}
-  </section>;
+export function downloadablePlan(plan: ReviewedPlan): unknown {
+  if (plan.scriptPlan) return plan.sources?.length ? { scriptPlan: plan.artifact, sources: plan.sources } : plan.artifact;
+  if (!plan.sources?.length && !plan.advisory?.length) return plan.artifact;
+  return { artifact: plan.artifact, advisory: plan.advisory, sources: plan.sources };
 }

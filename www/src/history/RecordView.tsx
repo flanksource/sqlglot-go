@@ -9,7 +9,9 @@ import type { Navigate, Route } from "../compare/route";
 import type { HistoryRecord } from "../types";
 import { connectionName, recordedAt } from "./format";
 import { routeForRecord, summaryText, taskRunOf } from "./navigation";
-import { asMigrationPayload, inspectionView } from "./payload";
+import { asMigrationPayload, inspectionView, snapshotRefusals } from "./payload";
+import { SnapshotRefusals } from "../workflow/InspectionResult";
+import { ApplyOutcome } from "../workflow/MigrationOutcome";
 import { ResultExport } from "../workflow/ResultExport";
 
 const json = (value: unknown) => JSON.stringify(value, null, 2);
@@ -49,7 +51,7 @@ function MigrationPayloadView({ payload }: { payload: unknown }) {
         )}
       </dl>
       {migration.artifact !== undefined && <Panel title="Artifact" padded={false}><CodeBlock language="json" source={json(migration.artifact)} bare className="max-h-96 overflow-auto p-3" /></Panel>}
-      {migration.result !== undefined && <Panel title="Result" padded={false}><CodeBlock language="json" source={json(migration.result)} bare className="max-h-96 overflow-auto p-3" /></Panel>}
+      {migration.result !== undefined && <Panel title="Result"><ApplyOutcome result={migration.result} /></Panel>}
     </div>
   );
 }
@@ -61,9 +63,12 @@ function Payload({ record }: { record: HistoryRecord }) {
   if (record.kind === "migration") return <MigrationPayloadView payload={record.payload} />;
   const view = record.kind === "inspection" ? inspectionView(record.payload) : { language: "json", source: json(record.payload) };
   return (
-    <Panel title={record.kind === "inspection" ? "Inspected schema" : "Payload"} actions={<CopyButton value={view.source} label="Copy payload" />} padded={false}>
-      <CodeBlock language={view.language} source={view.source} bare className="max-h-[32rem] overflow-auto p-3" />
-    </Panel>
+    <>
+      {record.kind === "inspection" && <SnapshotRefusals refusals={snapshotRefusals(record.payload)} />}
+      <Panel title={record.kind === "inspection" ? "Inspected schema" : "Payload"} actions={<CopyButton value={view.source} label="Copy payload" />} padded={false}>
+        <CodeBlock language={view.language} source={view.source} bare className="max-h-[32rem] overflow-auto p-3" />
+      </Panel>
+    </>
   );
 }
 

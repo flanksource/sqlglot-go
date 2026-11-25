@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import compareFixture from "../fixtures/compare.json";
-import type { CompareResult } from "../types";
+import type { CompareResult, RebuildChange } from "../types";
 import { PLAN_FILE, applyCommand, changeLabel, connectionRef, countChanges, groupByObject, isDriftError, objectKey, parseSchemas, stepsFor } from "./model";
 
 const result = compareFixture as CompareResult;
@@ -35,6 +35,32 @@ describe("groupByObject", () => {
   it("rejects a change that no object covers", () => {
     const broken = { ...result, objects: result.objects.slice(1) };
     expect(() => groupByObject(broken)).toThrow(/is not covered by any object/);
+  });
+});
+
+describe("groupByObject rebuilds", () => {
+  const cause = id("add", "column", "customers", "email");
+  const rebuild: RebuildChange = {
+    id: id("rebuild", "index", "customers", "idx_customers_name"),
+    action: "rebuild",
+    kind: "index",
+    object: { schema: "main", name: "customers" },
+    member: "idx_customers_name",
+    destructive: false,
+    cause,
+  };
+
+  it("gives each rebuild to the group of the change that forces it and no other", () => {
+    const groups = groupByObject({ ...result, rebuilds: [rebuild] });
+    expect(groups.map((group) => group.rebuilds)).toEqual([[rebuild], [], [], []]);
+  });
+
+  it("has no rebuilds for a comparison that forces none", () => {
+    expect(groupByObject(result).every((group) => group.rebuilds.length === 0)).toBe(true);
+  });
+
+  it("rejects a rebuild whose cause is not one of the comparison's changes", () => {
+    expect(() => groupByObject({ ...result, rebuilds: [{ ...rebuild, cause: "ghost" }] })).toThrow(/rebuild .* names cause ghost, which this comparison does not have/);
   });
 });
 

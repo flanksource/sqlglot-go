@@ -8,7 +8,7 @@ import {
 import { Callout } from "@flanksource/clicky-ui/data";
 import { MonacoEditor } from "@flanksource/clicky-ui/monaco";
 import { useDraft } from "./drafts";
-import { PROJECT_CONFIG, uploadMigrationBundle, type BundleFile, type LocalProject, type ProjectPreview } from "./projectUpload";
+import { PROJECT_CONFIG, previewText, uploadMigrationBundle, type BundleFile, type LocalProject, type ProjectPreview } from "./projectUpload";
 import type { Source } from "./types";
 
 export function MigrationSetup({
@@ -132,7 +132,7 @@ export function MigrationSetup({
       {kind === "project" ? (
         <div className="space-y-2 rounded-md border border-border p-3 text-sm">
           {project?.config && <code className="block break-all">{project.config}</code>}
-          {project?.preview && <p>{project.preview.mapped} mapped · {project.preview.ignored} ignored</p>}
+          {project?.preview && <p>{previewText(project.preview)}</p>}
           {project?.error && <Callout variant="caution" title="Check project mappings">{project.error}</Callout>}
           {!hasLocalMappings && <p>Select another source or add mappings to {PROJECT_CONFIG}.</p>}
         </div>
@@ -141,7 +141,7 @@ export function MigrationSetup({
         <>
           {kind === "bundle" && <p role="status" className="text-sm text-muted-foreground">
             {uploading ? "Checking uploaded sources…" : preview
-              ? <><code>{PROJECT_CONFIG}</code> · {preview.mapped} mapped · {preview.ignored} ignored</>
+              ? <><code>{PROJECT_CONFIG}</code> · {previewText(preview)}</>
               : `${bundleFiles.length} files selected.`}
           </p>}
           <label className="block space-y-1 text-sm">

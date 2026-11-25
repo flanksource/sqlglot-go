@@ -12,6 +12,18 @@ export function ObjectDiff({ group }: { group: ObjectGroup }) {
         <Badge tone={object.status === "added" ? "success" : object.status === "deleted" ? "danger" : "warning"} size="xs">{object.status}</Badge>
         <span className="text-xs text-muted-foreground">{object.language}</span>
       </header>
+      {group.rebuilds.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">Dropped and re-created around these changes</p>
+          <ul aria-label="Forced rebuilds" className="list-inside list-disc text-xs">
+            {group.rebuilds.map((rebuild) => {
+              const cause = group.changes.find((change) => change.id === rebuild.cause);
+              if (!cause) throw new Error(`rebuild ${rebuild.id} names cause ${rebuild.cause}, which is not a change of ${qualifiedName(group)}`);
+              return <li key={rebuild.id}>{changeLabel(rebuild)} (forced by {changeLabel(cause)})</li>;
+            })}
+          </ul>
+        </div>
+      )}
       <CodeDiff
         view="split"
         language={object.language}

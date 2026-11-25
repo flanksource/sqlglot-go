@@ -52,7 +52,7 @@ export function ChangeTree({ groups, selected, focusKey, onFocus, onToggle, onSe
           selected={roots.find((node) => node.key === focusKey) ?? null}
           onSelect={(node) => onFocus(node.group.key)}
           rowClass={(_node, active) => `min-h-9 border-l-2 ${active ? "border-primary bg-primary/10" : "border-transparent"}`}
-          renderRow={({ node }) => (node.change ? <ChangeRow change={node.change} checked={selected.has(node.change.id)} onToggle={onToggle} /> : <ObjectRow group={node.group} selected={selected} onToggle={onToggle} />)}
+          renderRow={({ node }) => (node.change ? <ChangeRow change={node.change} rebuilds={node.group.rebuilds.filter((rebuild) => rebuild.cause === node.change?.id).length} checked={selected.has(node.change.id)} onToggle={onToggle} /> : <ObjectRow group={node.group} selected={selected} onToggle={onToggle} />)}
         />
       </div>
       <div className="flex shrink-0 items-center justify-between gap-1 border-t border-border px-3 py-2">
@@ -80,14 +80,16 @@ function ObjectRow({ group, selected, onToggle }: { group: ObjectGroup; selected
   );
 }
 
-function ChangeRow({ change, checked, onToggle }: { change: Change; checked: boolean; onToggle: ChangeTreeProps["onToggle"] }) {
+function ChangeRow({ change, rebuilds, checked, onToggle }: { change: Change; rebuilds: number; checked: boolean; onToggle: ChangeTreeProps["onToggle"] }) {
   const requires = change.requires?.length ? ` · requires ${change.requires.length} other change${change.requires.length === 1 ? "" : "s"}` : "";
+  const forced = rebuilds > 0 ? ` · rebuilds ${rebuilds} dependent${rebuilds === 1 ? "" : "s"}` : "";
   return (
     <>
       <Checkbox aria-label={`Select ${changeLabel(change)}`} checked={checked} onClick={(event) => event.stopPropagation()} onChange={(next) => onToggle([change.id], next)} />
       <Badge tone={ACTION_TONE[change.action]} size="xs">{change.action}</Badge>
-      <span className="min-w-0 flex-1 truncate text-xs" title={`${changeLabel(change)}${requires}`}>
+      <span className="min-w-0 flex-1 truncate text-xs" title={`${changeLabel(change)}${requires}${forced}`}>
         {[change.kind, change.member].filter(Boolean).join(" ")}
+        {rebuilds > 0 && <span className="text-muted-foreground"> +{rebuilds} rebuild{rebuilds === 1 ? "" : "s"}</span>}
       </span>
       {change.destructive && <span title={change.reason ?? "destructive"}><Badge tone="danger" variant="solid" size="xs">destructive</Badge></span>}
     </>

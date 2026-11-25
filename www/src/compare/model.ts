@@ -1,5 +1,5 @@
 // Pure derivations over a CompareResult shared by the review and patch screens.
-import type { Change, CompareResult, CompareStep, Name, ObjectDiff } from "../types";
+import type { Change, CompareResult, CompareStep, Name, ObjectDiff, RebuildChange } from "../types";
 
 export type ChangeCounts = { added: number; dropped: number; modified: number; destructive: number };
 
@@ -12,11 +12,14 @@ export function objectKey(kind: string, name: Name): string {
   return `${kind}:${name.schema ? `${name.schema}.` : ""}${name.name}`;
 }
 
-export type ObjectGroup = { key: string; object: ObjectDiff; changes: Change[] };
+export type ObjectGroup = { key: string; object: ObjectDiff; changes: Change[]; /** The dependents the group's changes force to be dropped and re-created. */ rebuilds: RebuildChange[] };
 
-/** Groups changes under the object that names them; every change must belong to an object. */
+/** Groups changes under the object that names them; every change must belong to an object, every rebuild to a change. */
 export function groupByObject(result: CompareResult): ObjectGroup[] {
   const byId = new Map(result.changes.map((change) => [change.id, change]));
+  for (const rebuild of result.rebuilds ?? []) {
+    if (!byId.has(rebuild.cause)) throw new Error(`rebuild ${rebuild.id} names cause ${rebuild.cause}, which this comparison does not have`);
+  }
   const covered = new Set<string>();
   const groups = result.objects.map((object) => {
     const key = objectKey(object.kind, object.name);
@@ -26,7 +29,8 @@ export function groupByObject(result: CompareResult): ObjectGroup[] {
       covered.add(changeId);
       return change;
     });
-    return { key, object, changes };
+    const own = new Set(object.changes);
+    return { key, object, changes, rebuilds: (result.rebuilds ?? []).filter((rebuild) => own.has(rebuild.cause)) };
   });
   const orphan = result.changes.find((change) => !covered.has(change.id));
   if (orphan) throw new Error(`change ${orphan.id} is not covered by any object`);
@@ -39,7 +43,7 @@ export function stepsFor(steps: readonly CompareStep[], group: ObjectGroup, sele
   return steps.filter((step) => step.changes.some((changeId) => own.has(changeId)));
 }
 
-export function changeLabel(change: Change): string {
+export function changeLabel(change: Change | RebuildChange): string {
   return [change.action, change.kind, change.member].filter(Boolean).join(" ");
 }
 
