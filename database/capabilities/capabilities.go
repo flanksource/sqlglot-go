@@ -12,9 +12,30 @@ import (
 	"strings"
 )
 
+// Queryer is what a probe reads through; *sql.DB, *sql.Conn and *sql.Tx satisfy it.
+type Queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 type BackendCapability string
 
-const BackendCapabilityArrayFilters BackendCapability = "arrayFilters"
+const (
+	BackendCapabilityArrayFilters BackendCapability = "arrayFilters"
+	// BackendCapabilityTransactionalDDL: DDL can run inside a transaction and roll back.
+	BackendCapabilityTransactionalDDL BackendCapability = "transactionalDDL"
+	// BackendCapabilityOnlineIndex: an index can be built without blocking writers.
+	BackendCapabilityOnlineIndex BackendCapability = "onlineIndex"
+	// BackendCapabilityDataCompression: row/page data compression can be applied to tables and indexes.
+	BackendCapabilityDataCompression BackendCapability = "dataCompression"
+	// BackendCapabilityTryConvert: TRY_CONVERT is available to SQL in this database.
+	BackendCapabilityTryConvert BackendCapability = "tryConvert"
+	// BackendCapabilityCreateOrAlter: CREATE OR ALTER is available for routines and views.
+	BackendCapabilityCreateOrAlter BackendCapability = "createOrAlter"
+	// BackendCapabilityDropIfExists: DROP ... IF EXISTS is available.
+	BackendCapabilityDropIfExists BackendCapability = "dropIfExists"
+	// BackendCapabilityTableRebuildRequired: altering a column requires rebuilding the table.
+	BackendCapabilityTableRebuildRequired BackendCapability = "tableRebuildRequired"
+)
 
 type BackendCapabilityStatus struct {
 	Supported                 bool   `json:"supported"`
@@ -28,6 +49,8 @@ type BackendCapabilities struct {
 	Version            string                                        `json:"version"`
 	Database           string                                        `json:"database"`
 	CompatibilityLevel *int                                          `json:"compatibilityLevel,omitempty"`
+	EngineEdition      *int                                          `json:"engineEdition,omitempty"`
+	Edition            string                                        `json:"edition,omitempty"`
 	Features           map[BackendCapability]BackendCapabilityStatus `json:"features"`
 }
 
@@ -85,13 +108,15 @@ func (c BackendCapabilities) Fingerprint() (string, error) {
 		Version            string    `json:"version"`
 		Database           string    `json:"database"`
 		CompatibilityLevel *int      `json:"compatibilityLevel,omitempty"`
+		EngineEdition      *int      `json:"engineEdition,omitempty"`
+		Edition            string    `json:"edition,omitempty"`
 		Features           []feature `json:"features"`
-	}{c.Backend, c.Version, c.Database, c.CompatibilityLevel, features})
+	}{c.Backend, c.Version, c.Database, c.CompatibilityLevel, c.EngineEdition, c.Edition, features})
 	if err != nil {
 		return "", fmt.Errorf("encode backend capability fingerprint: %w", err)
 	}
 	digest := sha256.Sum256(payload)
-	return "backend-capabilities-v1:" + hex.EncodeToString(digest[:]), nil
+	return "backend-capabilities-v2:" + hex.EncodeToString(digest[:]), nil
 }
 
 func (c BackendCapabilities) Validate() error {
@@ -107,7 +132,8 @@ func (c BackendCapabilities) Validate() error {
 const (
 	postgresCapabilitiesQuery  = `SELECT current_database(), current_setting('server_version'), current_setting('server_version_num')::integer`
 	mysqlCapabilitiesQuery     = `SELECT COALESCE(DATABASE(), ''), VERSION()`
-	sqlServerCapabilitiesQuery = `SELECT DB_NAME(), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), compatibility_level
+	sqlServerCapabilitiesQuery = `SELECT DB_NAME(), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), compatibility_level,
+       CAST(SERVERPROPERTY('EngineEdition') AS int), CAST(SERVERPROPERTY('Edition') AS nvarchar(128))
 FROM sys.databases
 WHERE name = DB_NAME()`
 	sqliteCapabilitiesQuery = `SELECT 'main', sqlite_version(),
@@ -115,7 +141,7 @@ WHERE name = DB_NAME()`
 	clickHouseCapabilitiesQuery = `SELECT currentDatabase(), version()`
 )
 
-func ProbeBackendCapabilities(ctx context.Context, db *sql.DB, backend string) (BackendCapabilities, error) {
+func ProbeBackendCapabilities(ctx context.Context, db Queryer, backend string) (BackendCapabilities, error) {
 	if db == nil {
 		return BackendCapabilities{}, fmt.Errorf("probe backend capabilities: nil sql database")
 	}
@@ -151,7 +177,7 @@ func ProbeBackendCapabilities(ctx context.Context, db *sql.DB, backend string) (
 	return capabilities, nil
 }
 
-func probePostgresCapabilities(ctx context.Context, db *sql.DB) (BackendCapabilities, error) {
+func probePostgresCapabilities(ctx context.Context, db Queryer) (BackendCapabilities, error) {
 	var database, version string
 	var versionNumber int
 	if err := db.QueryRowContext(ctx, postgresCapabilitiesQuery).Scan(&database, &version, &versionNumber); err != nil {
@@ -161,10 +187,19 @@ func probePostgresCapabilities(ctx context.Context, db *sql.DB) (BackendCapabili
 	if versionNumber >= 90500 {
 		status.Supported = true
 	}
-	return capabilities(BackendCapabilities{Backend: "postgres", Version: version, Database: database}, status), nil
+	return capabilities(BackendCapabilities{Backend: "postgres", Version: version, Database: database}, map[BackendCapability]BackendCapabilityStatus{
+		BackendCapabilityArrayFilters:         status,
+		BackendCapabilityTransactionalDDL:     supportedStatus("DDL is transactional"),
+		BackendCapabilityOnlineIndex:          supportedStatus("CREATE INDEX CONCURRENTLY cannot run inside a transaction"),
+		BackendCapabilityDataCompression:      unsupportedStatus("no table or index data compression statement"),
+		BackendCapabilityTryConvert:           unsupportedStatus("TRY_CONVERT is SQL Server only"),
+		BackendCapabilityCreateOrAlter:        unsupportedStatus("CREATE OR ALTER is SQL Server only"),
+		BackendCapabilityDropIfExists:         supportedStatus("DROP ... IF EXISTS"),
+		BackendCapabilityTableRebuildRequired: unsupportedStatus("ALTER COLUMN is performed in place or by an engine managed rewrite"),
+	}), nil
 }
 
-func probeMySQLCapabilities(ctx context.Context, db *sql.DB) (BackendCapabilities, error) {
+func probeMySQLCapabilities(ctx context.Context, db Queryer) (BackendCapabilities, error) {
 	var database, version string
 	if err := db.QueryRowContext(ctx, mysqlCapabilitiesQuery).Scan(&database, &version); err != nil {
 		return BackendCapabilities{}, err
@@ -181,25 +216,19 @@ func probeMySQLCapabilities(ctx context.Context, db *sql.DB) (BackendCapabilitie
 	if versionAtLeast(parsed, minimum) {
 		status.Supported = true
 	}
-	return capabilities(BackendCapabilities{Backend: "mysql", Version: version, Database: database}, status), nil
+	return capabilities(BackendCapabilities{Backend: "mysql", Version: version, Database: database}, map[BackendCapability]BackendCapabilityStatus{
+		BackendCapabilityArrayFilters:         status,
+		BackendCapabilityTransactionalDDL:     unsupportedStatus("DDL statements implicitly commit"),
+		BackendCapabilityOnlineIndex:          unsupportedStatus("index builds are not reported as non-blocking"),
+		BackendCapabilityDataCompression:      unsupportedStatus("not exposed as a portable schema feature"),
+		BackendCapabilityTryConvert:           unsupportedStatus("TRY_CONVERT is SQL Server only"),
+		BackendCapabilityCreateOrAlter:        unsupportedStatus("CREATE OR ALTER is SQL Server only"),
+		BackendCapabilityDropIfExists:         supportedStatus("DROP ... IF EXISTS"),
+		BackendCapabilityTableRebuildRequired: unsupportedStatus("ALTER COLUMN is performed in place or by an engine managed rewrite"),
+	}), nil
 }
 
-func probeSQLServerCapabilities(ctx context.Context, db *sql.DB) (BackendCapabilities, error) {
-	var database, version string
-	var compatibilityLevel int
-	if err := db.QueryRowContext(ctx, sqlServerCapabilitiesQuery).Scan(&database, &version, &compatibilityLevel); err != nil {
-		return BackendCapabilities{}, err
-	}
-	minimum := intPointer(130)
-	status := BackendCapabilityStatus{
-		Supported: compatibilityLevel >= *minimum, Detail: "JSON arrays via OPENJSON", MinimumCompatibilityLevel: minimum,
-	}
-	return capabilities(BackendCapabilities{
-		Backend: "sqlserver", Version: version, Database: database, CompatibilityLevel: intPointer(compatibilityLevel),
-	}, status), nil
-}
-
-func probeSQLiteCapabilities(ctx context.Context, db *sql.DB) (BackendCapabilities, error) {
+func probeSQLiteCapabilities(ctx context.Context, db Queryer) (BackendCapabilities, error) {
 	var database, version string
 	var jsonArrays int
 	if err := db.QueryRowContext(ctx, sqliteCapabilitiesQuery).Scan(&database, &version, &jsonArrays); err != nil {
@@ -209,22 +238,46 @@ func probeSQLiteCapabilities(ctx context.Context, db *sql.DB) (BackendCapabiliti
 	if !status.Supported {
 		status.Detail = "SQLite JSON functions are unavailable"
 	}
-	return capabilities(BackendCapabilities{Backend: "sqlite", Version: version, Database: database}, status), nil
+	return capabilities(BackendCapabilities{Backend: "sqlite", Version: version, Database: database}, map[BackendCapability]BackendCapabilityStatus{
+		BackendCapabilityArrayFilters:         status,
+		BackendCapabilityTransactionalDDL:     supportedStatus("DDL is transactional"),
+		BackendCapabilityOnlineIndex:          unsupportedStatus("a single writer holds the database lock during an index build"),
+		BackendCapabilityDataCompression:      unsupportedStatus("no table or index data compression"),
+		BackendCapabilityTryConvert:           unsupportedStatus("TRY_CONVERT is SQL Server only"),
+		BackendCapabilityCreateOrAlter:        unsupportedStatus("CREATE OR ALTER is SQL Server only"),
+		BackendCapabilityDropIfExists:         supportedStatus("DROP ... IF EXISTS"),
+		BackendCapabilityTableRebuildRequired: supportedStatus("ALTER COLUMN requires creating a new table, copying rows and renaming it"),
+	}), nil
 }
 
-func probeClickHouseCapabilities(ctx context.Context, db *sql.DB) (BackendCapabilities, error) {
+func probeClickHouseCapabilities(ctx context.Context, db Queryer) (BackendCapabilities, error) {
 	var database, version string
 	if err := db.QueryRowContext(ctx, clickHouseCapabilitiesQuery).Scan(&database, &version); err != nil {
 		return BackendCapabilities{}, err
 	}
-	return capabilities(BackendCapabilities{Backend: "clickhouse", Version: version, Database: database}, BackendCapabilityStatus{
-		Supported: true, Detail: "native Array(String) values",
+	return capabilities(BackendCapabilities{Backend: "clickhouse", Version: version, Database: database}, map[BackendCapability]BackendCapabilityStatus{
+		BackendCapabilityArrayFilters:         supportedStatus("native Array(String) values"),
+		BackendCapabilityTransactionalDDL:     unsupportedStatus("DDL is not transactional"),
+		BackendCapabilityOnlineIndex:          unsupportedStatus("no transactional index build"),
+		BackendCapabilityDataCompression:      unsupportedStatus("compression is a column codec, not a table or index option"),
+		BackendCapabilityTryConvert:           unsupportedStatus("TRY_CONVERT is SQL Server only"),
+		BackendCapabilityCreateOrAlter:        unsupportedStatus("CREATE OR ALTER is SQL Server only"),
+		BackendCapabilityDropIfExists:         supportedStatus("DROP ... IF EXISTS"),
+		BackendCapabilityTableRebuildRequired: unsupportedStatus("ALTER COLUMN is performed by an engine managed mutation"),
 	}), nil
 }
 
-func capabilities(base BackendCapabilities, arrayFilters BackendCapabilityStatus) BackendCapabilities {
-	base.Features = map[BackendCapability]BackendCapabilityStatus{BackendCapabilityArrayFilters: arrayFilters}
+func capabilities(base BackendCapabilities, features map[BackendCapability]BackendCapabilityStatus) BackendCapabilities {
+	base.Features = features
 	return base
+}
+
+func supportedStatus(detail string) BackendCapabilityStatus {
+	return BackendCapabilityStatus{Supported: true, Detail: detail}
+}
+
+func unsupportedStatus(detail string) BackendCapabilityStatus {
+	return BackendCapabilityStatus{Detail: detail}
 }
 
 func normalizeCapabilityBackend(backend string) string {

@@ -9,15 +9,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/flanksource/clicky/task"
 	"github.com/flanksource/sqlglot-go/database/history"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
+	dialects "github.com/flanksource/sqlglot-go/database/migrate/dialect"
 	dbtarget "github.com/flanksource/sqlglot-go/database/target"
 	"github.com/flanksource/sqlglot-go/migrate"
-	planner "github.com/flanksource/sqlglot-go/migrate/sqlserver"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
+
+// actionRebuild is the action of a change that drops and re-creates a
+// dependent object around a change the diff lists.
+const actionRebuild = "rebuild"
 
 // Options names the two sides. Reference is the desired schema; Target is
 // the database the patch brings in line with it.
@@ -44,8 +47,11 @@ type Result struct {
 	Target    string           `json:"target"`
 	Schemas   []string         `json:"schemas"`
 	Changes   []migrate.Change `json:"changes"`
-	Steps     []Step           `json:"steps"`
-	Objects   []Object         `json:"objects"`
+	// Rebuilds are the dependents the changes force to be dropped and
+	// re-created; each names its change in Cause and cannot be selected alone.
+	Rebuilds []migrate.Change `json:"rebuilds,omitempty"`
+	Steps    []Step           `json:"steps"`
+	Objects  []Object         `json:"objects"`
 	// DiffHash binds a patch to the exact differences that were reviewed.
 	DiffHash string `json:"diffHash"`
 }
@@ -73,17 +79,16 @@ type sides struct {
 	dialect   string
 	schemas   []string
 	target    dbtarget.Connection
-	current   migrate.Schema
-	desired   migrate.Schema
-	baseline  review.Snapshot
-	reference review.Snapshot
+	current   dialects.Snapshot
+	reference dialects.Snapshot
 }
 
-// plan is a planned artifact of either dialect family.
+// plan is a planned artifact, split into what the diff lists and what the
+// engine adds to it.
 type plan struct {
-	artifact any
-	hash     string
+	artifact engine.Artifact
 	changes  []migrate.Change
+	rebuilds []migrate.Change
 	steps    []Step
 	acks     []string
 }
@@ -111,7 +116,7 @@ func Compare(ctx context.Context, opts Options) (Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		return Result{Dialect: s.dialect, Reference: opts.Reference, Target: opts.Target, Schemas: s.schemas, Changes: p.changes, Steps: p.steps, Objects: objects, DiffHash: hash}, nil
+		return Result{Dialect: s.dialect, Reference: opts.Reference, Target: opts.Target, Schemas: s.schemas, Changes: p.changes, Rebuilds: p.rebuilds, Steps: p.steps, Objects: objects, DiffHash: hash}, nil
 	}, r.reference.Task, r.target.Task)
 	result, err := result[Result](planned)
 	recorded := result
@@ -163,7 +168,11 @@ func BuildPatch(ctx context.Context, opts PatchOptions) (Patch, error) {
 		if err != nil {
 			return nil, err
 		}
-		return Patch{Dialect: s.dialect, Artifact: artifact, SQL: script(s.dialect, p.steps), Hash: p.hash, Acks: p.acks, Selection: opts.Selection}, nil
+		sql, err := dialects.Script(s.dialect, p.statements())
+		if err != nil {
+			return nil, err
+		}
+		return Patch{Dialect: s.dialect, Artifact: artifact, SQL: sql, Hash: p.artifact.Hash, Acks: p.acks, Selection: opts.Selection}, nil
 	}, checked.Task)
 	patch, err := result[Patch](planned)
 	return patch, r.finish(ctx, finish{parent: opts.Comparison, value: patch, summary: map[string]int{"selected": len(patch.Selection), "acks": len(patch.Acks)}, err: err})
@@ -180,33 +189,57 @@ func (s *sides) planned(ctx context.Context, t *task.Task, selection []string) (
 	return p, err
 }
 
+// build plans the target toward the reference in complete scope, so the
+// reference's absence of an object is a drop that must be acknowledged. The
+// engine reads the target again, which is what makes the artifact's baseline
+// the database the patch is applied to.
 func (s *sides) build(ctx context.Context, selection []string) (plan, error) {
-	if s.dialect == "sqlserver" {
-		artifact, err := planner.BuildArtifact(migrate.ArtifactRequest{Schemas: s.schemas, Request: migrate.Request{Current: s.current, Desired: s.desired, Selection: selection}})
-		if err != nil {
-			return plan{}, err
-		}
-		p := plan{artifact: artifact, hash: artifact.Hash, changes: artifact.Plan.Changes, steps: []Step{}, acks: planner.Acknowledgements(artifact)}
-		for _, step := range artifact.Plan.Steps {
-			p.steps = append(p.steps, Step{Changes: []string{step.Change.ID}, SQL: step.SQL})
-		}
-		return p, nil
-	}
-	artifact, err := review.Build(ctx, s.target.DB, review.Options{Dialect: s.dialect, Schema: s.target.Schema, DesiredHCL: s.reference.HCL, Baseline: &s.baseline, Selection: selection})
+	artifact, err := engine.PlanLive(ctx, s.target.DB, engine.PlanLiveRequest{
+		Dialect: s.dialect, Scope: engine.Scope{Mode: engine.ScopeComplete, Schemas: s.schemas}, Desired: s.reference.Schema, Selection: selection,
+	})
 	if err != nil {
 		return plan{}, err
 	}
-	p := plan{artifact: artifact, hash: artifact.Hash, changes: artifact.Changes, steps: []Step{}, acks: artifact.Acknowledgements()}
-	if p.changes == nil {
-		p.changes = []migrate.Change{}
+	if err := s.reference.RefuseTouched(artifact.Changes); err != nil {
+		return plan{}, err
 	}
-	if p.acks == nil {
-		p.acks = []string{}
+	return newPlan(artifact), nil
+}
+
+// newPlan lists the changes the diff names, the rebuilds the engine added, and
+// the statements in execution order. A rebuild's statements are listed under
+// the change that forced it, which is the one a reviewer selects.
+func newPlan(a engine.Artifact) plan {
+	p := plan{artifact: a, changes: []migrate.Change{}, steps: []Step{}, acks: engine.Acknowledgements(a)}
+	cause := map[string]string{}
+	for _, c := range a.Changes {
+		if c.Action != actionRebuild {
+			p.changes = append(p.changes, c)
+			continue
+		}
+		p.rebuilds = append(p.rebuilds, c)
+		cause[c.ID] = c.Cause
 	}
-	for _, step := range artifact.Steps {
-		p.steps = append(p.steps, Step{Changes: step.Changes, SQL: step.SQL})
+	for _, u := range a.Units {
+		for _, op := range u.Ops {
+			id := op.Change
+			if forced, ok := cause[id]; ok {
+				id = forced
+			}
+			for _, s := range op.Statements {
+				p.steps = append(p.steps, Step{Changes: []string{id}, SQL: s.SQL})
+			}
+		}
 	}
-	return p, nil
+	return p
+}
+
+func (p plan) statements() []string {
+	out := make([]string, len(p.steps))
+	for i, s := range p.steps {
+		out[i] = s.SQL
+	}
+	return out
 }
 
 func diffHash(p plan) (string, error) {
@@ -219,20 +252,6 @@ func diffHash(p plan) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
-}
-
-// script joins the planned statements; SQL Server modules need their own batch.
-func script(dialect string, steps []Step) string {
-	var b strings.Builder
-	for _, step := range steps {
-		b.WriteString(strings.TrimSuffix(strings.TrimSpace(step.SQL), ";"))
-		if dialect == "sqlserver" {
-			b.WriteString("\nGO\n")
-		} else {
-			b.WriteString(";\n")
-		}
-	}
-	return b.String()
 }
 
 func first(values []string) string {

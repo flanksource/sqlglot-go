@@ -14,8 +14,8 @@ func readCollations(ctx context.Context, db Querier, c *catalog) error {
 	return visit(ctx, db, schemaQuery{SQL: `SELECT o.name, c.name, c.collation_name
 		FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id
 		JOIN sys.schemas s ON s.schema_id=o.schema_id
-		WHERE s.name=@p1 AND o.type IN ('U','V') AND c.collation_name IS NOT NULL
-		ORDER BY o.name, c.column_id`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND o.type IN ('U','V') AND c.collation_name IS NOT NULL/*names*/
+		ORDER BY o.name, c.column_id`, Schema: c.schema, Names: c.names, NameColumn: "o.name"}, func(rows *sql.Rows) error {
 		var table, column, collation string
 		if err := rows.Scan(&table, &column, &collation); err != nil {
 			return err
@@ -31,7 +31,7 @@ func readTriggers(ctx context.Context, db Querier, c *catalog) error {
 		JOIN sys.objects trigger_object ON trigger_object.object_id=tr.object_id
 		JOIN sys.schemas s ON s.schema_id=o.schema_id
 		LEFT JOIN sys.sql_modules m ON m.object_id=tr.object_id
-		WHERE s.name=@p1 AND tr.parent_class=1 ORDER BY tr.name`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND tr.parent_class=1/*names*/ ORDER BY tr.name`, Schema: c.schema, Names: c.names, NameColumn: "tr.name"}, func(rows *sql.Rows) error {
 		var d migrate.Definition
 		var parent migrate.Name
 		var definition sql.NullString
@@ -39,7 +39,7 @@ func readTriggers(ctx context.Context, db Querier, c *catalog) error {
 			return err
 		}
 		if !definition.Valid || definition.String == "" {
-			return fmt.Errorf("trigger %v has no readable definition", d.Name)
+			return c.collector.refuse(d.Name, "", fmt.Sprintf("trigger %v has no readable definition", d.Name))
 		}
 		d.Kind, d.SQL, d.Parent = "TRIGGER", definition.String, &parent
 		c.modules = append(c.modules, d)
@@ -54,8 +54,8 @@ func readDependencies(ctx context.Context, db Querier, c *catalog) error {
 		COALESCE(SCHEMA_NAME(r.schema_id), d.referenced_schema_name), COALESCE(r.name, d.referenced_entity_name), d.referenced_id
 		FROM sys.sql_expression_dependencies d JOIN sys.objects o ON o.object_id=d.referencing_id
 		JOIN sys.schemas s ON s.schema_id=o.schema_id LEFT JOIN sys.objects r ON r.object_id=d.referenced_id
-		WHERE s.name=@p1 AND d.referenced_class=1 AND o.type IN ('V','P','FN','IF','TF','TR')
-		ORDER BY 1, 4, 5`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND d.referenced_class=1 AND o.type IN ('V','P','FN','IF','TF','TR')/*names*/
+		ORDER BY 1, 4, 5`, Schema: c.schema, Names: c.names, NameColumn: "o.name"}, func(rows *sql.Rows) error {
 		var owner, entity string
 		var server, database, schema sql.NullString
 		var id sql.NullInt64
@@ -91,12 +91,34 @@ func classifyDependency(row dependencyRow) (migrate.Name, migrate.RuntimeDepende
 	return migrate.Name{}, migrate.RuntimeDependency{Server: row.Server.String, Database: row.Database.String, Schema: row.Schema.String, Name: row.Entity}, false
 }
 
+// namesMarker marks where a query may be narrowed to some objects: it becomes
+// ` AND <NameColumn> IN (@p2, ...)` when Names is set and nothing otherwise.
+const namesMarker = "/*names*/"
+
 type schemaQuery struct {
 	SQL, Schema string
+	// Names narrows the query to these object names, matched on NameColumn.
+	Names      []string
+	NameColumn string
+}
+
+// bind returns the query text and its arguments: the schema, then each name.
+func (q schemaQuery) bind() (string, []any) {
+	args := []any{q.Schema}
+	if len(q.Names) == 0 {
+		return strings.ReplaceAll(q.SQL, namesMarker, ""), args
+	}
+	placeholders := make([]string, len(q.Names))
+	for i, name := range q.Names {
+		args = append(args, name)
+		placeholders[i] = fmt.Sprintf("@p%d", len(args))
+	}
+	return strings.ReplaceAll(q.SQL, namesMarker, fmt.Sprintf(" AND %s IN (%s)", q.NameColumn, strings.Join(placeholders, ", "))), args
 }
 
 func visit(ctx context.Context, db Querier, query schemaQuery, scan func(*sql.Rows) error) (err error) {
-	rows, err := db.QueryContext(ctx, query.SQL, query.Schema)
+	text, args := query.bind()
+	rows, err := db.QueryContext(ctx, text, args...)
 	if err != nil {
 		return err
 	}

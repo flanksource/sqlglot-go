@@ -6,8 +6,6 @@ import (
 
 	"github.com/flanksource/clicky/task"
 	"github.com/flanksource/sqlglot-go/database/history"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
-	"github.com/flanksource/sqlglot-go/migrate"
 )
 
 // finish is a run's outcome: its value and listing summary, or its error.
@@ -41,14 +39,11 @@ func (r *run) finish(ctx context.Context, f finish) error {
 		if err == nil {
 			inspection.Dialect, inspection.Schemas = s.conn.Dialect, s.schemas
 			main.Dialect, main.Schemas = s.conn.Dialect, s.schemas
-			inspection.Summary, err = inspectionSummary(s)
+			inspection.Summary = s.snapshot.Summary()
 		}
 		var payload any
 		if err == nil {
-			payload = s.review
-			if s.conn.Dialect == "sqlserver" {
-				payload = s.snapshot
-			}
+			payload = s.snapshot
 		}
 		if completeErr := inspection.Complete(payload, err); completeErr != nil {
 			return errors.Join(f.err, completeErr, r.close())
@@ -81,31 +76,4 @@ func comparisonSummary(r Result) map[string]int {
 		}
 	}
 	return summary
-}
-
-func inspectionSummary(s side) (map[string]int, error) {
-	if s.conn.Dialect == "sqlserver" {
-		return SchemaSummary(s.snapshot), nil
-	}
-	return SnapshotSummary(s.review)
-}
-
-// SchemaSummary counts a SQL Server migration snapshot's objects by kind.
-func SchemaSummary(schema migrate.Schema) map[string]int {
-	return map[string]int{"table": len(schema.Tables), "module": len(schema.Definitions), "sequence": len(schema.Sequences), "table-type": len(schema.TableTypes)}
-}
-
-// SnapshotSummary counts a PostgreSQL or SQLite snapshot's objects by kind.
-func SnapshotSummary(snapshot review.Snapshot) (map[string]int, error) {
-	defs, err := hclDefinitions(snapshot.HCL, snapshot.Schema)
-	if err != nil {
-		return nil, err
-	}
-	summary := map[string]int{}
-	for kind, names := range defs {
-		if kind != "schema" {
-			summary[kind] = len(names)
-		}
-	}
-	return summary, nil
 }

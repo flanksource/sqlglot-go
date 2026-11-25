@@ -15,8 +15,8 @@ func readIndexOptions(ctx context.Context, db Querier, c *catalog) error {
 	return visit(ctx, db, schemaQuery{SQL: `SELECT t.name, i.name, i.fill_factor
 		FROM sys.indexes i JOIN sys.tables t ON t.object_id=i.object_id
 		JOIN sys.schemas s ON s.schema_id=t.schema_id
-		WHERE s.name=@p1 AND i.name IS NOT NULL AND i.fill_factor NOT IN (0,100)
-		ORDER BY t.name, i.name`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND i.name IS NOT NULL AND i.fill_factor NOT IN (0,100)/*names*/
+		ORDER BY t.name, i.name`, Schema: c.schema, Names: c.names, NameColumn: "t.name"}, func(rows *sql.Rows) error {
 		var table, index string
 		var fillFactor int
 		if err := rows.Scan(&table, &index, &fillFactor); err != nil {
@@ -34,8 +34,8 @@ func readSystemNamedDefaults(ctx context.Context, db Querier, c *catalog) error 
 		FROM sys.default_constraints dc JOIN sys.objects o ON o.object_id=dc.parent_object_id
 		JOIN sys.columns col ON col.object_id=dc.parent_object_id AND col.column_id=dc.parent_column_id
 		JOIN sys.schemas s ON s.schema_id=o.schema_id
-		WHERE s.name=@p1 AND o.type='U' AND dc.is_system_named=1
-		ORDER BY o.name`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND o.type='U' AND dc.is_system_named=1/*names*/
+		ORDER BY o.name`, Schema: c.schema, Names: c.names, NameColumn: "o.name"}, func(rows *sql.Rows) error {
 		var table, column string
 		if err := rows.Scan(&table, &column); err != nil {
 			return err
@@ -49,8 +49,8 @@ func readRowGUIDs(ctx context.Context, db Querier, c *catalog) error {
 	return visit(ctx, db, schemaQuery{SQL: `SELECT o.name, c.name
 		FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id
 		JOIN sys.schemas s ON s.schema_id=o.schema_id
-		WHERE s.name=@p1 AND o.type='U' AND c.is_rowguidcol=1
-		ORDER BY o.name`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND o.type='U' AND c.is_rowguidcol=1/*names*/
+		ORDER BY o.name`, Schema: c.schema, Names: c.names, NameColumn: "o.name"}, func(rows *sql.Rows) error {
 		var table, column string
 		if err := rows.Scan(&table, &column); err != nil {
 			return err
@@ -66,8 +66,8 @@ func readModuleSettings(ctx context.Context, db Querier, c *catalog) error {
 	return visit(ctx, db, schemaQuery{SQL: `SELECT o.name
 		FROM sys.sql_modules m JOIN sys.objects o ON o.object_id=m.object_id
 		JOIN sys.schemas s ON s.schema_id=o.schema_id
-		WHERE s.name=@p1 AND m.uses_quoted_identifier=0
-		ORDER BY o.name`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND m.uses_quoted_identifier=0/*names*/
+		ORDER BY o.name`, Schema: c.schema, Names: c.names, NameColumn: "o.name"}, func(rows *sql.Rows) error {
 		var name string
 		if err := rows.Scan(&name); err != nil {
 			return err
@@ -84,7 +84,7 @@ func readSequences(ctx context.Context, db Querier, c *catalog) error {
 		q.is_cycling, q.is_cached, q.cache_size
 		FROM sys.sequences q JOIN sys.schemas s ON s.schema_id=q.schema_id
 		JOIN sys.types t ON t.user_type_id=q.user_type_id
-		WHERE s.name=@p1 ORDER BY q.name`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1/*names*/ ORDER BY q.name`, Schema: c.schema, Names: c.names, NameColumn: "q.name"}, func(rows *sql.Rows) error {
 		q := migrate.Sequence{Name: migrate.Name{Schema: c.schema}}
 		var typeName string
 		var userDefined, cached bool
@@ -94,7 +94,7 @@ func readSequences(ctx context.Context, db Querier, c *catalog) error {
 			return err
 		}
 		if userDefined {
-			return fmt.Errorf("sequence %s.%s uses unsupported user-defined type %s", c.schema, q.Name.Name, typeName)
+			return c.collector.refuse(q.Name, "", fmt.Sprintf("sequence %s.%s uses unsupported user-defined type %s", c.schema, q.Name.Name, typeName))
 		}
 		q.Type = typeName
 		if strings.EqualFold(typeName, "decimal") || strings.EqualFold(typeName, "numeric") {

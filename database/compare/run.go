@@ -1,11 +1,14 @@
 package compare
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,18 +17,15 @@ import (
 	flanksourceContext "github.com/flanksource/commons/context"
 	"github.com/flanksource/sqlglot-go/database/connections"
 	"github.com/flanksource/sqlglot-go/database/history"
-	"github.com/flanksource/sqlglot-go/database/inspect/snapshot"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
+	dialects "github.com/flanksource/sqlglot-go/database/migrate/dialect"
 	dbtarget "github.com/flanksource/sqlglot-go/database/target"
-	"github.com/flanksource/sqlglot-go/migrate"
 )
 
 // side is one opened connection and the schema inspected from it.
 type side struct {
 	conn     dbtarget.Connection
 	schemas  []string
-	snapshot migrate.Schema
-	review   review.Snapshot
+	snapshot dialects.Snapshot
 }
 
 // noRetry keeps a failed connect or inspection failing fast instead of
@@ -96,8 +96,10 @@ func (r *run) sides() (*sides, error) {
 	if reference.conn.Dialect != target.conn.Dialect {
 		return nil, fmt.Errorf("reference dialect %s differs from target dialect %s", reference.conn.Dialect, target.conn.Dialect)
 	}
-	return &sides{dialect: target.conn.Dialect, schemas: target.schemas, target: target.conn,
-		current: target.snapshot, desired: reference.snapshot, baseline: target.review, reference: reference.review}, nil
+	if !slices.Equal(reference.schemas, target.schemas) {
+		return nil, fmt.Errorf("reference schemas %v differ from target schemas %v; name the schemas to compare", reference.schemas, target.schemas)
+	}
+	return &sides{dialect: target.conn.Dialect, schemas: target.schemas, target: target.conn, current: target.snapshot, reference: reference.snapshot}, nil
 }
 
 // failure reports why the run failed: the errors of the tasks that failed,
@@ -178,31 +180,24 @@ func inspectSide(ctx context.Context, t *task.Task, role, dsn string, opts Optio
 		return side{}, fmt.Errorf("open %s %s: %w", role, history.Redact(dsn), err)
 	}
 	s := side{conn: conn, schemas: opts.Schemas}
-	switch conn.Dialect {
-	case "sqlserver":
-		if len(s.schemas) == 0 {
-			s.schemas = []string{conn.Schema}
-		}
-		var result snapshot.Result
-		if result, err = snapshot.Inspect(ctx, conn.DB, snapshot.Options{Schemas: s.schemas, Task: t}); err == nil {
-			s.schemas, s.snapshot = result.Schemas, result.Schema
-			t.SetDescription(fmt.Sprintf("%d tables, %d modules, %d sequences, %d table types", len(s.snapshot.Tables), len(s.snapshot.Definitions), len(s.snapshot.Sequences), len(s.snapshot.TableTypes)))
-		}
-	case "sqlite", "postgres":
-		if len(s.schemas) > 1 {
-			err = fmt.Errorf("%s comparisons cover exactly one schema, received %v", conn.Dialect, s.schemas)
-			break
-		}
-		t.SetDescription("inspecting " + conn.Schema)
+	if len(s.schemas) == 0 {
 		s.schemas = []string{conn.Schema}
-		if s.review, err = review.Inspect(ctx, conn.DB, conn.Dialect, conn.Schema); err == nil {
-			t.SetDescription("inspected " + conn.Schema)
-		}
-	default:
-		err = fmt.Errorf("schema comparison does not support dialect %s", conn.Dialect)
 	}
-	if err != nil {
+	t.SetDescription("inspecting " + strings.Join(s.schemas, ", "))
+	if s.snapshot, err = dialects.Inspect(ctx, conn.DB, conn.Dialect, s.schemas); err != nil {
 		return side{}, errors.Join(fmt.Errorf("inspect %s: %w", role, err), conn.DB.Close())
 	}
+	t.SetDescription(describe(s.snapshot.Summary()))
 	return s, nil
+}
+
+// describe lists a summary's counts, most numerous first, as "2 table, 1 view".
+func describe(summary map[string]int) string {
+	kinds := slices.Collect(maps.Keys(summary))
+	slices.SortFunc(kinds, func(a, b string) int { return cmp.Or(cmp.Compare(summary[b], summary[a]), cmp.Compare(a, b)) })
+	parts := make([]string, len(kinds))
+	for i, kind := range kinds {
+		parts[i] = fmt.Sprintf("%d %s", summary[kind], kind)
+	}
+	return strings.Join(parts, ", ")
 }

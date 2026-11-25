@@ -23,7 +23,7 @@ func readTableTypes(ctx context.Context, db Querier, c *catalog) error {
 	return visit(ctx, db, schemaQuery{SQL: `SELECT tt.name, cc.definition
 		FROM sys.check_constraints cc JOIN sys.table_types tt ON tt.type_table_object_id=cc.parent_object_id
 		JOIN sys.schemas s ON s.schema_id=tt.schema_id
-		WHERE s.name=@p1 ORDER BY tt.name, cc.definition`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1/*names*/ ORDER BY tt.name, cc.definition`, Schema: c.schema, Names: c.names, NameColumn: "tt.name"}, func(rows *sql.Rows) error {
 		var name, definition string
 		if err := rows.Scan(&name, &definition); err != nil {
 			return err
@@ -53,7 +53,7 @@ func readTableTypeColumns(ctx context.Context, db Querier, c *catalog) error {
 		JOIN sys.types ty ON ty.user_type_id=col.user_type_id
 		LEFT JOIN sys.identity_columns idc ON idc.object_id=col.object_id AND idc.column_id=col.column_id
 		LEFT JOIN sys.default_constraints dc ON dc.parent_object_id=col.object_id AND dc.parent_column_id=col.column_id
-		WHERE s.name=@p1 ORDER BY tt.name, col.column_id`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1/*names*/ ORDER BY tt.name, col.column_id`, Schema: c.schema, Names: c.names, NameColumn: "tt.name"}, func(rows *sql.Rows) error {
 		var typeName, columnName, dataType string
 		var userDefined, nullable, identity bool
 		var maxLength, precision, scale int
@@ -62,12 +62,16 @@ func readTableTypeColumns(ctx context.Context, db Querier, c *catalog) error {
 		if err := rows.Scan(&typeName, &columnName, &dataType, &userDefined, &maxLength, &precision, &scale, &nullable, &identity, &seed, &increment, &defaultValue, &collation); err != nil {
 			return err
 		}
+		if n := len(c.tableTypes); n == 0 || c.tableTypes[n-1].Name.Name != typeName {
+			c.tableTypes = append(c.tableTypes, migrate.TableType{Name: migrate.Name{Schema: c.schema, Name: typeName}})
+		}
+		last := &c.tableTypes[len(c.tableTypes)-1]
 		if userDefined {
-			return fmt.Errorf("table type %s.%s column %s uses unsupported user-defined type %s", c.schema, typeName, columnName, dataType)
+			return c.collector.refuse(last.Name, "", fmt.Sprintf("table type %s.%s column %s uses unsupported user-defined type %s", c.schema, typeName, columnName, dataType))
 		}
 		typ, err := dialect.CatalogType(dialect.CatalogColumn{Name: columnName, DataType: dataType, MaxLength: &maxLength, Precision: &precision, Scale: &scale})
 		if err != nil {
-			return fmt.Errorf("table type %s.%s column %s: %w", c.schema, typeName, columnName, err)
+			return c.collector.refuse(last.Name, "", fmt.Sprintf("table type %s.%s column %s: %v", c.schema, typeName, columnName, err))
 		}
 		column := migrate.Column{Name: columnName, Nullable: nullable, Collation: collation.String}
 		if column.Type, err = dialect.FormatType(typ); err != nil {
@@ -82,10 +86,6 @@ func readTableTypeColumns(ctx context.Context, db Querier, c *catalog) error {
 		if defaultValue.Valid {
 			column.Default = &migrate.Default{Expression: defaultValue.String}
 		}
-		if n := len(c.tableTypes); n == 0 || c.tableTypes[n-1].Name.Name != typeName {
-			c.tableTypes = append(c.tableTypes, migrate.TableType{Name: migrate.Name{Schema: c.schema, Name: typeName}})
-		}
-		last := &c.tableTypes[len(c.tableTypes)-1]
 		last.Columns = append(last.Columns, column)
 		return nil
 	})
@@ -98,7 +98,7 @@ func readTableTypeKeys(ctx context.Context, db Querier, c *catalog) error {
 		JOIN sys.indexes i ON i.object_id=tt.type_table_object_id
 		JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id
 		JOIN sys.columns col ON col.object_id=ic.object_id AND col.column_id=ic.column_id
-		WHERE s.name=@p1 AND i.index_id>0 ORDER BY tt.name, i.index_id, ic.key_ordinal`, Schema: c.schema}, func(rows *sql.Rows) error {
+		WHERE s.name=@p1 AND i.index_id>0/*names*/ ORDER BY tt.name, i.index_id, ic.key_ordinal`, Schema: c.schema, Names: c.names, NameColumn: "tt.name"}, func(rows *sql.Rows) error {
 		var typeName, typeDesc, column string
 		var indexID int
 		var primary, unique, descending, included bool
@@ -106,7 +106,7 @@ func readTableTypeKeys(ctx context.Context, db Querier, c *catalog) error {
 			return err
 		}
 		if !unique || included || typeDesc != "CLUSTERED" && typeDesc != "NONCLUSTERED" {
-			return fmt.Errorf("table type %s.%s has an unsupported non-unique, included-column or %s index", c.schema, typeName, typeDesc)
+			return c.collector.refuse(migrate.Name{Schema: c.schema, Name: typeName}, "", fmt.Sprintf("table type %s.%s has an unsupported non-unique, included-column or %s index", c.schema, typeName, typeDesc))
 		}
 		t, err := c.tableType(typeName)
 		if err != nil {

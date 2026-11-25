@@ -7,4 +7,4 @@ Provide SQLGLOT_TEST_POSTGRES_URL for a disposable PostgreSQL admin connection. 
 
 | Name | Command | CEL Validation |
 | --- | --- | --- |
-| Reviewed PostgreSQL schema execution | env GOWORK=off go test -tags integration ./database/migrate/review -count=1 | exitCode == 0 |
+| PostgreSQL schema engine dialect | env GOWORK=off go test -tags integration ./database/migrate/dialect/postgres -count=1 | exitCode == 0 |

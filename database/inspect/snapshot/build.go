@@ -16,20 +16,29 @@ func build(c catalog) (migrate.Schema, error) {
 		name := migrate.Name{Schema: t.Schema, Name: t.Name}
 		if t.Type == "VIEW" {
 			if t.Definition == nil || strings.TrimSpace(*t.Definition) == "" {
-				return out, fmt.Errorf("view %v has no readable definition", name)
+				if err := c.collector.refuse(name, "", fmt.Sprintf("view %v has no readable definition", name)); err != nil {
+					return out, err
+				}
+				continue
 			}
 			out.Definitions = append(out.Definitions, migrate.Definition{Name: name, Kind: "VIEW", SQL: *t.Definition, Dependencies: c.dependencies[t.Name]})
 			continue
 		}
 		table, err := buildTable(c, t)
 		if err != nil {
-			return out, fmt.Errorf("table %v: %w", name, err)
+			if err := c.collector.refuse(name, "", fmt.Sprintf("table %v: %v", name, err)); err != nil {
+				return out, err
+			}
+			continue
 		}
 		out.Tables = append(out.Tables, table)
 	}
 	for _, r := range c.routines {
 		if r.Definition == nil || strings.TrimSpace(*r.Definition) == "" {
-			return out, fmt.Errorf("routine %s.%s has no readable definition", r.Schema, r.Name)
+			if err := c.collector.refuse(migrate.Name{Schema: r.Schema, Name: r.Name}, "", fmt.Sprintf("routine %s.%s has no readable definition", r.Schema, r.Name)); err != nil {
+				return out, err
+			}
+			continue
 		}
 		kind := "PROCEDURE"
 		if r.Type.IsFunction() {
@@ -72,7 +81,11 @@ func buildTable(c catalog, input mssqlcatalog.Table) (migrate.Table, error) {
 		}
 		idx, err := buildIndex(index, c.parts)
 		if err != nil {
-			return out, err
+			if c.collector == nil {
+				return out, err
+			}
+			_ = c.collector.refuse(out.Name, index.Name, err.Error())
+			continue
 		}
 		idx.FillFactor = c.fillFactors[[2]string{index.Table, index.Name}]
 		out.Indexes = append(out.Indexes, idx)
@@ -94,7 +107,9 @@ func buildTable(c catalog, input mssqlcatalog.Table) (migrate.Table, error) {
 			continue
 		}
 		if check.Disabled {
-			return out, fmt.Errorf("disabled check %s is unsupported", check.Name)
+			if err := c.collector.refuse(out.Name, check.Name, fmt.Sprintf("disabled check %s is unsupported", check.Name)); err != nil {
+				return out, err
+			}
 		}
 		out.Checks = append(out.Checks, migrate.Check{Name: check.Name, Expression: check.Definition})
 	}
