@@ -9,7 +9,7 @@ import (
 	clickytask "github.com/flanksource/clicky/task"
 	"github.com/flanksource/sqlglot-go/database/compare"
 	"github.com/flanksource/sqlglot-go/database/history"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -172,14 +172,15 @@ var _ = Describe("Comparing two connections", func() {
 		Expect(patch.SQL).NotTo(ContainSubstring("idx_items_label"))
 		Expect(patch.Acks).To(BeEmpty())
 
-		var artifact review.Artifact
+		var artifact engine.Artifact
 		Expect(json.Unmarshal(patch.Artifact, &artifact)).To(Succeed())
+		Expect(artifact.Selection).To(ConsistOf(addTags, addNote))
 		target, err := sql.Open("sqlite", opts.Target[len("sqlite://"):])
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(target.Close)
-		applied, err := review.Apply(ctx, target, review.Request{Artifact: artifact, Hash: patch.Hash})
+		applied, err := engine.Apply(ctx, target, engine.ApplyRequest{Artifact: artifact, Hash: patch.Hash})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(applied.Outcome).To(Equal(review.Applied))
+		Expect(applied.Outcome).To(Equal(engine.Applied))
 
 		again, err := compare.Compare(ctx, withRun(opts))
 		Expect(err).NotTo(HaveOccurred())
@@ -200,5 +201,46 @@ var _ = Describe("Comparing two connections", func() {
 	It("refuses comparing a connection with itself", func(ctx SpecContext) {
 		_, err := compare.Compare(ctx, compare.Options{Reference: opts.Target, Target: opts.Target, Run: uuid.NewString(), History: store})
 		Expect(err).To(MatchError(ContainSubstring("same connection")))
+	})
+})
+
+var _ = Describe("Selecting changes of a table the target rebuilds", func() {
+	// SQLite rebuilds a table to drop a column, so the drop carries the table's
+	// other changes with it.
+	const (
+		rebuildReferenceDDL = `CREATE TABLE items (id integer NOT NULL, label text NOT NULL); CREATE INDEX idx_items_label ON items (label)`
+		rebuildTargetDDL    = `CREATE TABLE items (id integer NOT NULL, label text NOT NULL, omitted text)`
+	)
+	dropOmitted := `["drop","column","main","items","omitted"]`
+	var (
+		opts   compare.Options
+		result compare.Result
+	)
+	BeforeEach(func(ctx SpecContext) {
+		store, err := history.Open(filepath.Join(GinkgoT().TempDir(), "history.db"))
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(store.Close)
+		opts = withRun(compare.Options{Reference: sqliteFile(rebuildReferenceDDL), Target: sqliteFile(rebuildTargetDDL), History: store})
+		result, err = compare.Compare(ctx, opts)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Changes).To(HaveLen(2))
+	})
+	patch := func(ctx SpecContext, selection ...string) (compare.Patch, error) {
+		return compare.BuildPatch(ctx, compare.PatchOptions{Options: withRun(opts), Selection: selection, DiffHash: result.DiffHash})
+	}
+
+	It("fails closed when a selected change requires one that is not selected", func(ctx SpecContext) {
+		_, err := patch(ctx, dropOmitted)
+		Expect(err).To(MatchError(ContainSubstring("requires unselected changes " + addIndex)))
+	})
+	It("refuses a selection the diff does not list", func(ctx SpecContext) {
+		_, err := patch(ctx, `["add","table","main","nowhere",""]`)
+		Expect(err).To(MatchError(ContainSubstring("selected changes are not in the diff")))
+	})
+	It("plans the whole set when every required change is selected, acknowledging the drop by its change ID", func(ctx SpecContext) {
+		built, err := patch(ctx, dropOmitted, addIndex)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(built.Acks).To(Equal([]string{dropOmitted}))
+		Expect(built.SQL).To(ContainSubstring("DROP TABLE `items`"))
 	})
 })

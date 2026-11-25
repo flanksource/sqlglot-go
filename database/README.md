@@ -9,11 +9,10 @@ These packages own the database implementation previously provided by commons-db
 | `database/inspect/snapshot` | Complete supported SQL Server snapshots, including modules and dependencies |
 | `database/atlas/sqlserver` | SQL Server Atlas HCL codec and runtime driver |
 | `database/migrate` | Existing HCL, scripts, security and provisioner API; read-only bundle preview |
-| `database/migrate/review` | Reviewed PostgreSQL and SQLite schema artifacts and transactional execution |
-| `database/migrate/sqlserver` | Existing SQL Server v1 artifact execution |
+| `database/migrate/dialect` | The SQL Server, PostgreSQL and SQLite dialects of the schema engine in `migrate/engine`, registered by name when imported |
+| `database/migrate/workflow` | The plan, review and apply workflow the CLI and web UI share, over the one reviewed artifact |
 | `database/migrate/csvdata` | [Reviewed SQL Server CSV migrations](migrate/README.md#reviewed-csv-data) |
 | `database/migrate/sqlite` | Programmatic SQLite table reconciliation |
-| `database/migrate/viewdeps` | PostgreSQL dependent view capture, invalidation and restoration |
 
 commons-db preserves its migration and inspection APIs through aliases and forwarding functions. Its catalog cache, refresh policy and metadata remain in commons-db. Supported SQLite rebuilds are automatic; the previous `WithRebuilds` and `AllowRebuilds` names remain accepted. Column and table drops remain opt-in for bundle reconciliation.
 
@@ -109,17 +108,17 @@ Every `schema inspect`, `schema compare`, `schema patch`, `migrate plan` and `mi
 
 ## Reviewed schema scope
 
-PostgreSQL and SQLite artifacts use version 2. They bind dialect, schema, baseline and desired HCL snapshots, ordered SQL, destructive IDs and advisory reasons to a SHA-256 hash. SQL Server retains its existing version 1 artifact and hash algorithm. All use the same CLI commands.
+SQL Server, PostgreSQL and SQLite plan through `migrate/engine` and write the same version 2 artifact: dialect, capabilities fingerprint, scope, the baseline and desired schemas, the changes, the units of ordered SQL with their preconditions, and a SHA-256 hash of all of it. All use the same CLI commands. See [reviewed migration artifacts](../migrate/ARTIFACTS.md) and the [plan file guide](../docs/guide/migrate/plan-files.md).
 
-PostgreSQL apply acquires a transaction-owned advisory lock before drift inspection. SQLite uses one pinned connection for pragma changes, `BEGIN IMMEDIATE`, drift inspection, exact SQL, foreign key checks, commit/rollback and pragma restoration. A current schema that matches the desired state reports `already-applied`; any other departure from the baseline is rejected. This shortcut applies only to schema artifacts.
+PostgreSQL holds a transaction-owned advisory lock for each unit, with a lock timeout. SQLite uses one pinned connection for pragma changes, `BEGIN IMMEDIATE`, the unit's statements, foreign key checks, commit or rollback and pragma restoration. SQL Server holds an application lock and runs each unit in one transaction. A unit whose objects already match the artifact's desired state is skipped, so applying a plan file again resumes after the units that committed; objects that match neither state are drift and fail the unit.
 
-The PostgreSQL/SQLite reviewed path supports schema-only transactional table changes and PostgreSQL enums within one existing schema. Views, routines, user triggers, virtual tables, PostgreSQL partitioning/inheritance, domains, standalone sequences, row security and unsupported constraint states are refused. Snapshot round-trip checks reject metadata the HCL codec cannot preserve. Nontransactional plans are refused. Check expressions must compare to the backend-rendered form; unsupported normalization fails rather than accepting an unverified postcondition.
+Inspection refuses, object by object, what a dialect cannot reproduce faithfully (for example PostgreSQL partitioning or inheritance, domains, row security, SQLite virtual tables, SQL Server computed columns), and a refusal blocks a plan only when a change or a forced rebuild touches that object. Check expressions compare as parsed SQL, so rendered parentheses are not an edit.
 
 Bundles containing scripts or security declarations produce advisory schema previews. Advisory artifacts cannot execute. Full reviewed PostgreSQL script/security phases, completion records and retry semantics are tracked separately. The existing library `migrate.Apply` retains its complete PostgreSQL script and security lifecycle; callers of that direct API are responsible for authorizing execution.
 
 ## Library use
 
-`inspect.Inspect(ctx, db, driver, Limits{})` accepts a caller-owned `*sql.DB` and returns an uncached catalog. `review.Inspect` returns a supported migration snapshot. `review.Build` accepts `Options{Dialect, Schema, DesiredHCL}` and performs read-only planning; `Selection` limits it to a subset of change IDs and `Baseline` plans from a reviewed snapshot instead of inspecting. `compare.Compare` and `compare.BuildPatch` back the CLI comparison commands. `review.Apply` requires `Request{Artifact, Hash, Acknowledgements, LockTimeout}`. None closes the caller's pool or changes its pool settings.
+`inspect.Inspect(ctx, db, driver, Limits{})` accepts a caller-owned `*sql.DB` and returns an uncached catalog. `dialect.Inspect` returns a supported migration snapshot. `engine.PlanLive(ctx, db, engine.PlanLiveRequest{Dialect, Scope, Desired, Selection})` plans against the live database, read-only; `Selection` limits it to a subset of change IDs. `engine.Plan` plans offline from two schemas. `compare.Compare` and `compare.BuildPatch` back the CLI comparison commands. `engine.Apply` requires `ApplyRequest{Artifact, Hash, Acknowledgements, LockTimeout}`, and `workflow.Plan`, `Review` and `Apply` wrap the same steps for the CLI and the web UI. None closes the caller's pool or changes its pool settings.
 
 Run the [SQLite example](../examples/database/main.go) with `go run ./examples/database`. It uses a disposable directory, inspects, plans, applies and repeats an artifact, then removes the directory. The adjacent `schema.hcl` is a PostgreSQL CLI example.
 
@@ -135,6 +134,6 @@ bash hack/database-integration.sh postgres
 bash hack/database-integration.sh sqlserver
 ```
 
-Install golangci-lint v2.15.0 for the lint target. The integration harness uses disposable containers with no published ports, network access or host mounts, copies Linux test binaries into them and removes them on exit. It works with a remote Docker context. Build the test binaries for the Docker server architecture; the SQL Server image requires amd64. For an externally managed disposable server, run integration-tagged review tests with `SQLGLOT_TEST_POSTGRES_URL`, or SQL Server executor tests with `COMMONS_DB_SQLSERVER_ARTIFACT_TEST_URL`. These tests create and remove isolated databases.
+Install golangci-lint v2.15.0 for the lint target. The integration harness uses disposable containers with no published ports, network access or host mounts, copies Linux test binaries into them and removes them on exit. It works with a remote Docker context. Build the test binaries for the Docker server architecture; the SQL Server image requires amd64. For an externally managed disposable server, run integration-tagged dialect tests with `SQLGLOT_TEST_POSTGRES_URL`, or SQL Server tests with `COMMONS_DB_SQLSERVER_URL`. These tests create and remove isolated databases.
 
 The harness rebuilds its test binaries automatically. Set `SQLGLOT_DOCKER_ARCH=arm64` for PostgreSQL on an ARM64 Docker server; the default is amd64. Migration advisory locks coordinate cooperating reviewed executors. Other DDL writers must be serialized with deployment execution.

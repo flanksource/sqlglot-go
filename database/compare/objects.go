@@ -40,7 +40,7 @@ func (s *sides) objects(changes []migrate.Change) ([]Object, error) {
 		i, ok := index[key]
 		if !ok {
 			o := Object{Kind: kind, Name: c.Object, Before: before[kind][c.Object], After: after[kind][c.Object], Language: language, Changes: []string{}}
-			if s.dialect == "sqlserver" && slices.Contains([]string{"procedure", "function", "view", "trigger"}, kind) {
+			if slices.Contains([]string{"procedure", "function", "view", "trigger"}, kind) {
 				o.Language = "sql"
 			}
 			switch {
@@ -70,28 +70,49 @@ func objectKind(c migrate.Change) string {
 	return c.Kind
 }
 
+// definitions renders both sides' objects. A schema that carries its dialect's
+// own HCL shows its tables and enum types as the HCL blocks; any other shows
+// each object as JSON. Modules and the objects the HCL does not hold show as SQL.
 func (s *sides) definitions() (before, after definitions, language string, err error) {
-	if s.dialect == "sqlserver" {
-		before, err = sqlServerDefinitions(s.current)
-		if err == nil {
-			after, err = sqlServerDefinitions(s.desired)
-		}
-		return before, after, "json", err
+	language = "json"
+	if s.current.Schema.Native != "" || s.reference.Schema.Native != "" {
+		language = "hcl"
 	}
-	before, err = hclDefinitions(s.baseline.HCL, s.target.Schema)
-	if err == nil {
-		after, err = hclDefinitions(s.reference.HCL, s.target.Schema)
+	if before, err = schemaDefinitions(s.current.Schema, firstSchema(s.schemas)); err != nil {
+		return nil, nil, "", err
 	}
-	return before, after, "hcl", err
+	after, err = schemaDefinitions(s.reference.Schema, firstSchema(s.schemas))
+	return before, after, language, err
 }
 
-func sqlServerDefinitions(snapshot migrate.Schema) (definitions, error) {
+func firstSchema(schemas []string) string {
+	if len(schemas) == 0 {
+		return ""
+	}
+	return schemas[0]
+}
+
+func schemaDefinitions(schema migrate.Schema, schemaName string) (definitions, error) {
 	d := definitions{}
-	put := func(kind string, name migrate.Name, value any) error {
-		if text, ok := value.(string); ok {
-			d.set(kind, name, text)
-			return nil
+	if schema.Native != "" {
+		var err error
+		if d, err = hclDefinitions(schema.Native, schemaName); err != nil {
+			return nil, err
 		}
+	} else if err := d.putJSON(schema); err != nil {
+		return nil, err
+	}
+	for _, def := range schema.Definitions {
+		if kind := strings.ToLower(def.Kind); d[kind][def.Name] == "" {
+			d.set(kind, def.Name, def.SQL)
+		}
+	}
+	return d, nil
+}
+
+// putJSON adds every table, sequence and table type as indented JSON.
+func (d definitions) putJSON(schema migrate.Schema) error {
+	put := func(kind string, name migrate.Name, value any) error {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {
 			return err
@@ -99,30 +120,25 @@ func sqlServerDefinitions(snapshot migrate.Schema) (definitions, error) {
 		d.set(kind, name, string(data))
 		return nil
 	}
-	for _, t := range snapshot.Tables {
+	for _, t := range schema.Tables {
 		if err := put("table", t.Name, t); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for _, q := range snapshot.Sequences {
+	for _, q := range schema.Sequences {
 		if err := put("sequence", q.Name, q); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for _, t := range snapshot.TableTypes {
+	for _, t := range schema.TableTypes {
 		if err := put("table-type", t.Name, t); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for _, def := range snapshot.Definitions {
-		if err := put(strings.ToLower(def.Kind), def.Name, def.SQL); err != nil {
-			return nil, err
-		}
-	}
-	return d, nil
+	return nil
 }
 
-// hclDefinitions slices each table and enum block out of a reviewed snapshot.
+// hclDefinitions slices each table and enum block out of a native snapshot.
 func hclDefinitions(text, schemaName string) (definitions, error) {
 	file, diags := hclsyntax.ParseConfig([]byte(text), "snapshot.hcl", hcl.InitialPos)
 	if diags.HasErrors() {

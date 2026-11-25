@@ -46,12 +46,27 @@ var _ = Describe("backend capabilities", func() {
 		Entry("an older MariaDB release", "10.5.27-MariaDB", false, "JSON arrays via JSON_TABLE", "10.6.0"),
 	)
 
+	probeSQLServer := func(version string, compatibilityLevel, engineEdition int, edition string) (BackendCapabilities, error) {
+		return probe("sqlserver", sqlServerCapabilitiesQuery,
+			[]string{"database", "version", "compatibility_level", "engine_edition", "edition"},
+			"warehouse", version, compatibilityLevel, engineEdition, edition)
+	}
+
+	supported := func(c BackendCapabilities) map[BackendCapability]bool {
+		result := map[BackendCapability]bool{}
+		for name, status := range c.Features {
+			result[name] = status.Supported
+		}
+		return result
+	}
+
 	It("uses SQL Server database compatibility rather than the Azure product version", func() {
-		capabilities, err := probe("sqlserver", sqlServerCapabilitiesQuery,
-			[]string{"database", "version", "compatibility_level"}, "warehouse", "12.0.2000.8", 160)
+		capabilities, err := probeSQLServer("12.0.2000.8", 160, 5, "SQL Azure")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(capabilities.Version).To(Equal("12.0.2000.8"))
 		Expect(capabilities.CompatibilityLevel).To(HaveValue(Equal(160)))
+		Expect(capabilities.EngineEdition).To(HaveValue(Equal(5)))
+		Expect(capabilities.Edition).To(Equal("SQL Azure"))
 		Expect(capabilities.Features[BackendCapabilityArrayFilters]).To(Equal(BackendCapabilityStatus{
 			Supported: true, Detail: "JSON arrays via OPENJSON", MinimumCompatibilityLevel: new(130),
 		}))
@@ -59,10 +74,161 @@ var _ = Describe("backend capabilities", func() {
 
 	It("rejects SQL Server databases below compatibility level 130", func() {
 		capabilities, err := probe("sql_server", sqlServerCapabilitiesQuery,
-			[]string{"database", "version", "compatibility_level"}, "warehouse", "16.0.1000.6", 120)
+			[]string{"database", "version", "compatibility_level", "engine_edition", "edition"},
+			"warehouse", "16.0.1000.6", 120, 2, "Standard Edition (64-bit)")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(capabilities.Features[BackendCapabilityArrayFilters].Supported).To(BeFalse())
 		Expect(capabilities.Require(BackendCapabilityArrayFilters)).To(MatchError(ContainSubstring("compatibility level 130")))
+	})
+
+	It("keeps the SQL Server probe valid at database compatibility level 100", func() {
+		Expect(sqlServerCapabilitiesQuery).ToNot(MatchRegexp(`(?i)STRING_AGG|TRY_CONVERT|\bIIF\b|\bCONCAT\s*\(`))
+	})
+
+	DescribeTable("derives the SQL Server feature set from version, compatibility level and edition",
+		func(version string, compatibilityLevel, engineEdition int, edition string, expected map[BackendCapability]bool) {
+			capabilities, err := probeSQLServer(version, compatibilityLevel, engineEdition, edition)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(supported(capabilities)).To(Equal(expected))
+		},
+		Entry("2012 Standard at compatibility 100", "11.0.6020.0", 100, 2, "Standard Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: false, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+			BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: false,
+			BackendCapabilityDropIfExists: false, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("2016 RTM Standard", "13.0.1601.5", 130, 2, "Standard Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+			BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: true, BackendCapabilityCreateOrAlter: false,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("2016 RTM Enterprise", "13.0.1601.5", 130, 3, "Enterprise Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: true,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: true, BackendCapabilityCreateOrAlter: false,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("2016 SP1 Standard", "13.0.4001.0", 130, 2, "Standard Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: true, BackendCapabilityCreateOrAlter: true,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("2019 Enterprise at compatibility 100", "15.0.4123.1", 100, 3, "Enterprise Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: false, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: true,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: true,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("2022 Express at compatibility 100", "16.0.4100.1", 100, 4, "Express Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: false, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: true,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("2022 Standard at compatibility 100", "16.0.4100.1", 100, 2, "Standard Edition (64-bit)", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: false, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: true,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("Azure SQL Database", "12.0.2000.8", 160, 5, "SQL Azure", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: true,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: true, BackendCapabilityCreateOrAlter: true,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("Azure SQL Managed Instance at compatibility 100", "12.0.2000.8", 100, 8, "SQL Azure", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: false, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: true,
+			BackendCapabilityDataCompression: true, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: true,
+			BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+		}),
+		Entry("an engine edition whose features are not verified", "12.0.2000.8", 130, 6, "SQL Azure", map[BackendCapability]bool{
+			BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+			BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: true, BackendCapabilityCreateOrAlter: false,
+			BackendCapabilityDropIfExists: false, BackendCapabilityTableRebuildRequired: false,
+		}),
+	)
+
+	It("names the missing SQL Server requirement when a feature is unsupported", func() {
+		capabilities, err := probeSQLServer("13.0.1601.5", 100, 2, "Standard Edition (64-bit)")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(capabilities.Require(BackendCapabilityTryConvert)).To(MatchError(And(
+			HavePrefix(`backend "sqlserver" does not support capability "tryConvert": `),
+			HaveSuffix("requires compatibility level 110 or newer"))))
+		Expect(capabilities.Require(BackendCapabilityCreateOrAlter)).To(MatchError(ContainSubstring("requires version 13.0.4001 or newer")))
+		Expect(capabilities.Require(BackendCapabilityDropIfExists)).To(Succeed())
+		Expect(capabilities.Require(BackendCapabilityOnlineIndex)).To(MatchError(And(
+			ContainSubstring(`capability "onlineIndex"`), ContainSubstring("Standard Edition (64-bit)"))))
+		Expect(capabilities.Require(BackendCapabilityDataCompression)).To(MatchError(ContainSubstring("requires version 13.0.4001 or newer")))
+	})
+
+	It("fails when SQL Server reports no engine edition", func() {
+		_, err := probe("sqlserver", sqlServerCapabilitiesQuery,
+			[]string{"database", "version", "compatibility_level", "engine_edition", "edition"},
+			"warehouse", "16.0.4100.1", 160, nil, "Standard Edition (64-bit)")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("notes that PostgreSQL online index builds cannot run in a transaction", func() {
+		capabilities, err := probe("postgres", postgresCapabilitiesQuery,
+			[]string{"database", "version", "version_num"}, "warehouse", "17.4", 170004)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(capabilities.Features[BackendCapabilityOnlineIndex].Detail).To(And(
+			ContainSubstring("CONCURRENTLY"), ContainSubstring("cannot run inside a transaction")))
+	})
+
+	DescribeTable("declares every feature for the non SQL Server backends",
+		func(backend, statement string, columns []string, values []driver.Value, expected map[BackendCapability]bool) {
+			capabilities, err := probe(backend, statement, columns, values...)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(supported(capabilities)).To(Equal(expected))
+		},
+		Entry("PostgreSQL 17", "postgres", postgresCapabilitiesQuery, []string{"database", "version", "version_num"},
+			[]driver.Value{"warehouse", "17.4", 170004}, map[BackendCapability]bool{
+				BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: true,
+				BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: false,
+				BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+			}),
+		Entry("MySQL 8.0.21", "mysql", mysqlCapabilitiesQuery, []string{"database", "version"},
+			[]driver.Value{"warehouse", "8.0.21"}, map[BackendCapability]bool{
+				BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: false, BackendCapabilityOnlineIndex: false,
+				BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: false,
+				BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+			}),
+		Entry("SQLite 3.50", "sqlite", sqliteCapabilitiesQuery, []string{"database", "version", "json_arrays"},
+			[]driver.Value{"main", "3.50.4", 1}, map[BackendCapability]bool{
+				BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: true, BackendCapabilityOnlineIndex: false,
+				BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: false,
+				BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: true,
+			}),
+		Entry("ClickHouse 25.8", "clickhouse", clickHouseCapabilitiesQuery, []string{"database", "version"},
+			[]driver.Value{"default", "25.8.3.66"}, map[BackendCapability]bool{
+				BackendCapabilityArrayFilters: true, BackendCapabilityTransactionalDDL: false, BackendCapabilityOnlineIndex: false,
+				BackendCapabilityDataCompression: false, BackendCapabilityTryConvert: false, BackendCapabilityCreateOrAlter: false,
+				BackendCapabilityDropIfExists: true, BackendCapabilityTableRebuildRequired: false,
+			}),
+	)
+
+	It("changes the fingerprint when a feature flips or the edition changes", func() {
+		standard, err := probeSQLServer("16.0.4100.1", 130, 2, "Standard Edition (64-bit)")
+		Expect(err).ToNot(HaveOccurred())
+		enterprise, err := probeSQLServer("16.0.4100.1", 130, 3, "Enterprise Edition (64-bit)")
+		Expect(err).ToNot(HaveOccurred())
+		again, err := probeSQLServer("16.0.4100.1", 130, 2, "Standard Edition (64-bit)")
+		Expect(err).ToNot(HaveOccurred())
+
+		standardFingerprint, err := standard.Fingerprint()
+		Expect(err).ToNot(HaveOccurred())
+		enterpriseFingerprint, err := enterprise.Fingerprint()
+		Expect(err).ToNot(HaveOccurred())
+		againFingerprint, err := again.Fingerprint()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(againFingerprint).To(Equal(standardFingerprint))
+		Expect(enterpriseFingerprint).ToNot(Equal(standardFingerprint))
+
+		flipped := standard
+		flipped.Features = map[BackendCapability]BackendCapabilityStatus{}
+		for name, status := range standard.Features {
+			flipped.Features[name] = status
+		}
+		flipped.Features[BackendCapabilityOnlineIndex] = BackendCapabilityStatus{Supported: true}
+		flippedFingerprint, err := flipped.Fingerprint()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(flippedFingerprint).ToNot(Equal(standardFingerprint))
 	})
 
 	DescribeTable("probes JSON expansion instead of assuming SQLite build features",
@@ -141,7 +307,7 @@ var _ = Describe("backend capabilities", func() {
 
 		fingerprint, err := capabilities.Fingerprint()
 		Expect(err).ToNot(HaveOccurred())
-		Expect(fingerprint).To(HavePrefix("backend-capabilities-v1:"))
+		Expect(fingerprint).To(HavePrefix("backend-capabilities-v2:"))
 		Expect(capabilities.Require(BackendCapabilityArrayFilters)).To(Succeed())
 	})
 })

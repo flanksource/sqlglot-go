@@ -127,11 +127,14 @@ func onlyKeys(r schemahcl.Resource, attrs, blocks []string) error {
 }
 
 func convertColumn(spec *sqlspec.Column, _ *schema.Table) (*schema.Column, error) {
-	if err := onlyKeys(spec.Extra, []string{"default"}, []string{"identity"}); err != nil {
+	if err := onlyKeys(spec.Extra, []string{"default", "default_name", "collate"}, []string{"identity"}); err != nil {
 		return nil, fmt.Errorf("column %q: %w", spec.Name, err)
 	}
 	c, err := specutil.Column(spec, convertColumnType)
 	if err != nil {
+		return nil, err
+	}
+	if err := namedAttrs(spec, c); err != nil {
 		return nil, err
 	}
 	identity, ok := spec.Extra.Resource("identity")
@@ -147,6 +150,26 @@ func convertColumn(spec *sqlspec.Column, _ *schema.Table) (*schema.Column, error
 		return nil, fmt.Errorf("column %q identity: %w", spec.Name, err)
 	}
 	return c.AddAttrs(&planner.Identity{Seed: seed, Increment: increment}), nil
+}
+
+// namedAttrs reads `default_name`, the name of the column's default constraint,
+// and `collate`, the column's collation.
+func namedAttrs(spec *sqlspec.Column, c *schema.Column) error {
+	if attr, ok := spec.Extra.Attr("default_name"); ok {
+		name, err := attr.String()
+		if err != nil || name == "" || c.Default == nil {
+			return fmt.Errorf("column %q: default_name must be a non-empty string beside a default", spec.Name)
+		}
+		c.AddAttrs(&planner.DefaultConstraint{Name: name})
+	}
+	if attr, ok := spec.Extra.Attr("collate"); ok {
+		collation, err := attr.String()
+		if err != nil || collation == "" {
+			return fmt.Errorf("column %q: collate must be a non-empty string", spec.Name)
+		}
+		c.SetCollation(collation)
+	}
+	return nil
 }
 
 func int64Attr(r *schemahcl.Resource, name string) (int64, error) {
@@ -176,11 +199,14 @@ func convertPrimaryKey(spec *sqlspec.PrimaryKey, t *schema.Table) (*schema.Index
 // convertIndex reads an index, nonclustered unless `clustered = true`, with
 // optional `include = [column.x]` and `where = "..."`.
 func convertIndex(spec *sqlspec.Index, t *schema.Table) (*schema.Index, error) {
-	if err := onlyKeys(spec.Extra, []string{"clustered", "include", "where"}, nil); err != nil {
+	if err := onlyKeys(spec.Extra, []string{"clustered", "include", "where", "constraint"}, nil); err != nil {
 		return nil, fmt.Errorf("index %q: %w", spec.Name, err)
 	}
 	idx, err := specutil.Index(spec, t)
 	if err != nil {
+		return nil, err
+	}
+	if err := uniqueConstraintAttr(spec, idx); err != nil {
 		return nil, err
 	}
 	if err := clusteredAttr(spec.Extra, false, idx); err != nil {
@@ -194,6 +220,29 @@ func convertIndex(spec *sqlspec.Index, t *schema.Table) (*schema.Index, error) {
 		idx.AddAttrs(&planner.IndexPredicate{P: p})
 	}
 	return idx, includeAttr(spec, t, idx)
+}
+
+// uniqueConstraintAttr reads `constraint = true`: the unique index is a UNIQUE
+// constraint, which has no filter or included columns.
+func uniqueConstraintAttr(spec *sqlspec.Index, idx *schema.Index) error {
+	attr, ok := spec.Extra.Attr("constraint")
+	if !ok {
+		return nil
+	}
+	constraint, err := attr.Bool()
+	if err != nil {
+		return fmt.Errorf("index %q constraint: %w", spec.Name, err)
+	}
+	if !constraint {
+		return nil
+	}
+	_, filtered := spec.Extra.Attr("where")
+	_, included := spec.Extra.Attr("include")
+	if !idx.Unique || filtered || included {
+		return fmt.Errorf("index %q: a UNIQUE constraint must be unique, with no where or include", spec.Name)
+	}
+	idx.AddAttrs(&planner.UniqueConstraint{})
+	return nil
 }
 
 func clusteredAttr(r schemahcl.Resource, fallback bool, idx *schema.Index) error {
