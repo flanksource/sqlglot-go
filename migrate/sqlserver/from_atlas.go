@@ -54,7 +54,7 @@ func FromAtlas(input *schema.Realm) (migrate.Schema, error) {
 			output.Definitions = append(output.Definitions, d)
 		}
 	}
-	_, err := Plan(migrate.Request{Current: output, Desired: output})
+	_, err := Planner{}.Diff(output, output)
 	return output, err
 }
 
@@ -182,7 +182,7 @@ func fromAtlasTableType(schemaName string, t *atlas.TableType) (migrate.TableTyp
 }
 
 func fromAtlasIndex(i *schema.Index, primary bool) (migrate.Index, error) {
-	result := migrate.Index{Name: i.Name, Unique: i.Unique, Primary: primary}
+	result := migrate.Index{Name: i.Name, Unique: i.Unique || primary, Primary: primary}
 	for _, p := range i.Parts {
 		if p.C == nil || p.X != nil || len(p.Attrs) > 0 {
 			return result, fmt.Errorf("unsupported index part on %s", i.Name)

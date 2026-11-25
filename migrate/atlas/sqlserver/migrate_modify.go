@@ -17,6 +17,7 @@ func (s *state) modifyTable(modify *schema.ModifyTable) error {
 		for _, emitted := range s.Changes[start:] {
 			emitted.Source = step.source
 		}
+		s.settle(Phase(step.phase))
 	}
 	return nil
 }

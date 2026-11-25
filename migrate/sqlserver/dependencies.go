@@ -7,6 +7,10 @@ import (
 	"github.com/flanksource/sqlglot-go/migrate"
 )
 
+// dependencies binds each module to the objects it depends on, which orders
+// the DDL. A dependency the schema does not hold is left unbound: the engine
+// diffs one unit's objects, and the missing object is neither created nor
+// dropped by that diff.
 func dependencies(r *schema.Realm, definitions []migrate.Definition) error {
 	objects := make(map[migrate.Name]schema.Object)
 	for _, s := range r.Schemas {
@@ -28,7 +32,7 @@ func dependencies(r *schema.Realm, definitions []migrate.Definition) error {
 		for _, name := range d.Dependencies {
 			object, ok := objects[name]
 			if !ok {
-				return fmt.Errorf("sqlserver: %s.%s: missing dependency %s.%s", d.Name.Schema, d.Name.Name, name.Schema, name.Name)
+				continue
 			}
 			deps = append(deps, object)
 		}
