@@ -1,7 +1,9 @@
 package dbtarget_test
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -119,6 +121,38 @@ var _ = Describe("database target DSNs", func() {
 		parsed, err := url.Parse(target.DSN)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(parsed.Opaque).To(Equal(":MEMORY:"))
+	})
+})
+
+var _ = Describe("opening a connection:// reference", func() {
+	const reference = dbtarget.ConnectionPrefix + "tenant-x/orders"
+
+	It("fails without a resolver instead of treating the reference as a DSN", func(ctx SpecContext) {
+		_, err := dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: reference, ReadOnly: true})
+		Expect(err).To(MatchError(`connection reference "connection://tenant-x/orders" requires a resolver`))
+	})
+
+	It("opens the DSN the injected resolver returns for the reference", func(ctx SpecContext) {
+		filename := filepath.Join(GinkgoT().TempDir(), "orders.db")
+		Expect(os.WriteFile(filename, nil, 0o600)).To(Succeed())
+		var resolved []string
+		conn, err := dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: reference, ReadOnly: true,
+			ResolveConnection: func(_ context.Context, ref string) (string, error) {
+				resolved = append(resolved, ref)
+				return "sqlite://" + filepath.ToSlash(filename), nil
+			}})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(conn.DB.Close)
+		Expect(resolved).To(Equal([]string{reference}))
+		Expect([]string{conn.Dialect, conn.Schema}).To(Equal([]string{"sqlite", "main"}))
+	})
+
+	It("returns the resolver's error", func(ctx SpecContext) {
+		_, err := dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: reference,
+			ResolveConnection: func(context.Context, string) (string, error) {
+				return "", errors.New("connection orders not found")
+			}})
+		Expect(err).To(MatchError("connection orders not found"))
 	})
 })
 

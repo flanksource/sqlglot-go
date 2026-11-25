@@ -34,11 +34,7 @@ type TargetOptions struct {
 }
 
 func (o TargetOptions) open(ctx context.Context, readOnly bool) (dbtarget.Connection, error) {
-	dir := o.ConnectionsDir
-	if dir == "" {
-		dir = compareConnectionsDir
-	}
-	return dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: o.DSN, Driver: o.Driver, Schema: o.Schema, ConnectionsDir: dir, ReadOnly: readOnly})
+	return dbtarget.Open(ctx, dbtarget.OpenOptions{DSN: o.DSN, Driver: o.Driver, Schema: o.Schema, ResolveConnection: connectionResolver(o.ConnectionsDir), ReadOnly: readOnly})
 }
 
 type MigrationOptions struct {
@@ -259,10 +255,6 @@ func migrationInput(ctx context.Context, opts MigrationOptions, role pathRole) (
 func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workflow.RunResult, error) {
 	return withHistory(func(store *history.Store) (workflow.RunResult, error) {
 		return operation.Run(ctx, operation.Options{Run: opts.Run, Parent: opts.Parent, Kind: history.KindMigration, Target: opts.DSN, Name: "Migration " + mode, Store: store}, func(ctx context.Context, record *history.Record, t *task.Task) (result workflow.RunResult, returnErr error) {
-			dir := opts.ConnectionsDir
-			if dir == "" {
-				dir = compareConnectionsDir
-			}
 			plan := workflow.Options{Source: opts.Source, Project: opts.project, Labels: opts.Labels, Variables: opts.Variables, Routines: opts.Routines, AllowDrops: opts.AllowDrops}
 			filters, err := migrationLayerFilters(opts)
 			if err != nil {
@@ -287,7 +279,7 @@ func migrateRun(ctx context.Context, opts MigrationOptions, mode string) (workfl
 				defer func() { returnErr = errors.Join(returnErr, root.Close()) }()
 				plan.Bundle = root.FS()
 			}
-			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ConnectionsDir: dir}, Plan: plan, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
+			return workflow.Execute(ctx, workflow.RunOptions{Mode: mode, Target: dbtarget.OpenOptions{DSN: opts.DSN, Driver: opts.Driver, Schema: opts.Schema, ResolveConnection: connectionResolver(opts.ConnectionsDir)}, Plan: plan, Acks: opts.Acks, ArtifactContent: opts.ArtifactContent, LockTimeout: opts.LockTimeout}, record, t)
 		})
 	})
 }

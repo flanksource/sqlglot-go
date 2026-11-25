@@ -3,6 +3,8 @@ package database_test
 import (
 	"context"
 	"database/sql"
+	"os/exec"
+	"strings"
 	"testing"
 
 	inspection "github.com/flanksource/sqlglot-go/database/inspect"
@@ -28,5 +30,16 @@ var _ = Describe("standalone database ownership", func() {
 	})
 	It("retains the standalone bundle apply API", func() {
 		Expect(migrate.Apply(context.Background(), "", nil)).To(MatchError(ContainSubstring("connection")))
+	})
+	It("opens, compares and migrates without the commons-db connection store, which only cmd/sqlglot wires in", func(ctx SpecContext) {
+		out, err := exec.CommandContext(ctx, "go", "list", "-deps", "./target", "./compare", "./migrate", "./migrate/workflow").Output()
+		Expect(err).NotTo(HaveOccurred())
+		var commonsDB []string
+		for _, dep := range strings.Fields(string(out)) {
+			if strings.HasPrefix(dep, "github.com/flanksource/commons-db") {
+				commonsDB = append(commonsDB, dep)
+			}
+		}
+		Expect(commonsDB).To(BeEmpty())
 	})
 })

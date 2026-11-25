@@ -8,9 +8,16 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/flanksource/sqlglot-go/database/connections"
 	inspection "github.com/flanksource/sqlglot-go/database/inspect"
 )
+
+// ConnectionPrefix marks a DSN as a named connection reference,
+// connection://[<namespace>/]<name>.
+const ConnectionPrefix = "connection://"
+
+// ResolveConnection turns a connection:// reference into a DSN. It is injected
+// so this package stays free of the connection store and its dependencies.
+type ResolveConnection func(ctx context.Context, reference string) (string, error)
 
 type OpenOptions struct {
 	// DSN is a connection string or connection://[<namespace>/]<name>.
@@ -18,9 +25,10 @@ type OpenOptions struct {
 	// Driver overrides the dialect parsed from the DSN; it must agree with it.
 	Driver string
 	// Schema defaults to main, dbo or public by dialect.
-	Schema         string
-	ConnectionsDir string
-	ReadOnly       bool
+	Schema string
+	// ResolveConnection is required when DSN is a connection:// reference.
+	ResolveConnection ResolveConnection
+	ReadOnly          bool
 }
 
 // Connection is an open, pinged database with its resolved dialect and schema.
@@ -37,8 +45,11 @@ func Open(ctx context.Context, opts OpenOptions) (Connection, error) {
 		return Connection{}, fmt.Errorf("database dsn is required")
 	}
 	dsn := opts.DSN
-	if strings.HasPrefix(dsn, connections.Prefix) {
-		resolved, err := connections.Resolve(ctx, connections.ResolveOptions{Dir: opts.ConnectionsDir, Reference: dsn})
+	if strings.HasPrefix(dsn, ConnectionPrefix) {
+		if opts.ResolveConnection == nil {
+			return Connection{}, fmt.Errorf("connection reference %q requires a resolver", dsn)
+		}
+		resolved, err := opts.ResolveConnection(ctx, dsn)
 		if err != nil {
 			return Connection{}, err
 		}
