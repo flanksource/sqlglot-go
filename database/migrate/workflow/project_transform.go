@@ -147,12 +147,12 @@ func runProjectTransform(fsys fs.FS, file ProjectFile, expression string, ignore
 		reads[name] = true
 		return types.String(data)
 	}
-	value, err := evaluateSourceTransform(expression, file.Path, file.Content, nil, read)
+	value, err := evaluateSourceTransform(expression, file.Path, file.content, nil, read)
 	if ignoredRead {
 		return out, nil, errIgnoredProjectRead
 	}
 	if err != nil {
-		return out, nil, fmt.Errorf("transform: %w", err)
+		return out, fmt.Errorf("transform: %w", err)
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -163,6 +163,34 @@ func runProjectTransform(fsys fs.FS, file ProjectFile, expression string, ignore
 	}
 	delete(reads, file.Path)
 	return out, slices.Sorted(maps.Keys(reads)), nil
+}
+
+// TransformSource evaluates a project source expression with the shared file
+// and XML helpers. The caller confines reads to the selected source tree.
+func TransformSource(expression, filename, content string, captures map[string]string, read func(string) (string, error)) (map[string]any, error) {
+	return evaluateSourceTransform(expression, filename, content, captures, func(arg ref.Val) ref.Val {
+		content, err := read(arg.Value().(string))
+		if err != nil {
+			return types.WrapErr(err)
+		}
+		return types.String(content)
+	})
+}
+
+func evaluateSourceTransform(expression, filename, content string, captures map[string]string, read func(ref.Val) ref.Val) (map[string]any, error) {
+	input := map[string]any{"file": map[string]string{"path": filename, "content": content}}
+	if captures != nil {
+		input["captures"] = captures
+	}
+	value, err := gomplate.RunExpression(input, gomplate.Template{Expression: expression, CelEnvs: projectCEL(read)})
+	if err != nil {
+		return nil, err
+	}
+	fields, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("transform must return a map")
+	}
+	return fields, nil
 }
 
 // TransformSource evaluates a project source expression with the shared file
