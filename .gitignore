@@ -18,10 +18,11 @@ go.work.sum
 www/node_modules
 www/dist
 
-# Rspress tooling and generated documentation live outside the docs content root.
+# Documentation tooling and generated output live outside the docs content root.
 /node_modules/
 /doc_build/
 /.rspress/
+/.facet/
 /hack/
 /.new
 /plans/

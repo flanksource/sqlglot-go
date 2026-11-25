@@ -42,8 +42,9 @@ Open the address printed by `sqlglot ui`. This installs the browser-enabled comm
 
 - [Command line](./cli): parse, tokenize, format, and validate queries from an argument, file, or stdin.
 - [Go API](./go-api): parse a query and generate SQL from its expression tree.
-- [Add connections and inspect a database](./inspection): save and test connections, inspect them, and reuse them next time.
-- [Compare, review, and apply a migration](./migrations): select changes, create a patch, resume from History, and apply it.
+- [Set up database connections](./connections): configure a target in the browser or from a YAML file, and verify it from the CLI.
+- [Add connections and inspect a database](./inspection): create and inspect two disposable SQLite databases for the comparison walkthrough.
+- [Migrations](./migrate/index.md): plan and apply changes from HCL, SQL, CSV, or a comparison between saved databases.
 - [Contributing](./contributing): run verification and work on this documentation site.
 
 Parsing proves that the parser understands the statement. It does not establish read-only policy, validate schema names, or prove that a database will execute it.
