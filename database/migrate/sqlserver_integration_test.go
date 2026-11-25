@@ -10,14 +10,12 @@ import (
 	"testing/fstest"
 	"time"
 
-	"ariga.io/atlas/sql/schema"
-	"ariga.io/atlas/sql/sqlclient"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/flanksource/sqlglot-go/database/inspect/inspector"
-	executor "github.com/flanksource/sqlglot-go/database/migrate/sqlserver"
+	native "github.com/flanksource/sqlglot-go/migrate"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
 // SQL Server integration uses an explicit disposable admin URL. The integration
@@ -125,7 +123,7 @@ var _ = Describe("SQL Server migrations", Ordered, Label("integration"), func() 
 	DescribeTable("reconcile tables and routines idempotently",
 		func(ctx SpecContext, compatibilityLevel int, via connectionForm) {
 			dsn, db := sqlServerDatabase(ctx, adminURL, compatibilityLevel)
-			reconcileScenario(ctx, sqlServerApplier(dsn, db, via), dsn, db)
+			reconcileScenario(ctx, sqlServerApplier(dsn, db, via), db)
 		},
 		Entry("at the engine's default compatibility level", 0, viaURL),
 		Entry("at compatibility level 100", 100, viaURL),
@@ -174,24 +172,25 @@ var _ = Describe("SQL Server migrations", Ordered, Label("integration"), func() 
 		inspectCatalog(ctx, db)
 	})
 
-	It("previews an HCL and routine bundle without mutation and applies its native artifact", func(ctx SpecContext) {
+	It("previews an HCL and routine bundle without mutation and applies its schema artifact", func(ctx SpecContext) {
 		_, db := sqlServerDatabase(ctx, adminURL, 100)
 		preview, err := PreviewBundle(ctx, db, "sqlserver", integrationBundle(), integrationOptions...)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(preview.SQLServerArtifact).NotTo(BeNil())
+		Expect(preview.Artifact).NotTo(BeNil())
 		var count int
 		Expect(db.QueryRowContext(ctx, "SELECT count(*) FROM sys.tables WHERE is_ms_shipped = 0").Scan(&count)).To(Succeed())
 		Expect(count).To(BeZero())
-		artifact := *preview.SQLServerArtifact
-		result, err := executor.Apply(ctx, db, executor.Request{Artifact: artifact, Hash: artifact.Hash})
+		artifact := *preview.Artifact
+		request := engine.ApplyRequest{Artifact: artifact, Hash: artifact.Hash, Acknowledgements: engine.Acknowledgements(artifact), LockTimeout: 15 * time.Second}
+		result, err := engine.Apply(ctx, db, request)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.Outcome).To(Equal(executor.Applied))
-		result, err = executor.Apply(ctx, db, executor.Request{Artifact: artifact, Hash: artifact.Hash})
+		Expect(result.Outcome).To(Equal(engine.Applied))
+		result, err = engine.Apply(ctx, db, request)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.Outcome).To(Equal(executor.AlreadyApplied))
+		Expect(result.Outcome).To(Equal(engine.AlreadyApplied))
 		again, err := PreviewBundle(ctx, db, "sqlserver", integrationBundle(), integrationOptions...)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(again.SQLServerArtifact.Plan.Steps).To(BeEmpty())
+		Expect(again.Artifact.Changes).To(BeEmpty())
 	})
 })
 
@@ -233,32 +232,32 @@ func adoConnectionString(dsn string) string {
 	return strings.Join(pairs, ";")
 }
 
-func reconcileScenario(ctx context.Context, apply func(context.Context, fstest.MapFS) error, dsn string, db *sql.DB) {
+func reconcileScenario(ctx context.Context, apply func(context.Context, fstest.MapFS) error, db *sql.DB) {
 	bundle := integrationBundle()
 	By("applying a table, an index, a foreign key and two routines")
 	Expect(apply(ctx, bundle)).To(Succeed())
-	Expect(pendingSQLServerChanges(ctx, dsn, bundle)).To(BeEmpty())
+	Expect(pendingSQLServerChanges(ctx, db, bundle)).To(BeEmpty())
 	_, err := db.ExecContext(ctx, "CREATE INDEX IX_dba_tuning ON dbo.acme_orders (created_at)")
 	Expect(err).ToNot(HaveOccurred())
 	before := modifyDates(ctx, db)
 	Expect(before).To(HaveLen(4))
 
 	By("re-applying the same bundle, which changes nothing")
-	Expect(pendingSQLServerChanges(ctx, dsn, bundle)).To(BeEmpty())
+	Expect(pendingSQLServerChanges(ctx, db, bundle)).To(BeEmpty())
 	Expect(apply(ctx, bundle)).To(Succeed())
 	Expect(modifyDates(ctx, db)).To(Equal(before))
 	Expect(objectExists(ctx, db, "IX_dba_tuning")).To(BeTrue(), "an index the bundle does not declare is kept")
 
 	By("editing one routine's body, which alters exactly that routine")
 	bundle["db/routines/acme_order_total.sql"] = file(strings.Replace(integrationOrderTotal, "RETURN (SELECT total", "RETURN (SELECT total * 2", 1))
-	Expect(changeKinds(pendingSQLServerChanges(ctx, dsn, bundle))).To(Equal([]string{"*schema.ModifyFunc"}))
+	Expect(changeKinds(pendingSQLServerChanges(ctx, db, bundle))).To(Equal([]string{"modify function dbo.acme_order_total"}))
 	Expect(apply(ctx, bundle)).To(Succeed())
 	after := modifyDates(ctx, db)
 	Expect(after["acme_order_total"]).To(BeTemporally(">", before["acme_order_total"]))
 	delete(after, "acme_order_total")
 	delete(before, "acme_order_total")
 	Expect(after).To(Equal(before))
-	Expect(pendingSQLServerChanges(ctx, dsn, bundle)).To(BeEmpty())
+	Expect(pendingSQLServerChanges(ctx, db, bundle)).To(BeEmpty())
 
 	By("removing a routine from the bundle, which leaves it in place")
 	delete(bundle, "db/routines/acme_count_orders.sql")
@@ -266,21 +265,20 @@ func reconcileScenario(ctx context.Context, apply func(context.Context, fstest.M
 	Expect(objectExists(ctx, db, "acme_count_orders")).To(BeTrue())
 }
 
-func pendingSQLServerChanges(ctx context.Context, dsn string, bundle fstest.MapFS) []schema.Change {
-	desired, err := sqlServerDesired(bundle, resolveOptions(integrationOptions))
+func pendingSQLServerChanges(ctx context.Context, db *sql.DB, bundle fstest.MapFS) []native.Change {
+	artifact, err := PlanSchema(ctx, db, bundle, integrationOptions...)
 	Expect(err).ToNot(HaveOccurred())
-	client, err := sqlclient.Open(ctx, dsn)
-	Expect(err).ToNot(HaveOccurred())
-	defer client.Close() //nolint:errcheck
-	changes, err := sqlServerChanges(ctx, client, desired, nil)
-	Expect(err).ToNot(HaveOccurred())
-	return changes
+	return artifact.Changes
 }
 
-func changeKinds(changes []schema.Change) []string {
+// changeKinds names each change as "action kind schema.object[.member]".
+func changeKinds(changes []native.Change) []string {
 	kinds := make([]string, len(changes))
 	for i, change := range changes {
-		kinds[i] = fmt.Sprintf("%T", change)
+		kinds[i] = fmt.Sprintf("%s %s %s.%s", change.Action, change.Kind, change.Object.Schema, change.Object.Name)
+		if change.Member != "" {
+			kinds[i] += "." + change.Member
+		}
 	}
 	return kinds
 }
@@ -455,10 +453,10 @@ var _ = Describe("SQL Server migration bundle", func() {
 		Expect(dbo.Name).To(Equal("dbo"))
 		Expect(dbo.Tables).To(HaveLen(1))
 		Expect([]string{dbo.Procs[0].Name, dbo.Procs[1].Name}).To(ConsistOf("acme_purge_orders", "acme_count_orders"))
-		Expect(sqlServerInspectOptions(dbo, nil)).To(Equal(&schema.InspectOptions{
-			Mode:   schema.InspectSchemas | schema.InspectTables | schema.InspectFuncs,
-			Tables: []string{"acme_orders", dbo.Procs[0].Name, dbo.Procs[1].Name},
-		}))
+		Expect(sqlServerBundle{realm: realm}.declaredNames()).To(ConsistOf(
+			native.Name{Schema: "dbo", Name: "acme_orders"},
+			native.Name{Schema: "dbo", Name: "acme_purge_orders"},
+			native.Name{Schema: "dbo", Name: "acme_count_orders"}))
 	})
 
 	It("builds routines alone when the bundle has no HCL", func() {
@@ -466,7 +464,7 @@ var _ = Describe("SQL Server migration bundle", func() {
 			resolveOptions([]Option{WithRoutines("routines")}))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(realm.Schemas[0].Procs).To(HaveLen(1))
-		Expect(sqlServerInspectOptions(realm.Schemas[0], nil).Mode).To(Equal(schema.InspectSchemas | schema.InspectFuncs))
+		Expect(sqlServerBundle{realm: realm}.declaredNames()).To(Equal([]native.Name{{Schema: "dbo", Name: "acme_purge_orders"}}))
 	})
 
 	DescribeTable("refuses what SQL Server migrations do not support before connecting",
@@ -484,6 +482,8 @@ var _ = Describe("SQL Server migration bundle", func() {
 			[]Option{WithDir("db"), WithDrops()}, "do not support destructive changes"),
 		Entry("HCL in another schema", fstest.MapFS{"db/schema.hcl": file(`schema "tenant_x" {}`)},
 			[]Option{WithDir("db")}, `must declare exactly schema "dbo", got ["tenant_x"]`),
+		Entry("inspection exclusions", fstest.MapFS{"db/schema.hcl": file(ordersHCLFile)},
+			[]Option{WithDir("db"), WithExclude("acme_orders.created_at")}, "do not support WithExclude"),
 	)
 
 	DescribeTable("WithRoutines is refused by the other dialects",
@@ -498,17 +498,6 @@ var _ = Describe("SQL Server migration bundle", func() {
 			"SQLite migrations do not support routines (WithRoutines); only SQL Server does"),
 	)
 
-	It("keeps undeclared routines and indexes of declared tables", func() {
-		table := schema.NewTable("acme_orders")
-		kept := &schema.AddColumn{C: schema.NewIntColumn("priority", "int")}
-		changes := withoutSQLServerDrops([]schema.Change{
-			&schema.DropProc{P: &schema.Proc{Name: "acme_legacy"}},
-			&schema.DropFunc{F: &schema.Func{Name: "acme_legacy_total"}},
-			&schema.ModifyTable{T: table, Changes: []schema.Change{&schema.DropIndex{I: schema.NewIndex("IX_dba_tuning")}, kept}},
-			&schema.ModifyTable{T: table, Changes: []schema.Change{&schema.DropIndex{I: schema.NewIndex("IX_dba_other")}}},
-		})
-		Expect(changes).To(Equal([]schema.Change{&schema.ModifyTable{T: table, Changes: []schema.Change{kept}}}))
-	})
 })
 
 // pendingReasons projects each pending script to its path, phase, reason and reasons.

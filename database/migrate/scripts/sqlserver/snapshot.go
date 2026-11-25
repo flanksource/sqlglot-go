@@ -24,9 +24,7 @@ type observationSnapshot struct {
 }
 
 func newSnapshot(scope string, file PlanFile) observationSnapshot {
-	values := maps.Clone(file.Observations)
-	delete(values, declaredSchemaKey)
-	return observationSnapshot{scope: scope, planHash: file.Hash, values: values}
+	return observationSnapshot{scope: scope, planHash: file.Hash, values: maps.Clone(file.Observations)}
 }
 
 // write replaces the scope's snapshot with this plan's.

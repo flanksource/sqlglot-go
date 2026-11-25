@@ -9,18 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"path"
 	"strings"
 
-	atlasmigrate "ariga.io/atlas/sql/migrate"
-	_ "ariga.io/atlas/sql/postgres"
-	"ariga.io/atlas/sql/schema"
-	"ariga.io/atlas/sql/sqlclient"
-	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
 	"github.com/flanksource/sqlglot-go/database/target"
-	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/lib/pq"
 	mssql "github.com/microsoft/go-mssqldb"
 	"github.com/zclconf/go-cty/cty"
@@ -68,18 +61,21 @@ func WithVariables(input map[string]cty.Value) Option {
 	return func(o *options) { o.input = input }
 }
 
-// WithExclude excludes database objects from Atlas inspection. Values use
-// Atlas's schema inspection patterns (for example "table.column").
+// WithExclude hides database objects from the plan: they are removed from the
+// live schema and from the declared one before they are compared, so they are
+// neither created, altered nor dropped. Values use Atlas's schema inspection
+// patterns (for example "table" or "table.column"); SQLite accepts whole
+// tables only, because it rebuilds a table from what the plan can see.
 func WithExclude(patterns ...string) Option {
 	return func(o *options) { o.exclude = append(o.exclude, patterns...) }
 }
 
-// WithDrops allows HCL files to remove columns, tables and types. Drops are suppressed by
-// default so a partial schema bundle cannot delete objects owned by consumers.
-//
-// Tables and types share one switch because suppressing only tables is worse
-// than suppressing neither: the surviving table keeps a column typed by the enum
-// the diff still wants to drop, and PostgreSQL rejects the DROP TYPE.
+// WithDrops makes the bundle the complete description of its schema: the plan
+// is planned in the engine's complete scope, so anything the HCL does not
+// declare (tables, types, columns, indexes, keys, checks) is dropped. Without
+// it the scope is declared: only what the HCL names is managed, and nothing
+// undeclared is ever dropped, so a partial bundle cannot delete objects owned by
+// consumers. The bundle's own metadata tables are never dropped.
 func WithDrops() Option {
 	return func(o *options) { o.allowDrops = true }
 }
@@ -89,21 +85,35 @@ func WithRebuilds() Option {
 	return func(o *options) { o.allowRebuilds = true }
 }
 
-// WithDB runs the migration on an already open SQL Server or SQLite handle,
-// with Apply's connection string left empty; the dialect comes from the
-// handle's driver. Apply never closes db and never changes its pool settings.
-// PostgreSQL handles are refused: those migrations scope search_path and
-// lock_timeout on connections they open themselves.
+// WithDB runs the migration on an already open SQL Server, SQLite or
+// PostgreSQL handle, with Apply's connection string left empty; the dialect
+// comes from the handle's driver. Apply never closes db and never changes its
+// pool settings. Every schema unit runs on a dedicated connection that sets and
+// restores its own lock timeout, so a PostgreSQL handle needs no scoping; what
+// it cannot do is move the script phases and metadata tables to another schema,
+// so a PostgreSQL handle is accepted for the default schema only
+// (WithSchema needs a connection string, which scopes search_path).
 func WithDB(db *sql.DB) Option {
 	return func(o *options) { o.db = db }
 }
 
 // Apply resolves the database target from connection, or from the WithDB
 // handle, and reconciles HCL schemas.
+//
+// Apply is the unreviewed path: it plans the schema against the live database
+// with the shared planner (engine.PlanLive) and applies the plan in the same
+// call, acknowledging every destructive change of its own plan
+// (engine.Acknowledgements). Nothing but the scope bounds what it may destroy:
+// declared by default, where only the objects the HCL names are managed and
+// nothing undeclared is dropped, and complete with WithDrops. Use the reviewed
+// workflow when a person must approve the changes first.
+//
 // PostgreSQL supports the complete HCL, SQL, security, and destructive-change
-// lifecycle. SQLite projects portable PostgreSQL-shaped HCL to tables,
-// columns, and indexes, rebuilding tables when needed and skipping column and
-// table drops unless WithDrops is enabled.
+// lifecycle; the views that depend on a retyped column are dropped and
+// re-created around the change from their live definitions. SQLite projects
+// portable PostgreSQL-shaped HCL to tables, columns, and indexes, rebuilding
+// tables when needed and keeping undeclared columns and tables unless
+// WithDrops is enabled.
 // SQL Server (sqlserver:// URLs, ADO and odbc: strings) reconciles SQL Server HCL tables and the
 // stored procedures and functions declared with WithRoutines, inspecting only
 // the objects the bundle names; it refuses SQL scripts, security blocks,
@@ -153,9 +163,9 @@ func applyDB(ctx context.Context, db *sql.DB, schemaFS fs.FS, config options) er
 	case *sqlite.Driver:
 		return applySQLite(ctx, db, schemaFS, config)
 	case *pq.Driver:
-		return errors.New("WithDB does not support PostgreSQL: its migrations scope search_path and lock_timeout on connections they open, so pass a connection string")
+		return applyPostgresDB(ctx, db, schemaFS, config)
 	default:
-		return fmt.Errorf("WithDB does not support database driver %T; use a SQL Server or SQLite handle", driver)
+		return fmt.Errorf("WithDB does not support database driver %T; use a SQL Server, SQLite or PostgreSQL (lib/pq) handle", driver)
 	}
 }
 
@@ -187,231 +197,4 @@ func cloneVariables(input map[string]cty.Value) map[string]cty.Value {
 		cloned[name] = value
 	}
 	return cloned
-}
-
-func validatePostgresApply(connection string, schemaFS fs.FS, cfg options) error {
-	if err := refuseScriptPolicy(cfg, "PostgreSQL"); err != nil {
-		return err
-	}
-	if strings.TrimSpace(connection) == "" {
-		return errors.New("connection string is empty")
-	}
-	if schemaFS == nil {
-		return errors.New("schema filesystem is nil")
-	}
-	if err := ValidateSchemaName(cfg.schema); err != nil {
-		return fmt.Errorf("migration schema: %w", err)
-	}
-	return refuseRoutines(cfg, "PostgreSQL")
-}
-
-func diffPostgresSchema(
-	ctx context.Context,
-	client *sqlclient.Client,
-	parser *hclparse.Parser,
-	cfg options,
-) (current, desired *schema.Realm, changes []schema.Change, err error) {
-	current, err = atlasmigrate.SchemaConn(client.Driver, cfg.schema, &schema.InspectOptions{Exclude: cfg.exclude}).ReadState(ctx)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("inspect current schema: %w", err)
-	}
-	desired = &schema.Realm{}
-	if err := client.Eval(parser, desired, cfg.input); err != nil {
-		return nil, nil, nil, fmt.Errorf("evaluate HCL schemas: %w", err)
-	}
-	if err := remapDesiredSchema(desired, cfg.schema); err != nil {
-		return nil, nil, nil, fmt.Errorf("scope desired schema: %w", err)
-	}
-	changes, err = client.RealmDiff(current, desired)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("compute schema diff: %w", err)
-	}
-	if !cfg.allowDrops {
-		changes = withoutDrops(changes)
-	}
-	return current, desired, changes, nil
-}
-
-func applyPlannedChanges(ctx context.Context, client *sqlclient.Client, changes []schema.Change) error {
-	plan, err := client.PlanChanges(ctx, "", changes)
-	if err != nil {
-		return fmt.Errorf("plan %d schema changes: %w", len(changes), err)
-	}
-	log := logger.GetLogger("migrate")
-	for _, change := range plan.Changes {
-		log.Tracef("%s", change.Cmd)
-	}
-	if err := client.ApplyChanges(ctx, changes); err != nil {
-		return fmt.Errorf("apply %d schema changes: %w", len(changes), err)
-	}
-	log.V(1).Infof("Applied %d schema changes", len(changes))
-	return nil
-}
-
-func applyPostgres(ctx context.Context, connection string, schemaFS fs.FS, cfg options) (returnErr error) {
-	if err := validatePostgresApply(connection, schemaFS, cfg); err != nil {
-		return err
-	}
-
-	scripts, err := loadScripts(schemaFS, cfg)
-	if err != nil {
-		return err
-	}
-	parser, security, err := loadHCL(schemaFS, cfg.dir, cfg.input)
-	if err != nil {
-		return err
-	}
-	security = remapSecuritySchema(security, cfg.schema)
-
-	scopedConnection, err := prepareSchemaConnection(ctx, schemaConnectionOptions{Connection: connection, Schema: cfg.schema})
-	if err != nil {
-		return err
-	}
-	db, err := sql.Open("postgres", scopedConnection)
-	if err != nil {
-		return fmt.Errorf("open SQL migration database: %w", err)
-	}
-	defer func() { returnErr = errors.Join(returnErr, db.Close()) }()
-	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("connect SQL migration database: %w", err)
-	}
-	if err := ensureMetadataTables(ctx, db); err != nil {
-		return err
-	}
-	scope := migrationScope(cfg.schema, cfg.name)
-	selected, err := selectScripts(ctx, db, scope, scripts)
-	if err != nil {
-		return err
-	}
-	ordered, err := topologicalScripts(scripts, selected)
-	if err != nil {
-		return err
-	}
-	if err := runScriptPhase(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePre}); err != nil {
-		return err
-	}
-
-	client, err := sqlclient.Open(ctx, connectionWithLockTimeout(scopedConnection))
-	if err != nil {
-		return fmt.Errorf("open database: %w", err)
-	}
-	defer func() { returnErr = errors.Join(returnErr, client.Close()) }()
-
-	current, desired, changes, err := diffPostgresSchema(ctx, client, parser, cfg)
-	if err != nil {
-		return err
-	}
-	if changes, err = withCheckExpressionChanges(ctx, db, checkExpressionOptions{
-		Schema: cfg.schema, Current: current, Desired: desired, Changes: changes,
-	}); err != nil {
-		return err
-	}
-	restoreViews := noRestore
-	if len(changes) == 0 {
-		logger.GetLogger("migrate").Debugf("No schema changes detected")
-	} else {
-		invalidated, restore, err := invalidateDependentViews(ctx, db, viewInvalidationOptions{
-			Scope: scope, Schema: cfg.schema, Changes: changes, Scripts: scripts,
-		})
-		if err != nil {
-			return err
-		}
-		restoreViews = restore
-		if len(invalidated) > 0 {
-			if selected, err = selectScripts(ctx, db, scope, scripts); err != nil {
-				return err
-			}
-			if ordered, err = topologicalScripts(scripts, selected); err != nil {
-				return err
-			}
-		}
-		if err := applyPlannedChanges(ctx, client, changes); err != nil {
-			return err
-		}
-	}
-	if err := runScriptPhase(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePost}); err != nil {
-		return err
-	}
-	// Restore after the post phase: a view this scope does not own may be built
-	// on top of one the post phase just recreated.
-	if err := restoreViews(ctx); err != nil {
-		return err
-	}
-	if err := retryOnLockContention(ctx, "reconcile database security", func() error {
-		return reconcileSecurity(ctx, db, scope, security)
-	}); err != nil {
-		return fmt.Errorf("reconcile database security: %w", err)
-	}
-	return nil
-}
-
-// withoutDrops removes every destructive change a partial schema bundle would
-// otherwise emit for objects it does not declare. Object drops are filtered
-// alongside table drops because the two are load-bearing together: a bundle that
-// declares neither a table nor the enum typing one of its columns emits both a
-// DropTable and a DropObject, and keeping only the former leaves the column
-// behind to block the DROP TYPE with "other objects depend on it". Procedure
-// and function drops are filtered too: a routine missing from the bundle is
-// left in place.
-func withoutDrops(changes []schema.Change) []schema.Change {
-	log := logger.GetLogger("migrate")
-	filtered := make([]schema.Change, 0, len(changes))
-	for _, change := range changes {
-		switch drop := change.(type) {
-		case *schema.DropTable:
-			log.Tracef("Skipping drop table of %s", drop.T.Name)
-		case *schema.DropObject:
-			log.Tracef("Skipping drop of %s", objectDescription(drop.O))
-		case *schema.DropProc:
-			log.Tracef("Skipping drop procedure of %s", drop.P.Name)
-		case *schema.DropFunc:
-			log.Tracef("Skipping drop function of %s", drop.F.Name)
-		case *schema.ModifyTable:
-			modified := *drop
-			modified.Changes = make([]schema.Change, 0, len(drop.Changes))
-			for _, inner := range drop.Changes {
-				if column, ok := inner.(*schema.DropColumn); ok {
-					log.Tracef("Skipping drop column of %s.%s", drop.T.Name, column.C.Name)
-					continue
-				}
-				modified.Changes = append(modified.Changes, inner)
-			}
-			if len(modified.Changes) > 0 {
-				filtered = append(filtered, &modified)
-			}
-		default:
-			filtered = append(filtered, change)
-		}
-	}
-	return filtered
-}
-
-// objectDescription names a dropped object for the trace log. Enums are the only
-// object Atlas's PostgreSQL driver actually plans drops for (see dropObject in
-// ariga.io/atlas/sql/postgres), so anything else is reported by its Go type.
-func objectDescription(object schema.Object) string {
-	if enum, ok := object.(*schema.EnumType); ok {
-		return fmt.Sprintf("enum type %s", enum.T)
-	}
-	return fmt.Sprintf("%T", object)
-}
-
-// connectionWithLockTimeout appends a libpq `options` runtime parameter so every
-// connection Atlas opens bounds how long its ALTER TABLE DDL waits for a lock. A
-// migration that would otherwise block indefinitely against a live reader fails
-// fast (55P03) and the next apply re-plans from a fresh inspect, instead of
-// camping on an ACCESS EXCLUSIVE lock and starving concurrent traffic. The value
-// is returned unchanged when it is not a URL-form DSN or already sets options.
-func connectionWithLockTimeout(connection string) string {
-	u, err := url.Parse(connection)
-	if err != nil || u.Scheme == "" {
-		return connection
-	}
-	q := u.Query()
-	if q.Get("options") != "" {
-		return connection
-	}
-	q.Set("options", "-c lock_timeout="+migrationLockTimeout)
-	u.RawQuery = q.Encode()
-	return u.String()
 }

@@ -18,7 +18,8 @@ type Result struct {
 	// apply with tolerated script failures is applied-with-warnings.
 	Outcome string   `json:"outcome"`
 	Applied []string `json:"applied"`
-	// Schema is applied when the schema step ran statements.
+	// Schema is applied when the schema step committed units, partial when it
+	// committed some and then failed: a re-plan covers the rest.
 	Schema string `json:"schema,omitempty"`
 	// Blocked lists the scripts the plan left blocked.
 	Blocked []string `json:"blocked,omitempty"`
@@ -45,6 +46,9 @@ type Result struct {
 func Apply(ctx context.Context, db *sql.DB, file PlanFile, options ...ApplyOption) (result Result, returnErr error) {
 	result = Result{Outcome: "failed", Applied: []string{}}
 	cfg := resolveApply(options)
+	if cfg.schemaLockTimeout <= 0 {
+		return result, fmt.Errorf("schema lock timeout must be positive, got %s", cfg.schemaLockTimeout)
+	}
 	opts, err := file.options(ctx, db, cfg)
 	if err != nil {
 		return result, err
@@ -155,14 +159,21 @@ func (r *applyRun) schema(ctx context.Context, result *Result) error {
 	if step == nil {
 		return nil
 	}
-	if err := r.cfg.report(ProgressSchema, "", func() error { return step.run(ctx, r.s.conn, r.file.Observations[declaredSchemaKey]) }); err != nil {
+	applied := 0
+	err := r.cfg.report(ProgressSchema, "", func() (err error) {
+		applied, err = runSchema(ctx, r.s.opts.DB, r.s.conn, *step, r.cfg.schemaLockTimeout)
 		return err
-	}
-	if len(step.Statements) > 0 {
+	})
+	switch {
+	case err == nil && applied > 0:
 		result.Schema = "applied"
+	case err != nil && applied > 0:
+		result.Schema = "partial"
+	}
+	if applied > 0 {
 		r.markStale(scripts.SchemaWriter)
 	}
-	return nil
+	return err
 }
 
 // phase runs the selected scripts of phase in plan order.

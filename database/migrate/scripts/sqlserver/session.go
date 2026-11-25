@@ -82,6 +82,9 @@ func (s *session) verify(ctx context.Context, file PlanFile) error {
 	if moved := file.moved(fresh); len(moved) > 0 {
 		return &StalePlanError{Moved: moved}
 	}
+	if err := currentSchema(ctx, s.conn, file.Bundle.Schema); err != nil {
+		return err
+	}
 	s.database, s.states = fresh.Target.Database, fresh.Ledger
 	return nil
 }

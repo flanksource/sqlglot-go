@@ -19,10 +19,11 @@ type LoadOptions struct {
 
 // Source supplies metadata for a script at a bundle-relative SQL path.
 type Source struct {
-	ID    string
-	Name  string
-	Path  string
-	Phase Phase
+	ID     string
+	Name   string
+	Path   string
+	Phase  Phase
+	Labels map[string][]string
 }
 
 func Load(opts LoadOptions) ([]Script, error) {
@@ -57,7 +58,7 @@ func Load(opts LoadOptions) ([]Script, error) {
 			return err
 		}
 		if mapped {
-			s.Path, s.ID, s.Name = source.Path, source.ID, source.Name
+			s.Path, s.ID, s.Name, s.Labels = source.Path, source.ID, source.Name, source.Labels
 			if source.Phase != "" {
 				if s.HeaderPhase != "" && s.HeaderPhase != source.Phase {
 					return fmt.Errorf("script %s: SQL header phase %q conflicts with mapped phase %q", s.Path, s.HeaderPhase, source.Phase)

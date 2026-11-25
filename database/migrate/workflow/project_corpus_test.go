@@ -36,16 +36,16 @@ var _ = It("maps the OIPA v2 checkout without changing SQL payload hashes", func
 		}
 	}
 	Expect(want).NotTo(BeEmpty())
-	Expect(project.files).To(HaveLen(len(want)))
+	Expect(project.Files()).To(HaveLen(len(want)))
 	var pre, post, country int
 	var batchProblems, emptyScripts []string
-	for _, file := range project.files {
+	for _, file := range project.Files() {
 		Expect(file.Phase).To(Equal(want[file.Path]), file.Path)
 		body, err := fs.ReadFile(fsys, path.Join(path.Dir(file.Path), "SQLData.xml"))
 		Expect(err).NotTo(HaveOccurred(), file.Path)
-		Expect(sha256.Sum256([]byte(file.content))).To(Equal(sha256.Sum256(body)), file.Path)
-		Expect(strings.TrimSpace(file.content)).NotTo(BeEmpty(), file.Path)
-		batches, batchErr := backend.Batches(file.Path, file.content)
+		Expect(sha256.Sum256([]byte(file.Content))).To(Equal(sha256.Sum256(body)), file.Path)
+		Expect(strings.TrimSpace(file.Content)).NotTo(BeEmpty(), file.Path)
+		batches, batchErr := backend.Batches(file.Path, file.Content)
 		if batchErr != nil {
 			batchProblems = append(batchProblems, batchErr.Error())
 		} else if len(batches) == 0 {

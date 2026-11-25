@@ -171,7 +171,7 @@ var _ = Describe("SQLite HCL target", func() {
 			`  unique "projects_external_key_key" { columns = [column.external_key] }`,
 			`  unique "projects_external_key_key" { columns = [column.external_key] }
   check "projects_external_key_nonempty" { expr = "length(external_key) > 0" }`, 1))}
-		Expect(Apply(ctx, dsn, files)).To(MatchError(ContainSubstring("unmanaged trigger")))
+		Expect(Apply(ctx, dsn, files)).To(MatchError(ContainSubstring("trigger \"project_audit\" would be lost when the table is rebuilt")))
 		var count int
 		Expect(database.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'trigger' AND name = 'project_audit'`).Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(1))

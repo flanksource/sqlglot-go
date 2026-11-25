@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"ariga.io/atlas/sql/schema"
-	"ariga.io/atlas/sql/sqlclient"
 	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sqlglot-go/database/atlas/sqlserver"
 	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
@@ -25,8 +24,8 @@ const (
 // applySQLServer plans the bundle and applies that plan: its pre scripts, the
 // reconciliation of its HCL tables and WithRoutines routines against the dbo
 // schema, then its post scripts. It inspects only the objects the bundle
-// names, never drops a routine or an index the bundle does not declare, and
-// runs no DDL when the database already matches. Scripts are recorded in
+// names, never drops an object the bundle does not declare, and runs no DDL
+// when the database already matches. Scripts are recorded in
 // dbo.sqlglot_migrations. The caller owns db.
 func applySQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) error {
 	file, err := planSQLServer(ctx, db, schemaFS, cfg)
@@ -52,116 +51,13 @@ func planSQLServer(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options)
 		return backend.PlanFile{}, err
 	}
 	if bundle.declaresObjects() {
-		if options.Schema, err = sqlServerSchemaStep(ctx, db, bundle, cfg); err != nil {
+		artifact, err := planSchemaArtifact(ctx, db, bundle)
+		if err != nil {
 			return backend.PlanFile{}, err
 		}
+		options.Schema = &artifact
 	}
 	return backend.Plan(ctx, options)
-}
-
-// sqlServerSchemaStep plans the statements that bring the declared objects to
-// the desired state, without drops.
-func sqlServerSchemaStep(ctx context.Context, db *sql.DB, bundle sqlServerBundle, cfg options) (*backend.SchemaStep, error) {
-	// The caller owns db: closing the Atlas client would close it.
-	client, err := sqlserver.OpenClient(ctx, db)
-	if err != nil {
-		return nil, fmt.Errorf("open SQL Server migration database: %w", err)
-	}
-	changes, err := sqlServerChanges(ctx, client, bundle.realm, cfg.exclude)
-	if err != nil {
-		return nil, err
-	}
-	step := &backend.SchemaStep{Objects: bundle.declaredObjects(), Statements: []backend.SchemaStatement{}}
-	for _, change := range changes {
-		plan, err := client.PlanChanges(ctx, "", []schema.Change{change})
-		if err != nil {
-			return nil, fmt.Errorf("plan schema change: %w", err)
-		}
-		for _, planned := range plan.Changes {
-			if len(planned.Args) > 0 {
-				return nil, fmt.Errorf("schema statement %q binds arguments, which a plan file cannot carry", planned.Cmd)
-			}
-			step.Statements = append(step.Statements, backend.SchemaStatement{SQL: planned.Cmd, Comment: planned.Comment, Destructive: destructiveChange(change)})
-		}
-	}
-	return step, nil
-}
-
-// destructiveChange reports whether change drops an object or a part of one.
-func destructiveChange(change schema.Change) bool {
-	switch c := change.(type) {
-	case *schema.DropTable, *schema.DropColumn, *schema.DropIndex, *schema.DropForeignKey, *schema.DropCheck,
-		*schema.DropProc, *schema.DropFunc, *schema.DropObject, *schema.DropPrimaryKey:
-		return true
-	case *schema.ModifyTable:
-		return slices.ContainsFunc(c.Changes, destructiveChange)
-	}
-	return false
-}
-
-// sqlServerChanges inspects the declared objects and returns the changes that
-// bring them to the desired state, without drops.
-func sqlServerChanges(ctx context.Context, client *sqlclient.Client, desired *schema.Realm, exclude []string) ([]schema.Change, error) {
-	target := desired.Schemas[0]
-	current, err := client.InspectSchema(ctx, target.Name, sqlServerInspectOptions(target, exclude))
-	if err != nil {
-		return nil, fmt.Errorf("inspect current SQL Server schema: %w", err)
-	}
-	changes, err := client.RealmDiff(schema.NewRealm(current), desired)
-	if err != nil {
-		return nil, fmt.Errorf("compute schema diff: %w", err)
-	}
-	return withoutSQLServerDrops(changes), nil
-}
-
-// sqlServerInspectOptions scopes inspection to the declared object names.
-// SQL Server keeps tables and routines in one namespace per schema, so one
-// name list filters both.
-func sqlServerInspectOptions(target *schema.Schema, exclude []string) *schema.InspectOptions {
-	opts := &schema.InspectOptions{Mode: schema.InspectSchemas, Exclude: exclude}
-	for _, t := range target.Tables {
-		opts.Tables = append(opts.Tables, t.Name)
-	}
-	if len(target.Tables) > 0 {
-		opts.Mode |= schema.InspectTables
-	}
-	for _, p := range target.Procs {
-		opts.Tables = append(opts.Tables, p.Name)
-	}
-	for _, f := range target.Funcs {
-		opts.Tables = append(opts.Tables, f.Name)
-	}
-	if len(target.Procs)+len(target.Funcs) > 0 {
-		opts.Mode |= schema.InspectFuncs
-	}
-	return opts
-}
-
-// withoutSQLServerDrops extends withoutDrops with the indexes of declared
-// tables: indexes a DBA added to tune a shared database are left in place.
-func withoutSQLServerDrops(changes []schema.Change) []schema.Change {
-	log := logger.GetLogger("migrate")
-	filtered := make([]schema.Change, 0, len(changes))
-	for _, change := range withoutDrops(changes) {
-		modify, ok := change.(*schema.ModifyTable)
-		if !ok {
-			filtered = append(filtered, change)
-			continue
-		}
-		kept := make([]schema.Change, 0, len(modify.Changes))
-		for _, c := range modify.Changes {
-			if drop, ok := c.(*schema.DropIndex); ok {
-				log.Tracef("Skipping drop index of %s.%s", modify.T.Name, drop.I.Name)
-				continue
-			}
-			kept = append(kept, c)
-		}
-		if len(kept) > 0 {
-			modify.Changes = kept
-			filtered = append(filtered, modify)
-		}
-	}
-	return filtered
 }
 
 // sqlServerDesired builds the desired dbo schema from the HCL tables and the
@@ -194,6 +90,8 @@ func refuseSQLServerOptions(cfg options) error {
 		return errors.New("SQL Server migrations do not support destructive changes (WithDrops)")
 	case cfg.allowRebuilds:
 		return errors.New("SQL Server migrations do not support SQLite rebuild options (WithRebuilds)")
+	case len(cfg.exclude) > 0:
+		return errors.New("SQL Server migrations do not support WithExclude: only the declared objects are inspected")
 	}
 	return nil
 }

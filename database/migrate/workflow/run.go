@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/flanksource/clicky/task"
@@ -91,6 +92,9 @@ func Execute(ctx context.Context, opts RunOptions, record *history.Record, t *ta
 	payload.Plan, payload.Artifact, payload.Hash = &plan, plan.Artifact, plan.Hash
 	if opts.Mode == "plan" {
 		return payload, nil
+	}
+	if !plan.Applicable {
+		return payload, fmt.Errorf("this plan is advisory and cannot be applied: %s", strings.Join(plan.Warnings, "; "))
 	}
 	t.SetDescription("Applying reviewed SQL")
 	apply.Dialect, apply.Schema, apply.Artifact = conn.Dialect, conn.Schema, plan.Artifact

@@ -1,0 +1,17 @@
+version: 1
+
+mappings:
+  - match: 'schema/tenant/*.hcl'
+    labels: {scope: [tenant]}
+  - match: 'schema/vendor/*.hcl'
+    labels: {scope: [vendor]}
+  - match: 'scripts/*.sql'
+    transform: >-
+      {
+        "sql": file.content,
+        "labels": {
+          "country": file.path.startsWith("scripts/zw_") ? ["ZW"] : file.path.startsWith("scripts/mw_") ? ["MW"] : []
+        }
+      }
+
+select: ['!scope=vendor']

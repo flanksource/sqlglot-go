@@ -5,16 +5,22 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strings"
 
-	"github.com/flanksource/sqlglot-go/database/inspect/snapshot"
 	bundle "github.com/flanksource/sqlglot-go/database/migrate"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
-	native "github.com/flanksource/sqlglot-go/migrate"
-	planner "github.com/flanksource/sqlglot-go/migrate/sqlserver"
+	"github.com/flanksource/sqlglot-go/database/migrate/dialect"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
+// Plan plans one migration source against the target and returns its review.
+// A schema source (hcl or snapshot) plans in complete scope: every object of
+// the target's schema not in the source is dropped, and each drop must be
+// acknowledged to apply. A bundle plans in declared scope unless AllowDrops.
 func Plan(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
+	if len(opts.Labels) > 0 && opts.Source.Kind != "bundle" && opts.Bundle == nil && opts.Project == nil {
+		return PlanResult{}, fmt.Errorf("label selectors require %s", ProjectConfigName)
+	}
 	if opts.Source.Kind == "csv" || opts.CSV.Files != nil {
 		return planCSV(ctx, db, opts)
 	}
@@ -33,31 +39,28 @@ func Plan(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
 	if opts.Source.Kind == "bundle" || opts.Bundle != nil || opts.Project != nil {
 		return planBundle(ctx, db, opts)
 	}
+	return planSchema(ctx, db, opts)
+}
+
+// planSchema plans a desired schema given as HCL or as an inspected snapshot.
+func planSchema(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
 	if opts.Source.Kind != "hcl" && opts.Source.Kind != "snapshot" {
 		return PlanResult{}, fmt.Errorf("unknown migration source %q", opts.Source.Kind)
 	}
 	if strings.TrimSpace(opts.Source.Content) == "" {
 		return PlanResult{}, fmt.Errorf("desired content is required")
 	}
-	var artifact any
-	var err error
-	if opts.Dialect == "sqlserver" {
-		artifact, err = planSQLServer(ctx, db, opts)
-	} else {
-		text := opts.Source.Content
-		if opts.Source.Kind == "snapshot" {
-			var desired review.Snapshot
-			if err = Decode([]byte(text), &desired); err != nil {
-				return PlanResult{}, err
-			}
-			if desired.Dialect != opts.Dialect || desired.Schema != opts.Schema {
-				return PlanResult{}, fmt.Errorf("desired snapshot dialect or schema does not match target")
-			}
-			text = desired.HCL
-		}
-		artifact, err = review.Build(ctx, db, review.Options{Dialect: opts.Dialect, Schema: opts.Schema, DesiredHCL: text})
-	}
+	desired, err := desiredSnapshot(opts)
 	if err != nil {
+		return PlanResult{}, err
+	}
+	artifact, err := engine.PlanLive(ctx, db, engine.PlanLiveRequest{
+		Dialect: opts.Dialect, Scope: engine.Scope{Mode: engine.ScopeComplete, Schemas: desired.Schemas}, Desired: desired.Schema,
+	})
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if err := desired.RefuseTouched(artifact.Changes); err != nil {
 		return PlanResult{}, err
 	}
 	data, err := json.Marshal(artifact)
@@ -67,31 +70,44 @@ func Plan(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
 	return Review(data, opts.Dialect, opts.Schema)
 }
 
+// desiredSnapshot reads the desired state of the target's schema, which must
+// hold nothing outside it.
+func desiredSnapshot(opts Options) (dialect.Snapshot, error) {
+	if opts.Schema == "" {
+		return dialect.Snapshot{}, fmt.Errorf("a target schema is required")
+	}
+	var desired dialect.Snapshot
+	if opts.Source.Kind == "snapshot" {
+		if err := Decode([]byte(opts.Source.Content), &desired); err != nil {
+			return desired, fmt.Errorf("the desired snapshot is not one that `sqlglot schema inspect --snapshot` writes: %w", err)
+		}
+		if desired.Dialect != opts.Dialect {
+			return desired, fmt.Errorf("the desired snapshot is for %s, not the target's %s", desired.Dialect, opts.Dialect)
+		}
+	} else {
+		schema, err := dialect.DesiredFromHCL(opts.Dialect, opts.Source.Content)
+		if err != nil {
+			return desired, err
+		}
+		desired = dialect.Snapshot{Dialect: opts.Dialect, Schemas: []string{opts.Schema}, Schema: schema}
+	}
+	return desired, desired.CheckWithin([]string{opts.Schema})
+}
+
 type planPreview struct {
 	bundle.Preview
 	Sources []ProjectSource `json:"sources,omitempty"`
 }
 
 func planBundle(ctx context.Context, db *sql.DB, opts Options) (PlanResult, error) {
-	files := opts.Bundle
-	project := opts.Project
+	files, project, err := bundleProject(opts)
+	if err != nil {
+		return PlanResult{}, err
+	}
 	var options []bundle.Option
 	var sources []ProjectSource
-	if project == nil {
-		var err error
-		if files == nil {
-			files, err = BundleFiles(opts.Source.Files)
-			if err != nil {
-				return PlanResult{}, err
-			}
-		}
-		project, err = LoadProject(files)
-		if err != nil {
-			return PlanResult{}, err
-		}
-	}
 	if project != nil {
-		mapped, scripts, inventory, err := project.bundle()
+		mapped, scripts, inventory, err := project.Bundle()
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -123,17 +139,28 @@ func planBundle(ctx context.Context, db *sql.DB, opts Options) (PlanResult, erro
 	return Review(data, opts.Dialect, opts.Schema)
 }
 
-func planSQLServer(ctx context.Context, db *sql.DB, opts Options) (native.Artifact, error) {
-	if opts.Source.Kind != "snapshot" {
-		return native.Artifact{}, fmt.Errorf("SQL Server requires a complete snapshot JSON")
+// bundleProject finds the bundle files and the project mapped over them, with
+// opts.Labels applied. A nil project means the files are a plain bundle.
+func bundleProject(opts Options) (fs.FS, *Project, error) {
+	files, project := opts.Bundle, opts.Project
+	if project == nil {
+		if files == nil {
+			var err error
+			if files, err = BundleFiles(opts.Source.Files); err != nil {
+				return nil, nil, err
+			}
+		}
+		var err error
+		if project, err = LoadProject(files); err != nil {
+			return nil, nil, err
+		}
 	}
-	var desired snapshot.Result
-	if err := Decode([]byte(opts.Source.Content), &desired); err != nil {
-		return native.Artifact{}, err
+	if project == nil && len(opts.Labels) > 0 {
+		return nil, nil, fmt.Errorf("label selectors require %s", ProjectConfigName)
 	}
-	current, err := snapshot.Inspect(ctx, db, snapshot.Options{Schemas: []string{opts.Schema}})
-	if err != nil {
-		return native.Artifact{}, err
+	if project == nil {
+		return files, nil, nil
 	}
-	return planner.BuildArtifact(native.ArtifactRequest{Schemas: current.Schemas, Request: native.Request{Current: current.Schema, Desired: desired.Schema}})
+	project, err := project.Select(opts.Labels)
+	return files, project, err
 }

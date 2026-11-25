@@ -11,6 +11,7 @@ import (
 
 	"github.com/flanksource/clicky/cache"
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
 type Function struct {
@@ -30,9 +31,10 @@ type Options struct {
 	AbsorbScopes func(scope string) bool
 	Scripts      []scripts.Script
 	Functions    []Function
-	// Schema is the declared-schema reconciliation that runs between the pre
-	// and post scripts; nil when the bundle declares no objects.
-	Schema *SchemaStep
+	// Schema is the reviewed declared-schema reconciliation, an engine artifact
+	// of the "sqlserver" dialect, that runs between the pre and post scripts;
+	// nil when the bundle declares no objects.
+	Schema *engine.Artifact
 	// Warnings are the caller's own warnings about the bundle; the plan file
 	// carries them before the plan's.
 	Warnings []string

@@ -23,20 +23,22 @@ type Dependency struct {
 }
 
 type Script struct {
-	ID                   string       `json:"id"`
-	Path                 string       `json:"path"`
-	Name                 string       `json:"name"`
-	SQL                  string       `json:"sql"`
-	NoStatements         bool         `json:"noStatements,omitempty"`
-	Phase                Phase        `json:"phase"`
-	HeaderPhase          Phase        `json:"-"`
-	Always               bool         `json:"always,omitempty"`
-	NonTransactional     bool         `json:"nonTransactional,omitempty"`
-	DependsOn            []string     `json:"dependsOn,omitempty"`
-	Dependencies         []Dependency `json:"dependencies,omitempty"`
-	ExplicitDependencies bool         `json:"explicitDependencies,omitempty"`
-	ContextPolicy        string       `json:"contextPolicy,omitempty"`
-	Effects              *Effects     `json:"effects,omitempty"`
+	ID   string `json:"id"`
+	Path string `json:"path"`
+	Name string `json:"name"`
+	// Labels are the project labels of the source, carried into the plan file.
+	Labels               map[string][]string `json:"labels,omitempty"`
+	SQL                  string              `json:"sql"`
+	NoStatements         bool                `json:"noStatements,omitempty"`
+	Phase                Phase               `json:"phase"`
+	HeaderPhase          Phase               `json:"-"`
+	Always               bool                `json:"always,omitempty"`
+	NonTransactional     bool                `json:"nonTransactional,omitempty"`
+	DependsOn            []string            `json:"dependsOn,omitempty"`
+	Dependencies         []Dependency        `json:"dependencies,omitempty"`
+	ExplicitDependencies bool                `json:"explicitDependencies,omitempty"`
+	ContextPolicy        string              `json:"contextPolicy,omitempty"`
+	Effects              *Effects            `json:"effects,omitempty"`
 	// Defines holds the body effects of each routine the script creates or
 	// alters (each also listed in Effects.Writes). A script calling one of
 	// them later in the bundle reaches these effects instead of the catalog's.

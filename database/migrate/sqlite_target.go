@@ -11,9 +11,12 @@ import (
 	"ariga.io/atlas/sql/postgres"
 	"ariga.io/atlas/sql/schema"
 	atlassqlite "ariga.io/atlas/sql/sqlite"
+	"github.com/flanksource/sqlglot-go/database/migrate/dialect/atlasdriver"
+	sqlitedialect "github.com/flanksource/sqlglot-go/database/migrate/dialect/sqlite"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	_ "modernc.org/sqlite"
 
-	sqlitemigrate "github.com/flanksource/sqlglot-go/database/migrate/sqlite"
+	native "github.com/flanksource/sqlglot-go/migrate"
 )
 
 // openSQLite opens the single-connection handle a DSN-driven SQLite migration
@@ -29,85 +32,94 @@ func openSQLite(connection string) (*sql.DB, error) {
 }
 
 func applySQLite(ctx context.Context, database *sql.DB, schemaFS fs.FS, config options) error {
-	tables, err := sqliteTables(schemaFS, config)
+	step, err := sqliteSchemaStep(schemaFS, config)
 	if err != nil {
 		return err
 	}
 	if err := database.PingContext(ctx); err != nil {
 		return fmt.Errorf("connect SQLite migration database: %w", err)
 	}
-	return reconcileSQLite(ctx, database, tables, sqlitemigrate.ReconcileOptions{AllowDrops: config.allowDrops})
+	return step.run(ctx, database)
 }
 
-// sqliteTables evaluates the HCL bundle and projects it to the SQLite tables it declares.
-func sqliteTables(schemaFS fs.FS, config options) ([]*schema.Table, error) {
+// sqliteSchemaStep refuses what SQLite bundles cannot carry, then evaluates the
+// HCL bundle and projects it to the SQLite schema it declares.
+func sqliteSchemaStep(schemaFS fs.FS, config options) (schemaStep, error) {
 	if schemaFS == nil {
-		return nil, errors.New("schema filesystem is nil")
+		return schemaStep{}, errors.New("schema filesystem is nil")
 	}
 	if config.schema != defaultSchema {
-		return nil, fmt.Errorf("SQLite migrations do not support schema %q", config.schema)
-	}
-	if len(config.exclude) > 0 {
-		return nil, errors.New("SQLite migrations do not support inspection exclusions")
+		return schemaStep{}, fmt.Errorf("SQLite migrations do not support schema %q", config.schema)
 	}
 	if err := refuseRoutines(config, "SQLite"); err != nil {
-		return nil, err
+		return schemaStep{}, err
 	}
 	if err := refuseScriptPolicy(config, "SQLite"); err != nil {
-		return nil, err
+		return schemaStep{}, err
 	}
 	scripts, err := loadScripts(schemaFS, config)
 	if err != nil {
-		return nil, err
+		return schemaStep{}, err
 	}
 	if len(scripts) > 0 {
-		return nil, errors.New("SQLite migrations do not support SQL migration files")
+		return schemaStep{}, errors.New("SQLite migrations do not support SQL migration files")
 	}
 	parser, security, err := loadHCL(schemaFS, config.dir, config.input)
 	if err != nil {
-		return nil, err
+		return schemaStep{}, err
 	}
 	if len(security.Roles) > 0 || len(security.Permissions) > 0 {
-		return nil, errors.New("SQLite migrations do not support roles or permissions")
+		return schemaStep{}, errors.New("SQLite migrations do not support roles or permissions")
 	}
-	desired := &schema.Realm{}
-	if err := postgres.EvalHCL.Eval(parser, desired, config.input); err != nil {
-		return nil, fmt.Errorf("evaluate HCL schemas for SQLite: %w", err)
-	}
-	tables, err := projectSQLiteRealm(desired)
-	if err != nil {
-		return nil, fmt.Errorf("project HCL schema to SQLite: %w", err)
-	}
-	return tables, nil
+	return sqliteStep(parser, config)
 }
 
-// reconcileSQLite checks for pending changes before opening a transaction, because Atlas's OpenTx
-// runs PRAGMA foreign_key_check over the whole database when it opens and again when it commits.
-// On an up-to-date database that pair of scans was the entire cost of a migration, and it grows with
-// the data. The transaction re-inspects, so a change another process applied in between is not
-// applied twice.
-func reconcileSQLite(ctx context.Context, database *sql.DB, tables []*schema.Table, options sqlitemigrate.ReconcileOptions) error {
-	pending, err := sqlitemigrate.PendingChanges(ctx, database, options, tables...)
+// sqliteStep evaluates the parsed HCL with the bundle's variables and plans
+// toward the result.
+func sqliteStep(parser *hclparse.Parser, config options) (schemaStep, error) {
+	desired, err := sqliteDesired(parser, config)
 	if err != nil {
-		return err
+		return schemaStep{}, err
 	}
-	if len(pending) == 0 {
-		return nil
+	return schemaStep{
+		Dialect: sqlitedialect.Name, Schema: sqlitedialect.SchemaName, Desired: desired,
+		AllowDrops: config.allowDrops, Exclude: config.exclude,
+	}, nil
+}
+
+func sqliteDesired(parser *hclparse.Parser, config options) (native.Schema, error) {
+	if err := refuseSQLiteMemberExclusions(config.exclude); err != nil {
+		return native.Schema{}, err
 	}
-	tx, err := atlassqlite.OpenTx(ctx, database, nil)
+	realm := &schema.Realm{}
+	if err := postgres.EvalHCL.Eval(parser, realm, config.input); err != nil {
+		return native.Schema{}, fmt.Errorf("evaluate HCL schemas for SQLite: %w", err)
+	}
+	projected, err := projectSQLiteRealm(realm)
 	if err != nil {
-		return fmt.Errorf("begin SQLite migration: %w", err)
+		return native.Schema{}, fmt.Errorf("project HCL schema to SQLite: %w", err)
 	}
-	if err := sqlitemigrate.ReconcileTables(ctx, tx, options, tables...); err != nil {
-		return errors.Join(err, tx.Rollback())
+	if err := atlasdriver.Exclude(projected, config.exclude); err != nil {
+		return native.Schema{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return errors.Join(fmt.Errorf("commit SQLite migration: %w", err), tx.Rollback())
+	return sqlitedialect.SchemaFromAtlas(projected)
+}
+
+// refuseSQLiteMemberExclusions allows whole tables only: SQLite rebuilds a table
+// from the definition the plan can see, so a hidden column, index or key would
+// be lost with its data.
+func refuseSQLiteMemberExclusions(patterns []string) error {
+	for _, pattern := range patterns {
+		if strings.Contains(pattern, ".") {
+			return fmt.Errorf("SQLite exclusion %q names a member of a table; exclusions may name whole tables only, because a rebuild cannot keep what the plan cannot see", pattern)
+		}
 	}
 	return nil
 }
 
-func projectSQLiteRealm(realm *schema.Realm) ([]*schema.Table, error) {
+// projectSQLiteRealm projects the canonical PostgreSQL-shaped realm to the one
+// SQLite schema it declares, renamed to main.
+func projectSQLiteRealm(realm *schema.Realm) (*schema.Schema, error) {
 	if realm == nil {
 		return nil, errors.New("desired realm is nil")
 	}
@@ -124,13 +136,13 @@ func projectSQLiteRealm(realm *schema.Realm) ([]*schema.Table, error) {
 	if len(scope.Views) > 0 || len(scope.Funcs) > 0 || len(scope.Procs) > 0 || len(scope.Objects) > 0 || len(scope.Attrs) > 0 {
 		return nil, errors.New("schema views, functions, procedures, attributes, and objects are not portable to SQLite")
 	}
-	scope.Name = "main"
+	scope.Name = sqlitedialect.SchemaName
 	for _, table := range scope.Tables {
 		if err := projectSQLiteTable(table, scope); err != nil {
 			return nil, err
 		}
 	}
-	return scope.Tables, nil
+	return scope, nil
 }
 
 func projectSQLiteTable(table *schema.Table, scope *schema.Schema) error {

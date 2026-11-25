@@ -2,122 +2,152 @@ package sqlserver
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
+	"errors"
 	"fmt"
-	"maps"
 	"slices"
-	"strconv"
-	"strings"
+	"time"
 
-	catalog "github.com/flanksource/sqlglot-go/database/inspect/catalog/sqlserver"
+	_ "github.com/flanksource/sqlglot-go/database/migrate/dialect/sqlserver" // registers the "sqlserver" engine dialect
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	native "github.com/flanksource/sqlglot-go/migrate"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
-// declaredSchemaKey is the observation fingerprinting every declared object.
-const declaredSchemaKey = "declared-schema"
+const (
+	schemaDialect = "sqlserver"
+	// defaultSchemaLockTimeout bounds every wait of a schema unit, the migration
+	// lock included. It equals the scripts' own statement lock timeout
+	// (setLockTimeout), so a blocked DDL fails as fast as a blocked script.
+	defaultSchemaLockTimeout = 15 * time.Second
+)
 
-// SchemaStep is the reviewed reconciliation of the bundle's declared tables
-// and routines: the statements apply runs between the pre and post scripts,
-// planned against the declared objects as the plan observed them.
-type SchemaStep struct {
-	// Objects are the declared tables and routines, schema-qualified.
-	Objects    []string          `json:"objects"`
-	Statements []SchemaStatement `json:"statements"`
-}
-
+// SchemaStatement is one statement of the schema step as the artifact plans it.
 type SchemaStatement struct {
-	SQL         string `json:"sql"`
-	Comment     string `json:"comment,omitempty"`
-	Destructive bool   `json:"destructive,omitempty"`
+	Unit        string
+	Change      string
+	SQL         string
+	Destructive bool
 }
 
-// writes is what the step changes: every declared object, once it runs any
-// statement.
-func (step *SchemaStep) writes() []scripts.ObjectName {
-	if step == nil || len(step.Statements) == 0 {
+// SchemaStatements lists the statements the schema step runs, units in
+// artifact order and statements in op order; nil when the step plans none.
+func (p PlanFile) SchemaStatements() []SchemaStatement {
+	a := p.Bundle.Schema
+	if a == nil {
 		return nil
 	}
-	out := make([]scripts.ObjectName, 0, len(step.Objects))
-	for _, object := range step.Objects {
-		out = append(out, objectName(object))
+	var out []SchemaStatement
+	for _, u := range a.Units {
+		for _, op := range u.Ops {
+			destructive := slices.ContainsFunc(a.Changes, func(c native.Change) bool { return c.ID == op.Change && c.Destructive })
+			for _, s := range op.Statements {
+				out = append(out, SchemaStatement{Unit: u.ID, Change: op.Change, SQL: s.SQL, Destructive: destructive})
+			}
+		}
 	}
 	return out
 }
 
-func (step *SchemaStep) validate() error {
-	if step == nil {
+// schemaWrites is what the step changes: every declared object and every object
+// of a unit, once the plan has a unit to run.
+func schemaWrites(a *engine.Artifact) []scripts.ObjectName {
+	if a == nil || len(a.Units) == 0 {
 		return nil
 	}
-	if len(step.Objects) == 0 {
-		return fmt.Errorf("schema step declares no objects")
-	}
-	for _, object := range step.Objects {
-		if _, err := scripts.QuoteName(object); err != nil {
-			return fmt.Errorf("schema step object: %w", err)
+	var out []scripts.ObjectName
+	add := func(schema, name string) {
+		if object := scripts.NewObjectName(schema, name); !slices.Contains(out, object) {
+			out = append(out, object)
 		}
 	}
-	for i, statement := range step.Statements {
-		if strings.TrimSpace(statement.SQL) == "" {
-			return fmt.Errorf("schema step statement %d is empty", i+1)
+	for _, o := range a.Scope.Objects {
+		add(o.Schema, o.Name)
+	}
+	for _, u := range a.Units {
+		for _, o := range u.Objects {
+			add(o.Schema, o.Name)
 		}
 	}
-	return nil
+	return out
 }
 
-// observe fingerprints the declared objects: the tables' columns, indexes,
-// keys and checks, and each routine's definition, an absent object included.
-func (step *SchemaStep) observe(ctx context.Context, q queryer) (string, error) {
-	bySchema := map[string][]string{}
-	quoted := make([]string, 0, len(step.Objects))
-	for _, object := range step.Objects {
-		schema, name, _ := strings.Cut(object, ".")
-		bySchema[schema] = append(bySchema[schema], name)
-		name, err := scripts.QuoteName(object)
-		if err != nil {
-			return "", err
-		}
-		quoted = append(quoted, name)
+// validateSchema refuses an artifact that is not a SQL Server artifact or does
+// not match its own hash, snapshots and planner version.
+func validateSchema(a *engine.Artifact) error {
+	if a == nil {
+		return nil
 	}
-	tables := map[string]schemaSnapshot{}
-	for _, schema := range slices.Sorted(maps.Keys(bySchema)) {
-		snapshot, err := readSnapshot(ctx, catalog.FromDB(q), catalog.Scope{Schema: schema, Names: bySchema[schema]})
-		if err != nil {
-			return "", fmt.Errorf("observe declared tables of %s: %w", schema, err)
-		}
-		tables[schema] = snapshot
+	if a.Dialect != schemaDialect {
+		return fmt.Errorf("schema artifact is for dialect %q, not %q", a.Dialect, schemaDialect)
 	}
-	modules, err := catalog.ReadModules(ctx, catalog.FromDB(q), slices.Sorted(slices.Values(quoted)))
-	if err != nil {
-		return "", fmt.Errorf("observe declared routines: %w", err)
+	if len(a.Scope.Objects) == 0 {
+		return errors.New("schema artifact declares no objects")
 	}
-	definitions := map[string]string{}
-	for name, m := range modules {
-		definitions[name] = scripts.Digest(m.Kind, m.Definition, strconv.FormatBool(m.ANSI), strconv.FormatBool(m.Quoted), strconv.FormatBool(m.Unavailable))
-	}
-	encoded, err := json.Marshal(struct {
-		Tables      map[string]schemaSnapshot
-		Definitions map[string]string
-	}{tables, definitions})
-	if err != nil {
-		return "", err
-	}
-	return scripts.SourceHash(string(encoded)), nil
+	return engine.Validate(*a)
 }
 
-// run executes the planned statements on q once the declared objects still
-// match the plan; a moved object makes the plan stale before any runs.
-func (step *SchemaStep) run(ctx context.Context, q sessionDB, planned string) error {
-	observed, err := step.observe(ctx, q)
+// currentSchema answers whether the database still holds what the artifact was
+// planned against: the same capabilities, and every unit applied or pending. A
+// database that moved is a *StalePlanError.
+func currentSchema(ctx context.Context, q engine.Querier, a *engine.Artifact) error {
+	if a == nil {
+		return nil
+	}
+	if err := sameCapabilities(ctx, q, *a); err != nil {
+		return err
+	}
+	_, err := engine.Check(ctx, q, *a)
+	return staleSchema(err)
+}
+
+// sameCapabilities mirrors the engine's own check, which reports a mismatch as
+// an untyped error, so that the plan file reports one stale-plan condition. An
+// empty fingerprint marks an artifact planned offline.
+func sameCapabilities(ctx context.Context, q engine.Querier, a engine.Artifact) error {
+	if a.Capabilities.Fingerprint == "" {
+		return nil
+	}
+	d, err := engine.Lookup(a.Dialect)
 	if err != nil {
 		return err
 	}
-	if observed != planned {
-		return &StalePlanError{Moved: []string{"declared schema objects changed since the plan"}}
+	now, err := d.Capabilities(ctx, q)
+	if err != nil {
+		return fmt.Errorf("read %s capabilities: %w", a.Dialect, err)
 	}
-	for i, statement := range step.Statements {
-		if _, err := q.ExecContext(ctx, statement.SQL); err != nil {
-			return fmt.Errorf("schema statement %d of %d: %w", i+1, len(step.Statements), err)
-		}
+	if now.Fingerprint != a.Capabilities.Fingerprint {
+		return &StalePlanError{Moved: []string{fmt.Sprintf("database capabilities changed since the plan (planned against %q, now %q)", a.Capabilities.Fingerprint, now.Fingerprint)}}
 	}
 	return nil
+}
+
+// staleSchema maps the engine's drift onto the plan file's stale-plan error.
+func staleSchema(err error) error {
+	var drift *engine.DriftError
+	if errors.As(err, &drift) {
+		return &StalePlanError{Moved: []string{fmt.Sprintf("declared schema unit %s moved since the plan: %d catalog changes", drift.Unit, len(drift.Changes))}}
+	}
+	return err
+}
+
+// runSchema executes the artifact's units through the engine on connections of
+// db other than q, and returns how many units committed. Units already at their
+// desired state are skipped, so a re-run of an interrupted step resumes after
+// the units that committed.
+func runSchema(ctx context.Context, db *sql.DB, q engine.Querier, a engine.Artifact, timeout time.Duration) (int, error) {
+	if db.Stats().MaxOpenConnections == 1 {
+		return 0, errors.New("schema step needs a second pooled connection beside the locked apply connection: the pool allows one")
+	}
+	if err := sameCapabilities(ctx, q, a); err != nil {
+		return 0, err
+	}
+	result, err := engine.Apply(ctx, db, engine.ApplyRequest{Artifact: a, Hash: a.Hash, Acknowledgements: engine.Acknowledgements(a), LockTimeout: timeout})
+	applied := 0
+	for _, u := range result.Units {
+		if u.Outcome == engine.Applied {
+			applied++
+		}
+	}
+	return applied, staleSchema(err)
 }

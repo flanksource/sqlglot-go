@@ -31,7 +31,7 @@ ignore: ['migrations/archive/**']
 		})
 		Expect(err).NotTo(HaveOccurred())
 		var sources []ProjectSource
-		for _, file := range project.files {
+		for _, file := range project.Files() {
 			sources = append(sources, file.ProjectSource)
 		}
 		Expect(sources).To(Equal([]ProjectSource{
@@ -67,10 +67,11 @@ ignore: ['migrations/archive/**']
 				"tests/AsEnv.sql":    {Data: []byte("SELECT 2")},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(project.files).To(Equal([]projectFile{{
+			Expect(project.Files()).To(Equal([]ProjectFile{{
 				ProjectSource: ProjectSource{Path: dir + "/data.xml", Kind: SQLContent, ID: "2c6fb790-39c6-4dff-853d-427f5b53fb23",
 					Name: "Readable Script", Phase: example.phase, Labels: example.labels},
-				bundlePath: dir + "/data.sql", content: body,
+				BundlePath: dir + "/data.sql", Content: body,
+				Inputs: []string{dir + "/data.xml", dir + "/SQLData.xml"},
 			}}))
 		}
 	})
@@ -89,9 +90,9 @@ ignore: ['scripts/ignored']
 			"override.hcl":     {Data: []byte("SELECT 1")},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(project.files).To(Equal([]projectFile{{
+		Expect(project.Files()).To(Equal([]ProjectFile{{
 			ProjectSource: ProjectSource{Path: "override.hcl", ID: "override.sql", Kind: SQLContent},
-			bundlePath:    "override.sql", content: "SELECT 1",
+			BundlePath:    "override.sql", Content: "SELECT 1", Inputs: []string{"override.hcl"},
 		}}))
 	})
 
@@ -105,7 +106,7 @@ mappings:
 			"deploy.txt": {Data: []byte("-- phase: pre\nSELECT 1")},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		fsys, sources, _, err := project.bundle()
+		fsys, sources, _, err := project.Bundle()
 		Expect(err).NotTo(HaveOccurred())
 		_, err = scripts.Load(scripts.LoadOptions{FS: fsys, Sources: sources})
 		Expect(err).To(MatchError(ContainSubstring(`script deploy.txt: SQL header phase "pre" conflicts with mapped phase "post"`)))
