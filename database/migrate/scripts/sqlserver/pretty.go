@@ -7,6 +7,8 @@ import (
 
 	"github.com/flanksource/clicky/api"
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	native "github.com/flanksource/sqlglot-go/migrate"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
 // planTotals counts what a plan does.
@@ -138,23 +140,60 @@ func (p PlanFile) prettyAction(out api.Text, item scripts.Pending, totals *planT
 	return out
 }
 
+// prettySchema renders the schema step from its artifact: each planned change
+// (a forced rebuild names the change that forced it), the units with their
+// preconditions, the drops a declared scope left alone and what could not be read.
 func (p PlanFile) prettySchema(out api.Text, totals *planTotals) api.Text {
-	step := p.Bundle.Schema
-	if step == nil {
+	a := p.Bundle.Schema
+	if a == nil {
 		return out
 	}
-	out = out.NewLine().NewLine().Append("Schema", "font-bold").Append(fmt.Sprintf(" (%d declared objects)", len(step.Objects)), "text-gray-500")
-	if len(step.Statements) == 0 {
-		return out.NewLine().Append("  = declared objects match", "text-gray-500")
+	out = out.NewLine().NewLine().Append("Schema", "font-bold").Append(fmt.Sprintf(" (%d declared objects)", len(a.Scope.Objects)), "text-gray-500")
+	if len(a.Changes) == 0 {
+		out = out.NewLine().Append("  = declared objects match", "text-gray-500")
 	}
-	for _, statement := range step.Statements {
-		totals.statements++
+	for _, change := range a.Changes {
 		marker, style := "  ~ ", "text-yellow-600"
-		if statement.Destructive {
-			totals.destructive++
+		switch {
+		case change.Destructive:
 			marker, style = "  ! destructive ", "text-red-600"
+		case change.Action == "add":
+			marker, style = "  + ", "text-green-600"
 		}
-		out = out.NewLine().Append(marker, style).Append(strings.TrimSpace(statement.SQL))
+		out = out.NewLine().Append(marker, style).Append(describeSchemaChange(change))
 	}
+	for _, unit := range a.Units {
+		for _, precondition := range unit.Preconditions {
+			out = out.NewLine().Append("      ? checks first: ", "text-purple-600").Append(precondition.Message, "text-gray-500")
+		}
+	}
+	for _, kept := range a.Preserved {
+		out = out.NewLine().Append("  = kept ", "text-gray-500").Append(describeSchemaChange(kept), "text-gray-500")
+	}
+	for _, refusal := range a.Refusals {
+		name := refusal.Object.Schema + "." + refusal.Object.Name
+		if refusal.Member != "" {
+			name += "." + refusal.Member
+		}
+		out = out.NewLine().Append("  ? unreadable ", "text-purple-600").Append(name+": "+refusal.Reason, "text-gray-500")
+	}
+	totals.statements += len(p.SchemaStatements())
+	totals.destructive += len(engine.Acknowledgements(*a))
 	return out
+}
+
+// describeSchemaChange is "action kind schema.object[.member]", with the reason
+// and, for a forced rebuild, the change that forced it.
+func describeSchemaChange(change native.Change) string {
+	text := change.Action + " " + change.Kind + " " + change.Object.Schema + "." + change.Object.Name
+	if change.Member != "" {
+		text += "." + change.Member
+	}
+	if change.Cause != "" {
+		text += " (forced by " + change.Cause + ")"
+	}
+	if change.Reason != "" {
+		text += ": " + change.Reason
+	}
+	return text
 }

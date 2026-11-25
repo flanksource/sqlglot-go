@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	scriptplan "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
-	native "github.com/flanksource/sqlglot-go/migrate"
 )
 
 // scriptPlanOf reads the SQL Server plan file data holds, bare or in a bundle
@@ -44,12 +43,11 @@ func reviewScriptPlan(data []byte, file *scriptplan.PlanFile, warnings []string,
 		return PlanResult{}, err
 	}
 	result := PlanResult{Dialect: "sqlserver", Schema: schema, Artifact: artifact, Original: data, Hash: file.Hash,
-		Steps: []Step{}, Changes: []native.Change{}, Warnings: append(warnings, file.Warnings...), Applicable: true, ScriptPlan: file}
+		Steps: []Step{}, Changes: []Change{}, Warnings: append(warnings, file.Warnings...), Applicable: true, ScriptPlan: file}
 	if file.Bundle.Schema != nil {
-		for i, statement := range file.Bundle.Schema.Statements {
-			result.Steps = append(result.Steps, Step{ID: fmt.Sprintf("schema-%d", i+1), SQL: statement.SQL, Destructive: statement.Destructive})
+		if err := result.addSchemaArtifact(*file.Bundle.Schema); err != nil {
+			return PlanResult{}, err
 		}
 	}
-	result.complete()
-	return result, nil
+	return result, result.complete()
 }

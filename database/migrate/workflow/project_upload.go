@@ -11,20 +11,23 @@ type ProjectUpload struct {
 	Plain    bool     `json:"plain,omitempty"`
 }
 
+// ProjectPreview counts the sources the selectors keep (Mapped), the matched
+// files an ignore rule dropped, and the mapped sources the selectors left out.
 type ProjectPreview struct {
-	Mapped  int `json:"mapped"`
-	Ignored int `json:"ignored"`
+	Mapped     int `json:"mapped"`
+	Ignored    int `json:"ignored"`
+	Deselected int `json:"deselected,omitempty"`
 }
 
 func (project *Project) Preview() ProjectPreview {
-	return ProjectPreview{Mapped: len(project.files), Ignored: project.ignored}
+	return ProjectPreview{Mapped: len(project.files), Ignored: project.ignored, Deselected: len(project.all) - len(project.files)}
 }
 
 // ProjectUploadPaths finds the files needed to run the same mapper used by the
 // CLI. A transform may read files under the matched file's directory.
 func ProjectUploadPaths(config string, paths []string) (ProjectUpload, error) {
 	var result ProjectUpload
-	cfg, err := parseProjectConfig([]byte(config))
+	cfg, err := ParseProjectConfig([]byte(config))
 	if err != nil {
 		return result, fmt.Errorf("%s: %w", ProjectConfigName, err)
 	}

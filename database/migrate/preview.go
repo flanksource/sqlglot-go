@@ -7,22 +7,24 @@ import (
 	"io/fs"
 	"slices"
 
-	"ariga.io/atlas/sql/postgres"
-	"ariga.io/atlas/sql/schema"
-	"ariga.io/atlas/sql/sqlite"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
 	scriptserver "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
-	native "github.com/flanksource/sqlglot-go/migrate"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
+	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
+// Preview is what PreviewBundle plans. For PostgreSQL and SQLite, Artifact is
+// the engine's reviewed artifact: its changes (forced rebuilds carry their
+// cause), preserved drops, refusals, warnings and units with their ordered
+// statements and preconditions. A non-empty Advisory marks a bundle whose
+// scripts or security blocks the artifact does not carry, so it must not be
+// applied as the whole migration.
 type Preview struct {
-	Artifact          *review.Artifact       `json:"artifact,omitempty"`
-	SQLServerArtifact *native.Artifact       `json:"sqlServerArtifact,omitempty"`
-	SQLServerPlan     *native.Plan           `json:"sqlServerPlan,omitempty"`
-	Scripts           []ScriptAnalysis       `json:"scripts,omitempty"`
-	ScriptPlan        *scriptserver.PlanFile `json:"scriptPlan,omitempty"`
-	Warnings          []string               `json:"warnings,omitempty"`
-	Error             string                 `json:"error,omitempty"`
+	Artifact   *engine.Artifact       `json:"artifact,omitempty"`
+	Advisory   []string               `json:"advisory,omitempty"`
+	Scripts    []ScriptAnalysis       `json:"scripts,omitempty"`
+	ScriptPlan *scriptserver.PlanFile `json:"scriptPlan,omitempty"`
+	Warnings   []string               `json:"warnings,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 // PreviewBundle inspects and plans without executing scripts or creating metadata.
@@ -74,45 +76,46 @@ func PreviewBundle(ctx context.Context, db *sql.DB, dialect string, files fs.FS,
 	if len(security.Roles)+len(security.Permissions) > 0 {
 		advisory = append(advisory, "security changes require phased reviewed artifacts")
 	}
-	if dialect == "sqlserver" {
-		return previewSQLServer(ctx, db, files, cfg, result, advisory)
-	}
-	if cfg.routines != "" || len(cfg.exclude) > 0 {
-		return result, fmt.Errorf("reviewed bundle previews do not support routines or inspection exclusions")
-	}
-	realm := &schema.Realm{}
-	if err = postgres.EvalHCL.Eval(parser, realm, cfg.input); err != nil {
-		return result, fmt.Errorf("evaluate preview HCL: %w", err)
-	}
-	schemaName := cfg.schema
-	var desired []byte
-	switch dialect {
-	case "sqlite":
-		if cfg.schema != defaultSchema {
-			return result, fmt.Errorf("SQLite bundle schema must be public")
-		}
-		if _, err = projectSQLiteRealm(realm); err != nil {
-			return result, err
-		}
-		schemaName = "main"
-		desired, err = sqlite.MarshalHCL.MarshalSpec(realm)
-	case "postgres":
-		if err = remapDesiredSchema(realm, cfg.schema); err != nil {
-			return result, err
-		}
-		desired, err = postgres.MarshalHCL.MarshalSpec(realm)
-	default:
-		return result, fmt.Errorf("unsupported reviewed bundle dialect %q", dialect)
-	}
+	artifact, err := previewSchema(ctx, db, dialect, previewInput{files: files, parser: parser, cfg: cfg})
 	if err != nil {
-		return result, err
-	}
-	artifact, err := review.Build(ctx, db, review.Options{Dialect: dialect, Schema: schemaName, DesiredHCL: string(desired), Advisory: advisory, PreserveOmitted: !cfg.allowDrops})
-	if err != nil {
-		result.Error = err.Error()
 		return result, err
 	}
 	result.Artifact = &artifact
-	result.Warnings = append(result.Warnings, slices.Clone(advisory)...)
+	result.Advisory = slices.Clone(advisory)
+	result.Warnings = append(result.Warnings, advisory...)
 	return result, nil
+}
+
+// previewInput is the bundle a schema preview plans toward.
+type previewInput struct {
+	files  fs.FS
+	parser *hclparse.Parser
+	cfg    options
+}
+
+// previewSchema plans the bundle's schema against the live database.
+func previewSchema(ctx context.Context, db *sql.DB, dialect string, in previewInput) (engine.Artifact, error) {
+	if dialect == "sqlserver" {
+		return previewSQLServer(ctx, db, in.files, in.cfg)
+	}
+	if in.cfg.routines != "" {
+		return engine.Artifact{}, fmt.Errorf("bundle previews do not support routines")
+	}
+	var step schemaStep
+	var err error
+	switch dialect {
+	case "sqlite":
+		if in.cfg.schema != defaultSchema {
+			return engine.Artifact{}, fmt.Errorf("SQLite bundle schema must be public")
+		}
+		step, err = sqliteStep(in.parser, in.cfg)
+	case "postgres":
+		step, err = postgresStep(in.parser, in.cfg)
+	default:
+		err = fmt.Errorf("unsupported bundle preview dialect %q", dialect)
+	}
+	if err != nil {
+		return engine.Artifact{}, err
+	}
+	return step.plan(ctx, db)
 }

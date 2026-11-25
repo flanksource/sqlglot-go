@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -8,13 +9,18 @@ import (
 	"strings"
 
 	"github.com/flanksource/sqlglot-go/database/migrate/scripts"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
 const (
 	// PlanFileKind identifies a plan file among migration artifacts.
 	PlanFileKind = "sqlglot-go/script-plan"
-	// PlanFileVersion is the plan file format this package writes and reads.
-	PlanFileVersion = 2
+	// PlanFileVersion is the plan file format this package writes. Version 3
+	// carries the declared-schema step as an engine.Artifact.
+	PlanFileVersion = 3
+	// planFileScriptsVersion is the last format whose schema step was a list of
+	// statements; a file of it without a schema step still reads.
+	planFileScriptsVersion = 2
 )
 
 // PlanTarget is the database a plan was made for.
@@ -28,11 +34,11 @@ func (t PlanTarget) String() string { return t.Server + "/" + t.Database + "/" +
 
 // PlanBundle is everything apply needs to run the plan without the sources:
 // the prepared scripts with their SQL and effects, the registered functions
-// and the declared-schema step.
+// and the declared-schema step, a reviewed engine artifact.
 type PlanBundle struct {
 	Scripts   []scripts.Script `json:"scripts"`
 	Functions []Function       `json:"functions,omitempty"`
-	Schema    *SchemaStep      `json:"schema,omitempty"`
+	Schema    *engine.Artifact `json:"schema,omitempty"`
 }
 
 // PlanFile is a self-contained, terraform-style plan: what the target looked
@@ -63,6 +69,30 @@ func (e *StalePlanError) Error() string {
 	return "plan is stale: " + strings.Join(e.Moved, "; ") + "; run sqlglot migrate plan again"
 }
 
+// UnmarshalJSON reads a plan file strictly. A version 2 file that carries a
+// schema step is refused by name: its statements are not a v3 artifact, and
+// decoding it as one would silently drop them.
+func (p *PlanFile) UnmarshalJSON(data []byte) error {
+	var head struct {
+		Version int `json:"version"`
+		Bundle  struct {
+			Schema json.RawMessage `json:"schema"`
+		} `json:"bundle"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return err
+	}
+	if head.Version == planFileScriptsVersion && len(head.Bundle.Schema) > 0 && !bytes.Equal(head.Bundle.Schema, []byte("null")) {
+		return errLegacySchemaStep
+	}
+	type plain PlanFile
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode((*plain)(p))
+}
+
+var errLegacySchemaStep = fmt.Errorf("plan file version %d carries a schema step of statements: it was made by an older version and must be re-planned (run sqlglot migrate plan again)", planFileScriptsVersion)
+
 func (p PlanFile) digest() (string, error) {
 	p.Hash = ""
 	encoded, err := json.Marshal(p)
@@ -84,8 +114,11 @@ func (p PlanFile) Verify() error {
 	if p.Kind == PlanFileKind && p.Version == 1 {
 		return fmt.Errorf("plan file version 1 predates absorbed ledger scopes; re-run sqlglot migrate plan")
 	}
-	if p.Kind != PlanFileKind || p.Version != PlanFileVersion {
-		return fmt.Errorf("not a version %d %s file (kind %q, version %d)", PlanFileVersion, PlanFileKind, p.Kind, p.Version)
+	if p.Kind != PlanFileKind || (p.Version != PlanFileVersion && p.Version != planFileScriptsVersion) {
+		return fmt.Errorf("not a version %d or %d %s file (kind %q, version %d)", planFileScriptsVersion, PlanFileVersion, PlanFileKind, p.Kind, p.Version)
+	}
+	if p.Version == planFileScriptsVersion && p.Bundle.Schema != nil {
+		return errLegacySchemaStep
 	}
 	hash, err := p.digest()
 	if err != nil {
@@ -183,7 +216,7 @@ func (p PlanFile) Selected() []string {
 // Changed reports whether applying the plan changes anything beyond running
 // its `runs: always` scripts.
 func (p PlanFile) Changed() bool {
-	if p.Bundle.Schema != nil && len(p.Bundle.Schema.Statements) > 0 {
+	if p.Bundle.Schema != nil && len(p.Bundle.Schema.Units) > 0 {
 		return true
 	}
 	for _, item := range p.Actions {

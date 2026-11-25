@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing/fstest"
 
-	sqlitemigrate "github.com/flanksource/sqlglot-go/database/migrate/sqlite"
 	"github.com/flanksource/sqlglot-go/database/target"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -76,7 +75,7 @@ var registerRecordingDriver = sync.OnceValue(func() *recordingDriver {
 
 var _ = Describe("SQLite HCL target on an up-to-date database", func() {
 	reconcileRecorded := func(ctx context.Context, dsn string, files fstest.MapFS) []string {
-		tables, err := sqliteTables(files, resolveOptions(nil))
+		step, err := sqliteSchemaStep(files, resolveOptions(nil))
 		Expect(err).ToNot(HaveOccurred())
 		target, err := dbtarget.Parse(dsn)
 		Expect(err).ToNot(HaveOccurred())
@@ -85,13 +84,13 @@ var _ = Describe("SQLite HCL target on an up-to-date database", func() {
 		Expect(err).ToNot(HaveOccurred())
 		DeferCleanup(database.Close)
 		before := len(recorder.recorded())
-		Expect(reconcileSQLite(ctx, database, tables, sqlitemigrate.ReconcileOptions{})).To(Succeed())
+		Expect(step.run(ctx, database)).To(Succeed())
 		return recorder.recorded()[before:]
 	}
 	transactional := func(statements []string) []string {
 		var found []string
 		for _, statement := range statements {
-			if statement == "BEGIN" || strings.Contains(statement, "foreign_key_check") {
+			if statement == "BEGIN IMMEDIATE" || statement == "COMMIT" || strings.Contains(statement, "foreign_key_check") {
 				found = append(found, statement)
 			}
 		}
@@ -106,7 +105,7 @@ var _ = Describe("SQLite HCL target on an up-to-date database", func() {
 		Expect(transactional(reconcileRecorded(ctx, dsn, files))).To(BeEmpty())
 	})
 
-	It("still applies a pending change inside the checked transaction", func(ctx context.Context) {
+	It("applies a pending in-place change in one write transaction, with no foreign key scan of the database", func(ctx context.Context) {
 		dsn := filepath.Join(GinkgoT().TempDir(), "pending.db")
 		files := fstest.MapFS{"schema.hcl": &fstest.MapFile{Data: []byte(portableSchema)}}
 		Expect(Apply(ctx, dsn, files)).To(Succeed())
@@ -114,9 +113,7 @@ var _ = Describe("SQLite HCL target on an up-to-date database", func() {
 			`  column "created_at" {`,
 			"  column \"description\" {\n    type = text\n    null = true\n  }\n  column \"created_at\" {", 1))}
 
-		Expect(transactional(reconcileRecorded(ctx, dsn, files))).To(Equal([]string{
-			"BEGIN", "PRAGMA foreign_key_check", "PRAGMA foreign_key_check",
-		}))
+		Expect(transactional(reconcileRecorded(ctx, dsn, files))).To(Equal([]string{"BEGIN IMMEDIATE", "COMMIT"}))
 		Expect(transactional(reconcileRecorded(ctx, dsn, files))).To(BeEmpty())
 	})
 })

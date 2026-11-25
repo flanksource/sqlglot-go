@@ -19,7 +19,7 @@ func prepare(ctx context.Context, opts Options) (Options, error) {
 	if err := validateAbsorbed(opts); err != nil {
 		return Options{}, err
 	}
-	if err := opts.Schema.validate(); err != nil {
+	if err := validateSchema(opts.Schema); err != nil {
 		return Options{}, err
 	}
 	encoded, err := json.Marshal(struct {
@@ -133,17 +133,12 @@ func plan(ctx context.Context, q queryer, opts Options) (PlanFile, error) {
 		Target: PlanTarget{Server: target.server, Database: target.database, Scope: opts.Scope},
 		Bundle: PlanBundle{Scripts: opts.Scripts, Functions: opts.Functions, Schema: opts.Schema}}
 	built, err := scripts.Build(scripts.PlanOptions{Target: file.Target.String(), Scripts: opts.Scripts, Recorded: target.states,
-		Observations: target.observations, Modules: target.modules, SchemaWrites: opts.Schema.writes(),
+		Observations: target.observations, Modules: target.modules, SchemaWrites: schemaWrites(opts.Schema),
 		Reads: target.reads, UntrackedReads: target.untracked, Answers: target.answers})
 	if err != nil {
 		return PlanFile{}, err
 	}
 	file.Actions, file.Observations = built.Scripts, observedInputs(built.Scripts)
-	if opts.Schema != nil {
-		if file.Observations[declaredSchemaKey], err = opts.Schema.observe(ctx, q); err != nil {
-			return PlanFile{}, err
-		}
-	}
 	file.Warnings = slices.Concat(opts.Warnings, built.Warnings, planWarnings(file, target.warnings))
 	return file.seal()
 }
@@ -166,7 +161,7 @@ func observedInputs(actions []scripts.Pending) map[string]string {
 // observation found, by script ID.
 func planWarnings(file PlanFile, observed map[string][]string) []string {
 	var out []string
-	declared := file.Bundle.Schema.writes()
+	declared := schemaWrites(file.Bundle.Schema)
 	for _, item := range file.Actions {
 		if item.Script.NoStatements {
 			out = append(out, fmt.Sprintf("SQL script %s has no statements; skipped", cmp.Or(item.Script.Path, item.Script.ID)))

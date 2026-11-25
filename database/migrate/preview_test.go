@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"database/sql"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 	planner "github.com/flanksource/sqlglot-go/migrate/sqlserver"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -45,7 +46,9 @@ var _ = Describe("migration preview", func() {
 		Expect(preview.Scripts[0].Kind).To(Equal("ddl"))
 		Expect(preview.Warnings).NotTo(BeEmpty())
 		Expect(preview.Artifact).NotTo(BeNil())
-		Expect(preview.Artifact.Advisory).NotTo(BeEmpty())
+		Expect(preview.Advisory).To(Equal([]string{"SQL scripts require phased reviewed artifacts"}))
+		Expect(preview.Artifact.Units).To(HaveLen(2), "one unit per created table, the referenced one first")
+		Expect(preview.Artifact.Scope.Mode).To(Equal(engine.ScopeDeclared))
 		var count int
 		Expect(db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type = 'table'").Scan(&count)).To(Succeed())
 		Expect(count).To(BeZero())

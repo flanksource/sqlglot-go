@@ -61,6 +61,5 @@ func reviewCSV(body json.RawMessage, dialect, schema string) (PlanResult, error)
 	}
 	result := PlanResult{Dialect: "sqlserver", Schema: artifact.Schema, Artifact: body, Original: body, Hash: artifact.Hash,
 		Acks: acks, Steps: []Step{}, Applicable: true, CSVPlan: &artifact}
-	result.complete()
-	return result, nil
+	return result, result.complete()
 }

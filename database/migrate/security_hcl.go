@@ -81,21 +81,13 @@ func loadHCL(schemaFS fs.FS, dir string, input map[string]cty.Value) (*hclparse.
 		return nil, securitySpec{}, err
 	}
 
+	repeated, err := repeatedSchemaBlocks(files)
+	if err != nil {
+		return nil, securitySpec{}, err
+	}
 	parser := hclparse.NewParser()
 	for _, file := range files {
-		filtered := append([]byte(nil), file.data...)
-		for _, block := range file.body.Blocks {
-			if block.Type != "role" && block.Type != "permission" {
-				continue
-			}
-			r := block.Range()
-			for i := r.Start.Byte; i < r.End.Byte && i < len(filtered); i++ {
-				if filtered[i] != '\n' && filtered[i] != '\r' {
-					filtered[i] = ' '
-				}
-			}
-		}
-		if _, diagnostics := parser.ParseHCL(filtered, file.name); diagnostics.HasErrors() {
+		if _, diagnostics := parser.ParseHCL(evaluableSource(file, repeated), file.name); diagnostics.HasErrors() {
 			return nil, securitySpec{}, diagnostics
 		}
 	}

@@ -46,11 +46,11 @@ var _ = Describe("Apply WithDB", func() {
 		Expect(Apply(ctx, " ", files)).To(MatchError("connection string is empty"))
 	})
 
-	It("refuses a PostgreSQL handle", func(ctx context.Context) {
+	It("refuses a PostgreSQL handle for a schema other than the default, which only a connection string can scope", func(ctx context.Context) {
 		database, err := sql.Open("postgres", "postgres://localhost/acme?sslmode=disable")
 		Expect(err).ToNot(HaveOccurred())
 		DeferCleanup(database.Close)
-		Expect(Apply(ctx, "", files, WithDB(database))).
-			To(MatchError(ContainSubstring("WithDB does not support PostgreSQL")))
+		Expect(Apply(ctx, "", files, WithDB(database), WithSchema("tenant_a"))).
+			To(MatchError(ContainSubstring("WithDB cannot scope search_path to schema \"tenant_a\"")))
 	})
 })

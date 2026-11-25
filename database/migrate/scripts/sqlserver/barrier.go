@@ -19,6 +19,15 @@ type applyConfig struct {
 	analysisTTL        time.Duration
 	progress           func(Progress)
 	primaryKeyWarnings bool
+	schemaLockTimeout  time.Duration
+}
+
+// WithSchemaLockTimeout bounds how long each unit of the schema step waits for
+// the migration lock and for a blocked statement, before failing it. It
+// defaults to 15 seconds, the scripts' own statement lock timeout, and must be
+// positive: the dialect reads zero as "do not wait".
+func WithSchemaLockTimeout(timeout time.Duration) ApplyOption {
+	return func(c *applyConfig) { c.schemaLockTimeout = timeout }
 }
 
 // WithPrimaryKeyWarnings continues after a script's primary-key violation when the
@@ -41,7 +50,7 @@ func WithAnalysisCache(store cache.Store, ttl time.Duration) ApplyOption {
 }
 
 func resolveApply(options []ApplyOption) applyConfig {
-	var cfg applyConfig
+	cfg := applyConfig{schemaLockTimeout: defaultSchemaLockTimeout}
 	for _, option := range options {
 		option(&cfg)
 	}

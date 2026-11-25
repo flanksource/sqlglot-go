@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"path"
+	"slices"
 	"strings"
 
 	"cel.dev/cel-go/cel"
@@ -27,12 +28,12 @@ type sourceTransform struct {
 	Labels map[string][]string `json:"labels"`
 }
 
-func (mapping projectMapping) resolve(fsys fs.FS, name string, ignored func(string) bool) (projectFile, error) {
+func (mapping ProjectMapping) resolve(fsys fs.FS, name string, ignored func(string) bool) (ProjectFile, error) {
 	data, err := readProjectFile(fsys, name)
 	if err != nil {
-		return projectFile{}, err
+		return ProjectFile{}, err
 	}
-	file := projectFile{ProjectSource: ProjectSource{Path: name, Kind: mapping.Kind, Labels: maps.Clone(mapping.Labels)}, content: string(data)}
+	file := ProjectFile{ProjectSource: ProjectSource{Path: name, Kind: mapping.Kind, Labels: maps.Clone(mapping.Labels)}, Content: string(data)}
 	if file.Kind == "" {
 		switch strings.ToLower(path.Ext(name)) {
 		case ".hcl":
@@ -41,32 +42,34 @@ func (mapping projectMapping) resolve(fsys fs.FS, name string, ignored func(stri
 			file.Kind = SQLContent
 		}
 	}
+	file.Inputs = []string{name}
 	if mapping.Transform != "" {
-		transform, err := runProjectTransform(fsys, file, mapping.Transform, ignored)
+		transform, reads, err := runProjectTransform(fsys, file, mapping.Transform, ignored)
 		if err != nil {
 			return file, err
 		}
 		if err := file.apply(transform); err != nil {
 			return file, err
 		}
+		file.Inputs = append(file.Inputs, reads...)
 	}
 	if file.Kind == "" {
 		return file, fmt.Errorf("cannot infer kind from file extension, set kind or return hcl or sql from a transform")
 	}
-	file.bundlePath = strings.TrimSuffix(name, path.Ext(name)) + "." + string(file.Kind)
+	file.BundlePath = strings.TrimSuffix(name, path.Ext(name)) + "." + string(file.Kind)
 	if file.ID == "" {
-		file.ID = file.bundlePath
+		file.ID = file.BundlePath
 	}
 	if file.Kind == HCLContent {
 		if !validProjectPath(file.ID) || !strings.EqualFold(path.Ext(file.ID), ".hcl") {
 			return file, fmt.Errorf("HCL ID %q must be a relative .hcl path", file.ID)
 		}
-		file.bundlePath = file.ID
+		file.BundlePath = file.ID
 	}
 	return file, nil
 }
 
-func (file *projectFile) apply(out sourceTransform) error {
+func (file *ProjectFile) apply(out sourceTransform) error {
 	if (out.SQL == nil) == (out.HCL == nil) {
 		return fmt.Errorf("transform must return exactly one of hcl or sql")
 	}
@@ -102,7 +105,7 @@ func (file *projectFile) apply(out sourceTransform) error {
 		}
 		file.Labels[key] = values
 	}
-	file.Kind, file.content, file.Name, file.Phase = kind, *content, out.Name, out.Phase
+	file.Kind, file.Content, file.Name, file.Phase = kind, *content, out.Name, out.Phase
 	return nil
 }
 
@@ -120,9 +123,13 @@ func validateProjectLabels(labels map[string][]string) error {
 	return nil
 }
 
-func runProjectTransform(fsys fs.FS, file projectFile, expression string, ignored func(string) bool) (sourceTransform, error) {
+// runProjectTransform evaluates a mapping's transform. It also returns the
+// sorted, de-duplicated project paths the transform's read() returned, other
+// than the mapped file itself.
+func runProjectTransform(fsys fs.FS, file ProjectFile, expression string, ignored func(string) bool) (sourceTransform, []string, error) {
 	var out sourceTransform
 	var ignoredRead bool
+	reads := map[string]bool{}
 	read := func(arg ref.Val) ref.Val {
 		name := arg.Value().(string)
 		if !validProjectPath(name) {
@@ -137,23 +144,25 @@ func runProjectTransform(fsys fs.FS, file projectFile, expression string, ignore
 		if err != nil {
 			return types.WrapErr(err)
 		}
+		reads[name] = true
 		return types.String(data)
 	}
-	value, err := evaluateSourceTransform(expression, file.Path, file.content, nil, read)
+	value, err := evaluateSourceTransform(expression, file.Path, file.Content, nil, read)
 	if ignoredRead {
-		return out, errIgnoredProjectRead
+		return out, nil, errIgnoredProjectRead
 	}
 	if err != nil {
-		return out, fmt.Errorf("transform: %w", err)
+		return out, nil, fmt.Errorf("transform: %w", err)
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return out, fmt.Errorf("encode transform result: %w", err)
+		return out, nil, fmt.Errorf("encode transform result: %w", err)
 	}
 	if err := Decode(data, &out); err != nil {
-		return out, fmt.Errorf("invalid transform result: %w", err)
+		return out, nil, fmt.Errorf("invalid transform result: %w", err)
 	}
-	return out, nil
+	delete(reads, file.Path)
+	return out, slices.Sorted(maps.Keys(reads)), nil
 }
 
 // TransformSource evaluates a project source expression with the shared file
