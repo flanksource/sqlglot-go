@@ -36,7 +36,7 @@ printf 'SELECT id FROM users' | sqlglot tokens --format json
 
 ## Database commands
 
-Use `sqlglot schema inspect` to read a catalog or export a migration snapshot. See [Database inspection](./inspection).
+Use `sqlglot schema inspect` to read a catalog, export a migration snapshot (`--snapshot`) or write SQL Server tables as HCL (`--hcl`). See [Database inspection](./inspection).
 
 ## Migrate
 
@@ -103,10 +103,10 @@ Plan against the existing database. The summary goes to stderr and the plan file
 
 ```sh
 sqlglot migrate plan --dsn ./inventory-target.db --bundle ./bundle
-jq '.artifact | {hash, steps, advisory}' .sqlglot-go/plan.json
+jq '{hash: .artifact.hash, changes: [.artifact.changes[].id], advisory}' .sqlglot-go/plan.json
 ```
 
-The bundle artifact is nested under `artifact` for PostgreSQL and SQLite, under `sqlServerArtifact` for a SQL Server schema-only bundle and under `scriptPlan` for a SQL Server bundle with scripts. A plan from `--desired` writes the artifact at the top level. Stdout carries the same JSON as the plan file.
+The bundle artifact is nested under `artifact` for every dialect, and under `scriptPlan` for a SQL Server bundle with scripts, whose schema step holds the same artifact. A plan from `--desired` writes the artifact at the top level. Stdout carries the same JSON as the plan file.
 
 After reviewing the SQL, apply the plan file. The example adds a nullable column and requires no destructive acknowledgement.
 
@@ -115,7 +115,7 @@ sqlglot migrate apply --dsn ./inventory-target.db .sqlglot-go/plan.json
 sqlite3 ./inventory-target.db 'PRAGMA table_info(items);'
 ```
 
-For PostgreSQL and SQLite, take acknowledgement IDs from `steps` entries marked `destructive`, and pass each complete ID once as its own `--ack` argument. For SQL Server, the summary shows destructive schema statements and applying the file is their acknowledgement. `--lock-timeout` defaults to `5s` and accepts positive durations such as `30s`. A schema artifact reports `already-applied` when its intended state is already present. If the target changed since the plan, apply fails as stale and runs nothing: plan again.
+Take acknowledgement IDs from the plan summary or the `acks` of `sqlglot migrate review`, and pass each complete ID once as its own `--ack` argument. For a SQL Server bundle with scripts, the summary shows the destructive schema statements and applying the file is their acknowledgement. `--lock-timeout` defaults to `5s` and accepts positive durations such as `30s`. A schema artifact reports `already-applied` when its intended state is already present. If the target changed since the plan, apply fails as stale and runs nothing: plan again.
 
 ### Add SQL scripts and headers
 

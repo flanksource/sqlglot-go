@@ -1,39 +1,82 @@
 # Reviewed migration artifacts
 
-`sqlserver.BuildArtifact(migrate.ArtifactRequest{Schemas, Request})` binds complete current and desired snapshots, their explicit schema scope, and the exact generated plan to a SHA-256 hash. The artifact owns its snapshot data; later edits to the input cannot alter it. Named collections are sorted for deterministic output while column and key order is retained.
+Every dialect plans through `migrate/engine` and writes the same reviewed artifact, version 2. `engine.PlanLive(ctx, db, engine.PlanLiveRequest{Dialect, Scope, Desired, Selection, Atomic})` reads the database's capabilities, the current schema and the live dependents of the columns it changes, then plans. `engine.Plan` does the same offline from two schemas and the dependents the caller supplies. The artifact binds the ordered, grouped SQL to the schemas it was planned from with a SHA-256 hash, and owns its snapshot data. Dialects register themselves by name (`database/migrate/dialect/sqlserver`, `postgres` and `sqlite` each register one when imported), so no caller switches on the dialect.
 
 ```go
-artifact, err := sqlserver.BuildArtifact(migrate.ArtifactRequest{
-    Schemas: []string{"dbo"},
-    Request: request,
+artifact, err := engine.PlanLive(ctx, db, engine.PlanLiveRequest{
+    Dialect: "sqlite",
+    Scope:   engine.Scope{Mode: engine.ScopeComplete, Schemas: []string{"main"}},
+    Desired: desired,
 })
 ```
 
-`ValidateArtifact` checks the version, content hash and consistency with the planner. It rejects edited SQL even when somebody recomputes the content hash. A planner upgrade that changes emitted SQL requires a new preview. The hash provides integrity and review identity; authorization and trusted storage remain the caller's responsibility.
+## The artifact
 
-`Request.Selection` limits the plan to a subset of change IDs (each `migrate.Change.ID` is the JSON array `[action, kind, schema, name, member]`). The planner still lists every candidate in `Plan.Changes`, each with the `Requires` IDs that must be selected with it: a new foreign key needs its new referenced table, a new index its new column, and a dropped column or table the drops of the keys, indexes and tables that still reference it. An unknown ID or a missing requirement fails. The selection is sorted and hashed, so `ValidateArtifact` reproduces the same partial plan, and `Acknowledgements` lists only the selected destructive changes.
+| Field | Meaning |
+| --- | --- |
+| `version`, `dialect` | The format (2) and the registered dialect that planned it. |
+| `capabilities` | A fingerprint of what the database could do when planned (transactional DDL, `TRY_CONVERT`, compression and so on). Apply refuses a database whose fingerprint changed. An empty fingerprint marks an offline plan, which carries the dialect's static capabilities (`Dialect.Capabilities` with no database): transactional DDL as the dialect defines it, and only the features every server of the dialect has, so an offline SQL Server artifact keeps each unit in one transaction and plans the compatibility-level-100-safe forms. |
+| `scope` | `declared` or `complete`, the schemas, and in declared mode the managed objects. |
+| `baseline`, `desired` | The schemas planned from: what the database held, and what it should hold. In declared scope they hold the managed objects and the dependents the plan touches, not the whole schema. |
+| `context` | Objects read only because a dependent sits on them. They are never planned or preserved. |
+| `selection` | The change IDs the plan was limited to; empty plans every change. |
+| `changes` | Every planned change: `id`, `action`, `kind`, `object`, `member`, `destructive`, `reason`, `requires` and, for a forced rebuild, `cause`. |
+| `preserved` | The drops a declared scope leaves unplanned. |
+| `dependents` | The definitions of the dependents the plan rebuilds, which each unit re-creates and then verifies. |
+| `units` | The transactions of the plan, each with its ops, statements and preconditions. |
+| `refusals`, `warnings` | The objects inspection refused that no change touches, and the definitions compared as written because their bodies are not understood. |
+| `atomic` | The plan was forced into one unit. |
+| `hash` | SHA-256 of every other field. |
 
-`CheckArtifact(artifact, actual)` uses native SQL semantics to compare a complete live snapshot. It returns `ArtifactApplied` when the desired state, minus any unselected changes, already exists, or `ArtifactPending` when the baseline still matches. Any other state fails with drift details. This includes changes to unselected target members captured in the baseline. Catalog expression formatting is compared through sqlglot rather than raw text hashes.
+A change ID is the JSON array `[action, kind, schema, name, member]`. A forced rebuild uses the action `rebuild`, so the ID of an index rebuild is `["rebuild","index","dbo","accounts","IX_accounts_ref"]`.
 
-These guards run in Go and do not open a database. They do not make the plan's individual SQL strings a self-guarding deployment script. A database executor must inspect under the same transaction and application lock used to execute the exact reviewed steps, check the complete postcondition, and commit only after it matches. Commons-db's `migrate/sqlserver` supplies this execution path.
+## Scope
+
+`complete` manages every object of the named schemas: whatever the desired schema omits is dropped, and each drop is destructive and must be acknowledged. `declared` manages only the named objects and members: an undeclared object, column, index, key or check is never dropped, and the drops it would have needed are listed under `preserved` and never run. One rule replaces the earlier per-dialect "preserve omitted" options.
+
+The workflow maps its sources as follows. A pasted or `--desired` HCL file and an inspected snapshot plan in complete scope, because they describe the whole schema. A bundle plans in declared scope, and in complete scope with `--allow-drops`. A database comparison (`database/compare`) plans in complete scope toward its reference, and its selection limits what is carried into the patch.
+
+## Changes, selection and acknowledgements
+
+`Selection` limits the plan to a subset of change IDs, and `changes` then lists only the selected ones. Plan without a selection to see every candidate with the `requires` IDs that must be selected with it: a new foreign key needs its new referenced table, a new index its new column, a dropped column the drops of what references it, and on SQLite a column drop carries every other change of the table it rebuilds. An unknown ID, a change on a preserved drop, or a missing requirement fails before anything is planned.
+
+`engine.Acknowledgements(artifact)` lists the destructive changes of the plan, sorted. Apply requires each exactly once and refuses anything else. A forced rebuild is never acknowledged on its own: its cause is. The IDs are the changes' own, so they are stable between plans of the same difference; they are no longer a hash of a statement's position and text.
+
+## Forced rebuilds
+
+A change to a column can force the objects that depend on it to be dropped and created again: on SQL Server indexes, keys, foreign keys in both directions, checks, defaults and statistics; on PostgreSQL dependent views; on SQLite the table itself. The engine asks the dialect which changes force a rebuild, reads the live dependents of their columns, and adds a `rebuild` change with a drop op before and a create op after the change, built from the live definition so fill factor, compression, filegroup and constraint trust survive. A rebuild whose dependent cannot be reproduced faithfully, or an inbound foreign key whose child column is not retyped in the same plan, fails planning and names the object.
+
+## Preconditions
+
+A precondition is a query that must return no row. The engine runs them inside the unit's transaction, before its first statement, and a row fails the unit with the precondition's message and rolls it back. A dialect generates them from the change: text to `uniqueidentifier` (a canonical-GUID pattern, or `TRY_CONVERT` when the capability exists), `NULL` to `NOT NULL`, a narrower length, a new unique index or key over existing rows. Each is a table scan, so planning never evaluates them.
+
+## Units
+
+A unit is a connected set of ops: a change, its rebuilds, and the changes that share its tables or requirements. Apply runs the units in order, each on its own connection under the migration lock, in one transaction where the database has transactional DDL. A unit with a non-transactional statement runs without one and says so. The first failure stops the run: earlier units stay committed and are reported, and applying the same artifact again skips them. `engine.Check(ctx, db, artifact)` reports each unit `applied` or `pending`, and fails a unit that matches neither its baseline nor its desired state with `DriftError`, or one whose changes landed but whose rebuilt dependents are missing with `PartialError`.
+
+## Validation and the re-plan rule
+
+`engine.Validate` checks the version and the hash, then plans again from the artifact's own baseline, desired schema, selection and dependents and requires the same hash, so edited SQL, units or changes are refused even when somebody recomputes the hash. A planner upgrade that changes emitted SQL requires a new plan. The hash provides integrity and review identity; authorization and trusted storage remain the caller's responsibility.
+
+Artifacts of the earlier formats are never converted. `workflow.Review`, `Validate` and `Apply` refuse a SQL Server artifact of version 1 (`request` and `plan`), a PostgreSQL or SQLite artifact with HCL snapshots (`baseline.hcl` and `steps`), and the previews that wrapped them (`sqlServerArtifact`, `sqlServerPlan`) with an error that wraps `workflow.ErrOlderVersion` and says to plan again.
 
 ## Post-deployment scripts
 
-`sqlserver.RenderScript(artifact, sqlserver.ScriptOptions{Acknowledgements: ids})` renders an artifact as one self-contained T-SQL batch for tools that run scripts instead of calling the executor, such as a `PostDeployment_*` script. It first runs `ValidateArtifact` and `ValidateAcknowledgements`, the same check the executor uses: each destructive change ID exactly once, with unknown or repeated IDs refused. The output is deterministic and has these parts:
+`sqlserver.RenderScript(artifact, sqlserver.ScriptOptions{Acknowledgements: ids})` renders a SQL Server artifact as one T-SQL script for tools that run scripts instead of calling the executor, such as a `PostDeployment_*` script. It runs `engine.Validate` and requires each destructive change acknowledged exactly once, so the dialect must be registered by importing `database/migrate/dialect/sqlserver`. The script is one batch with one section per unit, in the artifact's order:
 
-1. A header comment with the artifact hash, schemas, change IDs and acknowledged destructive IDs. Nothing checks the hash when the script runs. A hand-edited script is no longer the reviewed artifact, so re-render it instead of editing it.
-2. `DECLARE @options int = @@OPTIONS`, then `SessionOptions` (the `SET XACT_ABORT ON` and module/filtered-index options the executor also uses), then `BEGIN TRANSACTION`.
-3. `sp_getapplock` on `LockResource` (`commons-db/migrate/schema`, exclusive, transaction-owned, 30 s), which throws when it returns a negative status. Direct and script runs serialise on it.
-4. One `@cN` flag per change. Every change's state guard is evaluated before any step runs, because one change can emit several steps (a column type change drops, alters and re-adds its default) and the first of them would change what a later guard sees.
-5. A consistency check for each group of interdependent changes (see below).
-6. Each step as `IF @cN = 1 EXEC sys.sp_executesql N'<step>'`, then `COMMIT TRANSACTION`.
-7. The runtime session options restored from the saved `@@OPTIONS` bits, so later scripts in the same session see their own settings again. `QUOTED_IDENTIFIER` is the exception: SQL Server applies it while parsing the batch, so a conditional `SET` cannot restore it, and it stays `ON`. A failed run aborts the batch before this part, leaving the script's options in place.
+1. A header with the artifact hash, scope, capabilities fingerprint, changes (a rebuild with the change that forced it) and the acknowledged destructive IDs. Nothing checks the hash when the script runs: a hand-edited script is no longer the reviewed artifact, so re-render it.
+2. `DECLARE @options int = @@OPTIONS`, then `SessionOptions` (`SET XACT_ABORT ON` and the options modules and filtered indexes need).
+3. For each unit: `BEGIN TRANSACTION`, then `sp_getapplock` on `LockResource` (exclusive, owned by the transaction, 30 s), which throws on a negative status. A unit with a non-transactional statement has no transaction and a session-owned lock that the script releases at the end of the unit.
+4. The state guard of the unit's own changes (below).
+5. Each of the unit's preconditions as `IF @uN = 1 AND EXISTS (<query>) THROW 50000, N'<message>', 1`.
+6. Each statement as `IF @uN = 1 EXEC sys.sp_executesql N'<statement>'`, so module DDL starts its own batch, then `COMMIT TRANSACTION`.
+7. After the last unit, the runtime session options restored from the saved `@@OPTIONS` bits. `QUOTED_IDENTIFIER` is the exception: SQL Server applies it while parsing the batch, so it stays `ON`.
 
-The script contains no `GO` line, and a step that would introduce one is a render error. `oipa-deploy.jar`-style runners split on `^\s*GO\s*$`, and a transaction must not span batches. Module DDL is nested in `sp_executesql`, so one batch is enough.
+The script has no `GO` line (a statement that would introduce one is a render error), so an error ends the whole run and the units before it stay committed, as `engine.Apply` does. It uses only `THROW`, `sp_getapplock` and `sp_executesql`, which exist at database compatibility level 100, and emits no `DROP … IF EXISTS` or `CREATE OR ALTER` of its own: the statements are the artifact's.
 
-Each change ends in one of three outcomes. It applies when the database is at its baseline, or when an added object is absent. It is skipped when the database already holds exactly its desired state. Otherwise the script `THROW`s a drift error naming the change ID and the transaction rolls back.
+**State guard.** For each unit the script tests the unit's own changes (not its rebuilds, which sit inside the same transaction) against the catalog. If every change still matches its baseline, the unit runs. If every change already matches its desired state, the unit is skipped, which makes running the script again a no-op. Otherwise the script throws that the unit matches neither its baseline nor its desired state, and its transaction rolls back. A unit whose changes have no state to test, such as `CREATE OR ALTER` module changes, always runs and is refused unless its statements are re-runnable. The guard does not re-verify the rebuilt dependents the way `engine.Check` does; they are dropped and created in the unit's transaction, under the names recorded when the artifact was planned, so a database that names one differently fails the unit and rolls it back.
 
-| Change | Applies when | Skipped when |
+| Change | Runs when | Skipped when |
 | --- | --- | --- |
 | add table | `OBJECT_ID(N'[s].[t]', N'U') IS NULL` | each column, index, foreign key and check matches its desired state, and the four member counts match |
 | add column | `COL_LENGTH(N'[s].[t]', N'c') IS NULL` | the column matches its desired state |
@@ -45,7 +88,7 @@ Each change ends in one of three outcomes. It applies when the database is at it
 | drop table, column, index, unique constraint, foreign key, check, table type, sequence | the object or member exists by name | it is absent |
 | drop primary key | the named key exists | the table has no primary key; a key under another name is drift |
 | drop view, procedure, trigger, function | `OBJECT_ID(…, N'V' / N'P' / N'TR')`, untyped for functions, is not null | it is absent |
-| add / modify view, procedure, function, trigger; modify sequence | always: each step must be `CREATE OR ALTER`, `ENABLE`/`DISABLE TRIGGER` or `ALTER SEQUENCE` | never |
+| add / modify view, procedure, function, trigger; modify sequence | always, and each statement must be `CREATE OR ALTER`, `ENABLE`/`DISABLE TRIGGER` or `ALTER SEQUENCE` | never |
 | modify column, index, primary key, foreign key, check | the member matches its baseline state | the member matches its desired state |
 
 The member states compare:
@@ -55,14 +98,12 @@ The member states compare:
 - **Foreign key:** name, referenced table, column pairs and referential actions.
 - **Check:** name and definition.
 
-Default, filter and check expressions compare as exact text against `OBJECT_DEFINITION`, `sys.indexes.filter_definition` and `sys.check_constraints.definition`. SQL Server stores its own rewrite of every expression (`([total]>=(0))` for `total >= 0`), and the inspector reads that text verbatim, so the baseline and the desired state must both be inspected snapshots. A desired snapshot written by hand, or taken from a server version that rewrites an expression differently, never matches after the change is applied, and the next run `THROW`s drift instead of skipping it.
+Default, filter and check expressions compare as exact text against `OBJECT_DEFINITION`, `sys.indexes.filter_definition` and `sys.check_constraints.definition`, so the baseline and the desired state must both be inspected schemas. A desired schema written by hand, or taken from a server version that rewrites an expression differently, never matches after the change is applied, and the next run throws drift instead of skipping the unit. Atlas HCL is reconciled against the live schema before planning, which brings its spelling in line.
 
-**Default constraints.** A column drop or type, default or collation change drops the column's default first. The plan names the staging target's constraint, but the same default has another name in other databases, and always when SQL Server named it. The script therefore drops whatever default the column has when it runs: it reads `sys.default_constraints` for the column into `@df` and executes `ALTER TABLE … DROP CONSTRAINT ' + QUOTENAME(@df)` only when one exists. Any other constraint drop in a column change is a render error.
+**Default constraints.** A column drop or a type, default or collation change drops the column's default first. The script drops whatever default the column has when it runs: it reads `sys.default_constraints` for the column into `@df` and executes `ALTER TABLE … DROP CONSTRAINT ' + QUOTENAME(@df)` only when one exists. Any other constraint drop in a column change is a render error.
 
-**System-named constraints.** SQL Server names an unnamed primary key, unique, foreign key, check or default constraint itself (`PK__orders__3213E83F…`, `FK__items__id__5EBF139D`), so the name differs in every database. An add, drop or modify of such an index, key or check constraint is refused at render time with the change ID. Give the constraint an explicit name with `sp_rename` on both sides and compare again. Resolving such a constraint by its shape at run time would need a structural lookup and dynamic DDL for every constraint kind, which is why rendering refuses it instead. A new table's system-named members are matched by shape, without their names. Defaults are never matched by name, so a system-named default needs no rename.
-
-**Interdependent changes.** The planner splits an index, key or check rebuild around an `ALTER COLUMN` on the same table and keeps the rebuild's change ID on both halves. When the rebuilt member references the altered column (a key, included or foreign key column, or a mention in its filter or check expression), the two changes form a group whose flags must agree. If only some of them are already in their desired state, for example the index is already rebuilt but the column is still at its baseline, the script `THROW`s naming every change of the group before any step runs. Without this check, the `ALTER COLUMN` would fail halfway through the transaction with a dependency error.
+**System-named constraints.** SQL Server names an unnamed primary key, unique, foreign key, check or default constraint itself (`PK__orders__3213E83F…`), so the name differs in every database. A change of such an index, key or check as one of the unit's own changes is refused at render time with the change ID: give the constraint an explicit name on both sides and plan again. A system-named dependent that a unit rebuilds is dropped and created under the name read when planning, so the script suits the database it was planned against. A new table's system-named members are matched by shape, without their names.
 
 Any other action or kind, such as attributes, schema changes or a modified table type, has no derivable guard and fails rendering with the change ID. No unguarded statement is ever emitted.
 
-Run `go test ./migrate/... -count=1`. UIR's `go run ./examples/sql-migration` demonstrates compiling a selected member into an artifact without a database.
+Run `go test ./migrate/... -count=1`. `go run ./examples/sqlserver-migration` plans a table offline with the SQL Server dialect and prints its statements.

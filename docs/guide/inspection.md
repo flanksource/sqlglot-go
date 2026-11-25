@@ -77,6 +77,29 @@ Inspection reads the database without changing its schema. If the result says it
 
 If a connection is saved in a namespace, use the namespace shown in Connections, for example `connection://default/inventory-reference`.
 
+### Write SQL Server tables as HCL
+
+To declare tables a SQL Server database already has, write their HCL from the live catalog instead of typing it:
+
+```sh
+sqlglot schema inspect --dsn connection://erp --hcl --table AsPolicy --table AsClient > tables.hcl
+sqlglot schema inspect --dsn connection://erp --hcl --out db/tables
+sqlglot schema inspect --dsn connection://erp --hcl --table AsPolicy --columns AsPolicy=PolicyGUID,Status --out db/partial
+```
+
+The HCL reads back, through a bundle, to the same tables: column types, nullability, defaults and their constraint names (a name SQL Server generated is left out, because it differs in every database), identity, collations that differ from the database default, the primary key with its name and clustered flag, unique constraints, indexes with key direction, included columns, filter and clustered flag, foreign keys with their actions, and checks. Planning the export against the database it came from, in declared scope, has no changes.
+
+| Flag | Meaning |
+| --- | --- |
+| `--hcl` | Write HCL instead of the catalog (SQL Server only; not with `--snapshot`). |
+| `--table NAME` | A table to write, repeatable. Without it every table of the schema is written. |
+| `--out DIR` | Write one file per table into `DIR`, each starting with its own `schema "dbo" {}` block (a bundle reads the repeated block as one schema). Without it one document goes to stdout. CLI only. |
+| `--document` | With `--out`, write a single `schema.hcl` instead of one file per table. |
+| `--columns TABLE=COLUMN,COLUMN` | Declare only those columns of a table, with no keys, indexes, foreign keys or checks. Repeatable; for a table another team owns. |
+| `--omit-unsupported` | Leave out what the HCL cannot declare, with one `# omitted:` comment line each, instead of failing. |
+
+A foreign key is written only when the table it references is in the same export, so select related tables together. ROWGUIDCOL, index options (fill factor, `PAD_INDEX`, `IGNORE_DUP_KEY`, row and page locks, `STATISTICS_NORECOMPUTE`, data compression, filegroup), `NOT FOR REPLICATION`, and what the inspector refuses to read (partitioned tables, computed columns, disabled indexes) fail the export for that table, naming the table, the member and the attribute. Only tables are exported.
+
 ## 6. Reuse a saved connection
 
 You do not need to add the connection again when you return:
