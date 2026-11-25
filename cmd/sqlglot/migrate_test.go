@@ -39,11 +39,11 @@ var _ = Describe("migration command help", func() {
 		Entry("migrate", []string{}, []string{
 			"Migration sources", "schema \"public\" {}", "-- phase: post", "-- dependsOn:", "runs: always",
 			"-- transaction: true", "Parsed dependency invalidation", "sqlglot migrate review .sqlglot-go/plan.json",
-			"sqlServerArtifact", "scriptPlan", "read-changed", "plan is stale", "--ack", "SQL Server CSV imports", "AS.csv.yaml", "both phases", "csv-delete:", "Available Commands:",
+			"preconditions", "preserved", "must be re-planned", "scriptPlan", "read-changed", "plan is stale", "--ack", "SQL Server CSV imports", "AS.csv.yaml", "both phases", "csv-delete:", "Available Commands:",
 		}),
 		Entry("plan", []string{"plan"}, []string{"--out", ".sqlglot-go/plan.json", "stderr", "--csv-root", "sqlglot migrate --help"}),
 		Entry("review", []string{"review"}, []string{"offline", "sqlglot migrate review .sqlglot-go/plan.json", "sqlglot migrate --help"}),
-		Entry("apply", []string{"apply"}, []string{"sqlglot migrate apply --dsn connection://inventory .sqlglot-go/plan.json", "plan is stale", "--ack", "--lock-timeout", "sqlglot migrate --help"}),
+		Entry("apply", []string{"apply"}, []string{"sqlglot migrate apply --dsn connection://inventory .sqlglot-go/plan.json", "plan is stale", "drifted from the artifact baseline", "--ack", "--lock-timeout", "sqlglot migrate --help"}),
 	)
 
 	It("documents no reviewed-hash flag", func() {
@@ -215,6 +215,22 @@ var _ = Describe("migration filesystem confinement", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(root.Close)
 		Expect(root.ReadFile("reviewed.json")).To(ContainSubstring("CREATE TABLE"))
+	})
+
+	It("plans --label sources that each start with the same schema block", func() {
+		config := "version: 1\nmappings:\n  - {match: 'tenant/*.hcl', labels: {scope: [tenant]}}\n  - {match: 'vendor/*.hcl', labels: {scope: [vendor]}}\n"
+		Expect(os.WriteFile(filepath.Join(dir, workflow.ProjectConfigName), []byte(config), 0600)).To(Succeed())
+		for path, table := range map[string]string{"tenant/a.hcl": "alpha", "tenant/b.hcl": "beta", "vendor/c.hcl": "policy"} {
+			Expect(os.MkdirAll(filepath.Join(dir, filepath.Dir(path)), 0o750)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(dir, path), []byte(strings.ReplaceAll(desired, "items", table)), 0600)).To(Succeed())
+		}
+		root := newRootCommand(strings.NewReader(""))
+		var output bytes.Buffer
+		root.SetOut(&output)
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"migrate", "plan", "--dsn", dbPath, "--bundle", dir, "--label", "scope=tenant", "--out", filepath.Join(dir, "reviewed.json")})
+		Expect(root.Execute()).To(Succeed())
+		Expect(output.String()).To(SatisfyAll(ContainSubstring("alpha"), ContainSubstring("beta"), Not(ContainSubstring("policy"))))
 	})
 
 	It("uses the project config with either filesystem source and reports its labels", func() {

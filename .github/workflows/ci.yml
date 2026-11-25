@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - database: postgres
-            args: --extra-args=-count=1,-ginkgo.focus=PostgreSQL ./database/migrate/review
+            args: --extra-args=-count=1 ./database/migrate/dialect/postgres
           - database: sqlserver
             args: --extra-args=-count=1 ./database/migrate/scripts/sqlserver/integration ./database/migrate/csvdata/integration
     services:

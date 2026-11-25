@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/flanksource/sqlglot-go/database/history"
-	"github.com/flanksource/sqlglot-go/database/migrate/review"
 	"github.com/flanksource/sqlglot-go/database/migrate/workflow"
+	"github.com/flanksource/sqlglot-go/migrate/engine"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zclconf/go-cty/cty"
@@ -52,9 +52,11 @@ var _ = Describe("standalone database commands", func() {
 		GinkgoT().Chdir(dir)
 		output, err = run("migrate", "plan", "--dsn", dbPath, "--desired", desired)
 		Expect(err).NotTo(HaveOccurred())
-		var artifact review.Artifact
+		var artifact engine.Artifact
 		Expect(json.Unmarshal([]byte(output), &artifact)).To(Succeed(), "stdout carries the structured plan")
 		Expect(artifact.Hash).NotTo(BeEmpty())
+		Expect(artifact.Units).To(HaveLen(1))
+		Expect(artifact.Changes).To(HaveLen(1))
 		Expect(stderr).To(SatisfyAll(ContainSubstring("Plan for sqlite schema main"), ContainSubstring("+ CREATE TABLE"), ContainSubstring("Plan: 1 steps (0 destructive).")))
 		root, err := os.OpenRoot(dir)
 		Expect(err).NotTo(HaveOccurred())
@@ -123,6 +125,16 @@ var _ = Describe("standalone database commands", func() {
 		summaries, err := listConnections(ConnectionListOptions{Dir: connectionsDir})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(summaries).To(Equal([]ConnectionSummary{{Name: "local", Type: "sqlite", Layer: "app", Source: filepath.Join(connectionsDir, "local.yaml")}}))
+	})
+	It("refuses a plan file made by an older version, asking for a new plan", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "old.json")
+		old := `{"version":1,"schemas":["dbo"],"request":{"current":{"tables":[],"definitions":[]},"desired":{"tables":[],"definitions":[]}},"plan":{"steps":[],"changes":[]},"hash":"1f"}`
+		Expect(os.WriteFile(path, []byte(old), 0600)).To(Succeed())
+		root := newRootCommand(strings.NewReader(""))
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"migrate", "review", path})
+		Expect(root.Execute()).To(MatchError(ContainSubstring("made by an older version of sqlglot (a version 1 SQL Server artifact) and must be re-planned")))
 	})
 	It("requires a plan file before connecting", func() {
 		root := newRootCommand(strings.NewReader(""))
