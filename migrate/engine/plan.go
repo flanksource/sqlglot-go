@@ -17,7 +17,11 @@ const (
 
 type PlanRequest struct {
 	Dialect string
-	Scope   Scope
+	// Using plans with this dialect instead of the one registered as Dialect,
+	// so a pure planner can plan offline in a program that links no database
+	// dialect of that name. Its Name must be Dialect.
+	Using Dialect
+	Scope Scope
 	// Context lists objects present in Current only because a dependent sits on
 	// them. They are not managed: no diff change on them is planned or preserved.
 	Context []migrate.Name
@@ -38,7 +42,12 @@ type PlanRequest struct {
 // rebuilds they force, their global order, preconditions and units. It reads
 // no database: live dependents and refusals arrive in the request.
 func Plan(req PlanRequest) (Artifact, error) {
-	d, err := Lookup(req.Dialect)
+	d, err := req.Using, error(nil)
+	if d == nil {
+		d, err = Lookup(req.Dialect)
+	} else if d.Name() != req.Dialect {
+		err = fmt.Errorf("engine: plan request names dialect %q but uses %q", req.Dialect, d.Name())
+	}
 	if err != nil {
 		return Artifact{}, err
 	}
