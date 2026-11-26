@@ -17,7 +17,9 @@ const (
 )
 
 // tableFeatures lists the tables that carry a feature the native snapshot
-// cannot hold; the whole table is refused.
+// cannot hold; the whole table is refused. A trigger is not one: PostgreSQL
+// keeps it across every ALTER TABLE except a retype or drop of a column it
+// reads, which Dependents refuses.
 const tableFeatures = `
 SELECT c.relname, 'partitioned or foreign table' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname = $1 AND c.relkind IN ('p','f')
@@ -25,13 +27,17 @@ UNION ALL SELECT c.relname, 'partition' FROM pg_class c JOIN pg_namespace n ON n
  WHERE n.nspname = $1 AND c.relispartition
 UNION ALL SELECT c.relname, 'row level security' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname = $1 AND c.relkind = 'r' AND (c.relrowsecurity OR c.relforcerowsecurity)
-UNION ALL SELECT c.relname, 'trigger ' || t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
- JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND NOT t.tgisinternal
-UNION ALL SELECT c.relname, 'constraint ' || k.conname || ' is an exclusion, deferrable or not validated constraint'
- FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = $1 AND (k.contype = 'x' OR k.condeferrable OR NOT k.convalidated)
 UNION ALL SELECT c.relname, 'table inheritance' FROM pg_inherits i JOIN pg_class c ON c.oid IN (i.inhrelid, i.inhparent)
  JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1`
+
+// constraintFeatures lists the constraints whose kind or property the native
+// snapshot cannot hold. Each is refused as a member of its table: a script can
+// own the property (ALTER CONSTRAINT ... DEFERRABLE), and PostgreSQL keeps it
+// across every ALTER TABLE that leaves the constraint alone, so only a change
+// to the constraint itself is refused.
+const constraintFeatures = `
+SELECT c.relname, k.conname FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = $1 AND (k.contype = 'x' OR k.condeferrable OR NOT k.convalidated)`
 
 // otherObjects lists objects of the schema the dialect does not manage; the
 // second column names the kind, which becomes the refusal's member so a
@@ -63,6 +69,16 @@ func (backend) Extras(ctx context.Context, q engine.Querier, schemaName string) 
 	}
 	for _, t := range tables {
 		extras.Refusals = append(extras.Refusals, engine.Refusal{Object: migrate.Name{Schema: schemaName, Name: t[0]}, Reason: t[1]})
+	}
+	constraints, err := queryPairs(ctx, q, constraintFeatures, schemaName)
+	if err != nil {
+		return extras, fmt.Errorf("inspect constraint features: %w", err)
+	}
+	for _, k := range constraints {
+		extras.Refusals = append(extras.Refusals, engine.Refusal{
+			Object: migrate.Name{Schema: schemaName, Name: k[0]}, Member: k[1],
+			Reason: fmt.Sprintf("constraint %s is an exclusion, deferrable or not validated constraint", k[1]),
+		})
 	}
 	others, err := queryPairs(ctx, q, otherObjects, schemaName)
 	if err != nil {

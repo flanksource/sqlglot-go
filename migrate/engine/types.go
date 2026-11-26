@@ -62,6 +62,7 @@ const (
 	DependentCheck            DependentKind = "check"
 	DependentDefault          DependentKind = "default"
 	DependentStatistic        DependentKind = "statistic"
+	DependentTrigger          DependentKind = "trigger"
 	DependentView             DependentKind = "view"
 	DependentTable            DependentKind = "table"
 )

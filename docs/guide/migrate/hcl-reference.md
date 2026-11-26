@@ -53,6 +53,8 @@ table "items" {
 
 Use the PostgreSQL Atlas table syntax for columns, defaults, keys, indexes, and checks. PostgreSQL-specific attributes are available when they round-trip through the supported catalog snapshot and schema differ. An executable reviewed schema plan covers one schema and its tables. Live views, materialized views, foreign tables, partitions, row-level security, standalone sequences, routines, user triggers, domains, table inheritance, and exclusion, deferrable, or unvalidated constraints fall outside the reviewed snapshot. Use `schema inspect --snapshot` to check whether the catalog fits that contract.
 
+User triggers and exclusion, deferrable, or unvalidated constraints are usually created by a bundle's post scripts, so they do not stop a plan for their table. A plan fails only when it would break one: a retype or drop of a column that a trigger's `UPDATE OF` list or `WHEN` clause reads, or a change to the constraint itself. The error names the trigger with its definition, or names the constraint. Drop it in a pre script and re-create it in a post script.
+
 | Table block | PostgreSQL syntax |
 | --- | --- |
 | `column "NAME"` | `type`, `null`, and `default`. PostgreSQL also has `identity` and stored generated `as` blocks. |
