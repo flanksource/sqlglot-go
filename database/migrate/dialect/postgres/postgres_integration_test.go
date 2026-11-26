@@ -128,7 +128,7 @@ var _ = Describe("PostgreSQL plans through the engine", func() {
 		Expect(mustApply(ctx, db, a).Outcome).To(Equal(engine.Applied))
 	})
 
-	It("refuses objects one by one so an untouched function, view or trigger never blocks a plan", func(ctx SpecContext) {
+	It("refuses objects one by one so an untouched function or view never blocks a plan, and keeps a table with a trigger", func(ctx SpecContext) {
 		mustExec(db,
 			"CREATE TABLE items (id integer NOT NULL, label text NOT NULL)", "CREATE TABLE audited (id integer NOT NULL)",
 			"CREATE FUNCTION one() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
@@ -141,8 +141,8 @@ var _ = Describe("PostgreSQL plans through the engine", func() {
 		for _, r := range insp.Refusals {
 			refused = append(refused, r.Object.Name)
 		}
-		Expect(refused).To(ConsistOf("audited", "one", "audit"))
-		Expect(insp.Schema.Tables).To(HaveLen(1))
+		Expect(refused).To(ConsistOf("one", "audit"))
+		Expect(insp.Schema.Tables).To(HaveLen(2))
 		Expect(insp.Schema.Definitions).To(ConsistOf(HaveField("Name", migrate.Name{Schema: "public", Name: "item_ids"})))
 
 		withNote := strings.Replace(itemsHCL, `  column "label" { type = text }`, "  column \"label\" { type = text }\n  column \"note\" {\n    type = text\n    null = true\n  }", 1)
@@ -180,6 +180,51 @@ table "parent" {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(statements(a)).To(Equal([]string{`ALTER TABLE "public"."child" ADD COLUMN "note" text NULL`}))
 		Expect(mustApply(ctx, db, a).Outcome).To(Equal(engine.Applied))
+	})
+
+	It("creates a parent before the foreign key that references it when a cycle elsewhere splits every foreign key out", func(ctx SpecContext) {
+		const cyclic = `schema "public" {}
+table "plans" {
+  schema = schema.public
+  column "id" { type = integer }
+  column "revision_id" {
+    type = integer
+    null = true
+  }
+  primary_key { columns = [column.id] }
+  foreign_key "plans_revision_id_fkey" {
+    columns = [column.revision_id]
+    ref_columns = [table.revisions.column.id]
+  }
+}
+table "revisions" {
+  schema = schema.public
+  column "id" { type = integer }
+  column "plan_id" { type = integer }
+  primary_key { columns = [column.id] }
+  foreign_key "revisions_plan_id_fkey" {
+    columns = [column.plan_id]
+    ref_columns = [table.plans.column.id]
+  }
+}
+table "children" {
+  schema = schema.public
+  column "id" { type = integer }
+  column "owner_id" { type = integer }
+  primary_key { columns = [column.id] }
+  foreign_key "children_owner_id_fkey" {
+    columns = [column.owner_id]
+    ref_columns = [table.owners.column.id]
+  }
+}
+table "owners" {
+  schema = schema.public
+  column "id" { type = integer }
+  primary_key { columns = [column.id] }
+}`
+		a := mustPlan(ctx, db, scope(engine.ScopeComplete), cyclic)
+		Expect(mustApply(ctx, db, a).Outcome).To(Equal(engine.Applied))
+		Expect(mustPlan(ctx, db, scope(engine.ScopeComplete), cyclic).Units).To(BeEmpty())
 	})
 
 	It("blocks a NOT NULL change while NULL values exist", func(ctx SpecContext) {

@@ -131,12 +131,22 @@ type viewRef struct {
 // statements that re-create each. A view that reads a dropped column or table
 // directly carries a Refusal instead: it cannot be re-created once what it reads
 // is gone, so the plan fails before anything runs and the reason holds the
-// definition to save. Offline there are none: the catalog is the only place a
-// view's dependencies are recorded.
+// definition to save. It also lists the triggers that read the forcing columns,
+// each refused. Offline there are none: the catalog is the only place a view's
+// or trigger's dependencies are recorded.
 func (backend) Dependents(ctx context.Context, q engine.Querier, _ migrate.Schema, columns []engine.ColumnRef) ([]engine.Dependent, error) {
 	if q == nil || len(columns) == 0 {
 		return nil, nil
 	}
+	views, err := viewDependents(ctx, q, columns)
+	if err != nil {
+		return nil, err
+	}
+	triggers, err := triggerDependents(ctx, q, columns)
+	return append(views, triggers...), err
+}
+
+func viewDependents(ctx context.Context, q engine.Querier, columns []engine.ColumnRef) ([]engine.Dependent, error) {
 	found, err := findViews(ctx, q, columns)
 	if err != nil {
 		return nil, err

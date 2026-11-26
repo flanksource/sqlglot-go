@@ -320,8 +320,10 @@ func hasOp(ops map[string]*engine.Op, id string) bool {
 }
 
 // finish keeps the planner's order where the engine's phase sort would invert
-// it: an op the planner placed before an earlier-phase op on the same object
-// (or on a type object such as an enum) is required by it.
+// it: an op the planner placed before an earlier-phase op on the same object,
+// on a type object such as an enum, or of a change the later op's change
+// requires (the table a foreign key added after both CREATE TABLEs references)
+// is required by it.
 func (p *planDiff) finish(list []*engine.Op, order map[string]int) []engine.Op {
 	slices.SortStableFunc(list, func(a, b *engine.Op) int { return order[a.ID] - order[b.ID] })
 	for j, later := range list {
@@ -338,8 +340,13 @@ func (p *planDiff) finish(list []*engine.Op, order map[string]int) []engine.Op {
 	return out
 }
 
-func (p *planDiff) related(a, b *engine.Op) bool {
-	return a.Object == b.Object || p.isType(a.Change) || p.isType(b.Change)
+func (p *planDiff) related(earlier, later *engine.Op) bool {
+	return earlier.Object == later.Object || p.isType(earlier.Change) || p.isType(later.Change) || p.requires(later.Change, earlier.Change)
+}
+
+func (p *planDiff) requires(id, required string) bool {
+	c, ok := p.set.Change(id)
+	return ok && slices.Contains(c.Requires, required)
 }
 
 func (p *planDiff) isType(id string) bool {
