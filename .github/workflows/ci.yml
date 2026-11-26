@@ -46,7 +46,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run database integration tests
-        uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83
+        uses: flanksource/gavel@cc0bcff1f75edecec333f8879a56ef0e061a1502 # v0.0.103
         env:
           SQLGLOT_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
         with:
@@ -72,7 +72,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run the Go and differential suites
-        uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83
+        uses: flanksource/gavel@cc0bcff1f75edecec333f8879a56ef0e061a1502 # v0.0.103
         with:
           version: v0.0.83
           args: test --framework go,ginkgo --timeout 15m --extra-args=-coverpkg=./sqlglot/,-coverprofile=cover.out
@@ -120,13 +120,13 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - name: Install golangci-lint
-        uses: flanksource/deps@92d640aba10afe1f8c384f42b0a356a0502cd7ce # v1.0.51
+        uses: flanksource/deps@eaf478ec81c69037f9cb900a38a71f526d033b14 # v1.0.53
         with:
           version: v1.0.51
           tools: golangci-lint@v2.15.0
           GITHUB_TOKEN: ${{ github.token }}
       - name: Run Go lint
-        uses: flanksource/gavel@4ec24346ade41681a5f1db1de47acd32c32e0879 # v0.0.83
+        uses: flanksource/gavel@cc0bcff1f75edecec333f8879a56ef0e061a1502 # v0.0.103
         with:
           version: v0.0.83
           args: lint golangci-lint --timeout 10m
