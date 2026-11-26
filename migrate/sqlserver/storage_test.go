@@ -90,7 +90,7 @@ var _ = Describe("Fill factor, ROWGUIDCOL, QUOTED_IDENTIFIER and sequences", fun
 	})
 
 	Describe("a definition whose body is not understood", func() {
-		const header, body = "CREATE PROCEDURE dbo.acme_purge AS ", "DELETE TOP (500) a FROM dbo.acme a; RAISERROR(N'it''s %d', 0, 1, 2) WITH NOWAIT;"
+		const header, body = "CREATE PROCEDURE dbo.acme_purge AS ", "WAITFOR DELAY '00:00:01'; RAISERROR(N'it''s %d', 0, 1, 2) WITH NOWAIT;"
 		purge := func(sql string) migrate.Schema {
 			return definitions(migrate.Definition{Name: migrate.Name{Schema: "dbo", Name: "acme_purge"}, Kind: "PROCEDURE", SQL: sql})
 		}
