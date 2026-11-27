@@ -88,6 +88,7 @@ var _ = Describe("SQLite bundle apply characterization", func() {
 			{"index", "projects_external_key_key", "projects"},
 			{"table", "events", "events"},
 			{"table", "projects", "projects"},
+			{"table", schemaLedgerTable, schemaLedgerTable},
 		}))
 		first := schemaSQL(ctx, database)
 		Expect(Apply(ctx, dsn, files)).To(Succeed())

@@ -1,0 +1,45 @@
+package workflow
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing/fstest"
+	"time"
+
+	bundle "github.com/flanksource/sqlglot-go/database/migrate"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+const ledgerItems = `schema "public" {}
+table "items" {
+  schema = schema.public
+  column "id" { type = text }
+  column "label" { type = text }
+  primary_key { columns = [column.id] }
+INDEX}`
+
+var _ = Describe("a reviewed deploy and the schema ledger", func() {
+	It("makes the next Apply of a recorded bundle plan again and repair what the deploy moved", func(ctx context.Context) {
+		path := filepath.Join(GinkgoT().TempDir(), "target.db")
+		recorded := fstest.MapFS{"schema.hcl": &fstest.MapFile{Data: []byte(strings.Replace(ledgerItems, "INDEX", "", 1))}}
+		Expect(bundle.Apply(ctx, path, recorded)).To(Succeed())
+		db := openSQLite(path)
+		index := func() int {
+			var count int
+			Expect(db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'items_label'`).Scan(&count)).To(Succeed())
+			return count
+		}
+
+		moved := strings.Replace(ledgerItems, "INDEX", "  index \"items_label\" { columns = [column.label] }\n", 1)
+		plan, err := Plan(ctx, db, Options{Dialect: "sqlite", Schema: "main", Source: Source{Kind: "bundle", Files: []File{{Path: "schema.hcl", Content: moved}}}})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Apply(ctx, db, ApplyOptions{Dialect: "sqlite", Schema: "main", Artifact: plan.Artifact, Acks: plan.Acks, LockTimeout: time.Second})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(index()).To(Equal(1))
+
+		Expect(bundle.Apply(ctx, path, recorded)).To(Succeed())
+		Expect(index()).To(BeZero(), "the recorded bundle was planned again and dropped the index the deploy added")
+	})
+})

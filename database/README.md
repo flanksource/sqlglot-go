@@ -14,7 +14,7 @@ These packages own the database implementation previously provided by commons-db
 | `database/migrate/csvdata` | [Reviewed SQL Server CSV migrations](migrate/README.md#reviewed-csv-data) |
 | `database/migrate/sqlite` | Programmatic SQLite table reconciliation |
 
-commons-db preserves its migration and inspection APIs through aliases and forwarding functions. Its catalog cache, refresh policy and metadata remain in commons-db. Supported SQLite rebuilds are automatic; the previous `WithRebuilds` and `AllowRebuilds` names remain accepted. An unreviewed bundle apply never drops a column or a table unless `WithDrops` is set: it reports each undeclared column it left in place, and a table marked `partial = true` keeps every member it does not name.
+commons-db preserves its migration and inspection APIs through aliases and forwarding functions. Its catalog cache, refresh policy and metadata remain in commons-db. Supported SQLite rebuilds are automatic; `sqlite.ReconcileOptions.AllowRebuilds` remains accepted. An unreviewed bundle apply never drops a column or a table unless `WithDrops` is set: it reports each undeclared column it left in place, and a table marked `partial = true` keeps every member it does not name.
 
 ## CLI
 

@@ -111,8 +111,12 @@ var _ = Describe("SQLite bundle planned through the engine", func() {
 		Expect(columnNames(ctx, database, "items")).To(Equal([]string{"id", "label", "notes"}), "WithDrops never drops what a partial table does not name")
 	})
 
-	It("drops an undeclared index of a complete declaration without WithDrops", func(ctx context.Context) {
+	It("drops an undeclared index of a complete declaration without WithDrops, once the bundle is planned again", func(ctx context.Context) {
 		exec(ctx, `CREATE INDEX items_label ON items (label)`)
+		Expect(Apply(ctx, dsn, bundleOf(itemsTable))).To(Succeed())
+		Expect(schemaObjects(ctx, database)).To(ContainElement(sqliteObject{"index", "items_label", "items"}), "the ledger records the unchanged bundle, so it is not planned")
+
+		exec(ctx, `DELETE FROM `+schemaLedgerTable)
 		Expect(Apply(ctx, dsn, bundleOf(itemsTable))).To(Succeed())
 		Expect(schemaObjects(ctx, database)).NotTo(ContainElement(sqliteObject{"index", "items_label", "items"}))
 	})
@@ -134,7 +138,7 @@ var _ = Describe("SQLite bundle planned through the engine", func() {
 			Expect(rows.Scan(&name)).To(Succeed())
 			tables = append(tables, name)
 		}
-		Expect(tables).To(Equal([]string{"items", "ledger", "scratch"}), "other was dropped; the excluded tables were not touched")
+		Expect(tables).To(Equal([]string{"items", "ledger", "schema_migration_schema", "scratch"}), "other was dropped; the excluded tables and the bundle's ledger were not touched")
 	})
 
 	It("refuses an exclusion of a table member, which a rebuild would lose with its data", func(ctx context.Context) {

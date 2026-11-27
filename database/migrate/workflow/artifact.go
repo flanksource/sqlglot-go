@@ -3,9 +3,11 @@ package workflow
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
+	bundle "github.com/flanksource/sqlglot-go/database/migrate"
 	"github.com/flanksource/sqlglot-go/database/migrate/csvdata"
 	scriptplan "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 	"github.com/flanksource/sqlglot-go/migrate/engine"
@@ -86,8 +88,19 @@ func Apply(ctx context.Context, db *sql.DB, opts ApplyOptions) (any, error) {
 		}
 		return csvdata.Apply(ctx, db, csvdata.ApplyOptions{Options: opts.CSV, Artifact: *pf.csv, Hash: pf.csv.Hash, Acks: opts.Acks, LockTimeout: opts.LockTimeout})
 	}
-	result, err := engine.Apply(ctx, db, applyRequest(*pf.schema, opts))
-	return applyResult(result), err
+	return applySchema(ctx, db, *pf.schema, opts)
+}
+
+// applySchema forgets what the bundle ledger recorded for the artifact's
+// schemas before the first unit can commit, so even a failed run makes the
+// next Apply plan, and again afterwards, for an Apply that recorded its plan
+// while this one ran.
+func applySchema(ctx context.Context, db *sql.DB, a engine.Artifact, opts ApplyOptions) (any, error) {
+	if err := bundle.ForgetRecordedSchemas(ctx, db, a.Dialect, a.Scope.Schemas); err != nil {
+		return nil, err
+	}
+	result, err := engine.Apply(ctx, db, applyRequest(a, opts))
+	return applyResult(result), errors.Join(err, bundle.ForgetRecordedSchemas(ctx, db, a.Dialect, a.Scope.Schemas))
 }
 
 func applyResult(result engine.Result) ApplyResult {

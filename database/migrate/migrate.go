@@ -28,7 +28,6 @@ type options struct {
 	routines      string
 	exclude       []string
 	allowDrops    bool
-	allowRebuilds bool
 	input         map[string]cty.Value
 	db            *sql.DB
 	scriptPolicy  *ScriptPolicy
@@ -91,19 +90,15 @@ func WithReviewedPlan() Option {
 	return func(o *options) { o.reviewedPlan = true }
 }
 
-// WithRebuilds retains source compatibility. Supported SQLite rebuilds are now automatic.
-func WithRebuilds() Option {
-	return func(o *options) { o.allowRebuilds = true }
-}
-
 // WithDB runs the migration on an already open SQL Server, SQLite or
 // PostgreSQL handle, with Apply's connection string left empty; the dialect
 // comes from the handle's driver. Apply never closes db and never changes its
 // pool settings. Every schema unit runs on a dedicated connection that sets and
 // restores its own lock timeout, so a PostgreSQL handle needs no scoping; what
 // it cannot do is move the script phases and metadata tables to another schema,
-// so a PostgreSQL handle is accepted for the default schema only
-// (WithSchema needs a connection string, which scopes search_path).
+// so a PostgreSQL handle is accepted for the default schema only, and only
+// when its current_schema() is that schema (WithSchema needs a connection
+// string, which scopes search_path).
 func WithDB(db *sql.DB) Option {
 	return func(o *options) { o.db = db }
 }
@@ -122,6 +117,17 @@ func WithDB(db *sql.DB) Option {
 // rest: declared by default, where an undeclared table or type is never
 // dropped, and complete with WithDrops. Use the reviewed workflow when a person
 // must approve the changes first.
+//
+// On PostgreSQL and SQLite, Apply records the hash of the desired schema it
+// brought the database to in schema_migration_schema, per bundle scope; the
+// hash covers the evaluated HCL, dialect, schema, drop scope, exclusions and
+// the bundle's script contents. The next Apply of an unchanged bundle skips
+// inspecting and planning the schema (scripts still follow their own hashes,
+// and a pre script that runs makes it plan), so a change made to the database
+// by hand outside the bundle is not repaired, and an undeclared column is not
+// reported again, until the bundle changes. The reviewed workflow forgets the
+// ledger of the schemas it applies to (ForgetRecordedSchemas), so the next Apply
+// after a reviewed deploy plans again.
 //
 // PostgreSQL supports the complete HCL, SQL, security, and destructive-change
 // lifecycle; the views that depend on a retyped column are dropped and

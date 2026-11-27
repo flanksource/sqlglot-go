@@ -5,6 +5,7 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"strings"
 	"sync"
 	"testing/fstest"
@@ -176,12 +177,44 @@ table "orders" {
 		Expect(pending(ctx, bundle, WithSchema("tenant_a"))).To(BeEmpty())
 	})
 
+	It("plans a recorded bundle again once its schema's ledger is forgotten, and repairs the database", func(ctx SpecContext) {
+		bundle := hclBundle(jobsHCL(`"new", "done"`, ""), nil)
+		Expect(apply(ctx, bundle, WithSchema("tenant_a"))).To(Succeed())
+		mustExecAll(ctx, db, "CREATE INDEX jobs_state ON tenant_a.jobs (state)")
+		indexes := func() string {
+			return scalarOf(ctx, db, "SELECT count(*) FROM pg_indexes WHERE schemaname = 'tenant_a' AND indexname = 'jobs_state'")
+		}
+		Expect(apply(ctx, bundle, WithSchema("tenant_a"))).To(Succeed())
+		Expect(indexes()).To(Equal("1"), "the unchanged bundle is not planned")
+
+		Expect(ForgetRecordedSchemas(ctx, db, "postgres", []string{"tenant_a", "public"})).To(Succeed())
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM tenant_a."+schemaLedgerTable)).To(Equal("0"))
+		Expect(apply(ctx, bundle, WithSchema("tenant_a"))).To(Succeed())
+		Expect(indexes()).To(Equal("0"))
+	})
+
 	It("runs on the caller's handle for the default schema and leaves it open", func(ctx SpecContext) {
 		bundle := hclBundle(jobsHCL(`"new", "done"`, ""), nil)
 		Expect(Apply(ctx, "", bundle, WithDir("db"), WithName("acme/planner"), WithDB(db))).To(Succeed())
 		Expect(Apply(ctx, "", bundle, WithDir("db"), WithName("acme/planner"), WithDB(db))).To(Succeed())
 		Expect(scalarOf(ctx, db, "SELECT to_regclass('jobs')::text")).To(Equal("jobs"))
 		Expect(db.PingContext(ctx)).To(Succeed())
+	})
+
+	It("refuses the caller's handle when its search_path resolves names to a schema other than the migrated one", func(ctx SpecContext) {
+		mustExecAll(ctx, db, "CREATE SCHEMA tenant")
+		u, err := url.Parse(dsn)
+		Expect(err).NotTo(HaveOccurred())
+		query := u.Query()
+		query.Set("search_path", "tenant,public")
+		u.RawQuery = query.Encode()
+		handle, err := sql.Open("postgres", u.String())
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(handle.Close)
+
+		Expect(Apply(ctx, "", hclBundle(jobsHCL(`"new", "done"`, ""), nil), WithDir("db"), WithName("acme/planner"), WithDB(handle))).
+			To(MatchError(`WithDB handle resolves unqualified names to schema "tenant" (its search_path), but the migration manages schema "public": scope the handle's search_path to "public" or pass a connection string`))
+		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_tables WHERE tablename IN ('jobs', 'schema_migration_scripts')")).To(Equal("0"))
 	})
 
 	It("keeps an undeclared table and type in the declared scope, runs the drop of an undeclared index but reports an undeclared column, drops it with WithDrops, and never drops its own metadata", func(ctx SpecContext) {
@@ -196,6 +229,7 @@ table "orders" {
 		Expect(preview.Warnings).To(ContainElement(`column "notes" of table public.jobs is in the database but not declared, and was not dropped: declare the column, mark the table ` + "`partial = true`" + `, or apply with WithDrops`))
 		Expect(preview.Artifact.Units).NotTo(BeEmpty(), "the index drops are still planned")
 
+		mustExecAll(ctx, db, "DELETE FROM "+schemaLedgerTable)
 		Expect(apply(ctx, bundle)).To(Succeed())
 		Expect(scalarOf(ctx, db, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'notes'")).To(Equal("1"))
 		Expect(scalarOf(ctx, db, "SELECT count(*) FROM pg_indexes WHERE indexname = 'jobs_state'")).To(Equal("0"))

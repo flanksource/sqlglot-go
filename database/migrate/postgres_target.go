@@ -3,9 +3,11 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 
 	"ariga.io/atlas/sql/postgres"
@@ -17,7 +19,7 @@ import (
 // metadataTables are the tables the bundle itself keeps in the migration
 // schema. They are never declared, so under WithDrops they would otherwise be
 // planned for removal.
-var metadataTables = []string{"schema_migration_scripts", "schema_migration_security"}
+var metadataTables = []string{"schema_migration_scripts", "schema_migration_security", schemaLedgerTable}
 
 func validatePostgresApply(connection string, schemaFS fs.FS, cfg options) error {
 	if err := refuseScriptPolicy(cfg, "PostgreSQL"); err != nil {
@@ -112,7 +114,7 @@ func applyPostgres(ctx context.Context, connection string, schemaFS fs.FS, cfg o
 // applyPostgresDB runs the bundle on the caller's handle. The handle cannot be
 // scoped to another schema, and the script phases and metadata tables resolve
 // unqualified names through its search_path, so only the default schema is
-// accepted.
+// accepted, and only when the handle's search_path resolves to it.
 func applyPostgresDB(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg options) error {
 	if err := refuseScriptPolicy(cfg, "PostgreSQL"); err != nil {
 		return err
@@ -127,7 +129,27 @@ func applyPostgresDB(ctx context.Context, db *sql.DB, schemaFS fs.FS, cfg option
 	if err != nil {
 		return err
 	}
+	if err := requireCurrentSchema(ctx, db, cfg.schema); err != nil {
+		return err
+	}
 	return bundle.apply(ctx, db, cfg)
+}
+
+// requireCurrentSchema refuses a handle whose search_path resolves unqualified
+// names to another schema: the scripts and metadata tables would land there,
+// while the schema units write the migrated schema.
+func requireCurrentSchema(ctx context.Context, db *sql.DB, schemaName string) error {
+	var current sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT current_schema()").Scan(&current); err != nil {
+		return fmt.Errorf("read the WithDB handle's current schema: %w", err)
+	}
+	if !current.Valid {
+		return fmt.Errorf("WithDB handle's search_path names no existing schema, but the migration manages schema %q: scope the handle's search_path to %q or pass a connection string", schemaName, schemaName)
+	}
+	if current.String != schemaName {
+		return fmt.Errorf("WithDB handle resolves unqualified names to schema %q (its search_path), but the migration manages schema %q: scope the handle's search_path to %q or pass a connection string", current.String, schemaName, schemaName)
+	}
+	return nil
 }
 
 // apply runs the pre scripts, the schema step, the post scripts and the
@@ -151,7 +173,7 @@ func (b postgresBundle) apply(ctx context.Context, db *sql.DB, cfg options) erro
 	if err := runScriptPhase(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePre}); err != nil {
 		return err
 	}
-	if err := b.step.run(ctx, db); err != nil {
+	if err := b.step.runRecorded(ctx, db, b.ledger(scope, ordered)); err != nil {
 		return err
 	}
 	if err := runScriptPhase(ctx, db, scriptPhaseOptions{Scope: scope, Ordered: ordered, Phase: phasePost}); err != nil {
@@ -163,4 +185,16 @@ func (b postgresBundle) apply(ctx context.Context, db *sql.DB, cfg options) erro
 		return fmt.Errorf("reconcile database security: %w", err)
 	}
 	return nil
+}
+
+// ledger identifies the bundle's scripts by path and content, and replans when
+// a pre script that is not `runs: always` runs before the schema step.
+func (b postgresBundle) ledger(scope string, ordered []*script) schemaLedger {
+	ledger := schemaLedger{Scope: scope}
+	for _, s := range b.scripts {
+		ledger.Scripts = append(ledger.Scripts, s.id+":"+hex.EncodeToString(s.hash))
+	}
+	slices.Sort(ledger.Scripts)
+	ledger.Replan = slices.ContainsFunc(ordered, func(s *script) bool { return s.phase == phasePre && !s.always })
+	return ledger
 }

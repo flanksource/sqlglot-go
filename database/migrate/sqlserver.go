@@ -96,8 +96,6 @@ func refuseSQLServerOptions(cfg options) error {
 		return fmt.Errorf("SQL Server migrations support only schema %q, got %q", sqlServerSchema, cfg.schema)
 	case cfg.allowDrops:
 		return errors.New("SQL Server migrations do not support destructive changes (WithDrops)")
-	case cfg.allowRebuilds:
-		return errors.New("SQL Server migrations do not support SQLite rebuild options (WithRebuilds)")
 	case len(cfg.exclude) > 0:
 		return errors.New("SQL Server migrations do not support WithExclude: only the declared objects are inspected")
 	}
