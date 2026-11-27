@@ -38,7 +38,7 @@ func applySQLite(ctx context.Context, database *sql.DB, schemaFS fs.FS, config o
 	if err := database.PingContext(ctx); err != nil {
 		return fmt.Errorf("connect SQLite migration database: %w", err)
 	}
-	return step.run(ctx, database)
+	return step.runRecorded(ctx, database, schemaLedger{Scope: migrationScope(config.schema, config.name)})
 }
 
 // sqliteSchemaStep refuses what SQLite bundles cannot carry, then evaluates the
@@ -82,7 +82,7 @@ func sqliteStep(loaded loadedHCL, config options) (schemaStep, error) {
 	}
 	return schemaStep{
 		Dialect: sqlitedialect.Name, Schema: sqlitedialect.SchemaName, Desired: desired,
-		AllowDrops: config.allowDrops, Exclude: config.exclude,
+		AllowDrops: config.allowDrops, Exclude: append(append([]string(nil), config.exclude...), schemaLedgerTable),
 	}, nil
 }
 
