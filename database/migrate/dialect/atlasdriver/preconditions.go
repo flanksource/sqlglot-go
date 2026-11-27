@@ -123,12 +123,12 @@ func (d *Dialect) uniquePreconditions(change migrate.Change, idx *schema.Index, 
 	return out, nil
 }
 
-// decodeCached decodes a snapshot for read-only use.
+// decodeCached decodes a snapshot for read-only use: the schema is shared.
 func (d *Dialect) decodeCached(native string) (*schema.Schema, error) {
 	if s, ok := d.cache.get(native); ok {
 		return s, nil
 	}
-	s, err := d.decode(native)
+	s, err := d.evaluate(native)
 	if err != nil {
 		return nil, err
 	}
