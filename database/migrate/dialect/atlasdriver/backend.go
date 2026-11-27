@@ -101,10 +101,14 @@ func (d *Dialect) Exec(ctx context.Context, q engine.Querier, s engine.Statement
 	return d.backend.Exec(ctx, q, s)
 }
 
-// decodeCache keeps the most recent decoded snapshots for read-only use
-// (preconditions), so a plan does not decode the same schema once per change.
+// decodeCache keeps the most recently used evaluated snapshots by content.
+// Evaluating HCL is most of the cost of planning and applying: the engine
+// narrows the same desired and baseline snapshots to every unit, and checks
+// each unit before and after it runs. The cached schemas are shared and never
+// changed; decode hands out copies.
 type decodeCache struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// entries are ordered from least to most recently used.
 	entries []cached
 }
 
@@ -113,13 +117,14 @@ type cached struct {
 	schema *schema.Schema
 }
 
-const decodeCacheSize = 4
+const decodeCacheSize = 32
 
 func (c *decodeCache) get(native string) (*schema.Schema, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, e := range c.entries {
+	for i, e := range c.entries {
 		if e.native == native {
+			c.entries = append(append(c.entries[:i:i], c.entries[i+1:]...), e)
 			return e.schema, true
 		}
 	}

@@ -12,8 +12,18 @@ import (
 
 const nativeFile = "snapshot.hcl"
 
-// decode evaluates a Native snapshot to its single schema.
+// decode evaluates a Native snapshot to its single schema, a copy the caller
+// may change.
 func (d *Dialect) decode(native string) (*schema.Schema, error) {
+	s, err := d.decodeCached(native)
+	if err != nil {
+		return nil, err
+	}
+	return cloneSchema(s), nil
+}
+
+// evaluate parses and evaluates a Native snapshot, uncached.
+func (d *Dialect) evaluate(native string) (*schema.Schema, error) {
 	if strings.TrimSpace(native) == "" {
 		return nil, fmt.Errorf("%s: schema has no Native snapshot", d.Name())
 	}
