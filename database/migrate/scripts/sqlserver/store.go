@@ -66,6 +66,9 @@ CASE WHEN COL_LENGTH('dbo.sqlglot_migrations','state') IS NULL THEN 0 ELSE 1 END
 	return states, rows.Err()
 }
 
+// StoreTables are the dbo tables ensureStore creates for the script ledger.
+var StoreTables = []string{"sqlglot_migrations", "sqlglot_migration_attempts", "sqlglot_observations"}
+
 func ensureStore(ctx context.Context, db sessionDB) error {
 	_, err := db.ExecContext(ctx, `IF OBJECT_ID(N'dbo.sqlglot_migrations',N'U') IS NULL
 CREATE TABLE dbo.sqlglot_migrations(scope nvarchar(256) NOT NULL,path nvarchar(512) NOT NULL,hash varbinary(32) NOT NULL,

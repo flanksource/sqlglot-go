@@ -12,6 +12,7 @@ import (
 	"github.com/flanksource/commons/logger"
 	pgdialect "github.com/flanksource/sqlglot-go/database/migrate/dialect/postgres"
 	sqlitedialect "github.com/flanksource/sqlglot-go/database/migrate/dialect/sqlite"
+	backend "github.com/flanksource/sqlglot-go/database/migrate/scripts/sqlserver"
 	native "github.com/flanksource/sqlglot-go/migrate"
 	"github.com/lib/pq"
 )
@@ -108,6 +109,29 @@ func ForgetRecordedSchemas(ctx context.Context, db *sql.DB, dialect string, sche
 	default:
 		return fmt.Errorf("forget recorded schemas: unsupported dialect %q", dialect)
 	}
+}
+
+// BookkeepingTables names the tables a bundle keeps for itself in schema: the
+// script and security ledgers and the schema ledger. A plan of a desired schema
+// given outside a bundle (pasted HCL or a snapshot) never declares them, so it
+// must leave them alone.
+func BookkeepingTables(dialect, schema string) ([]native.Name, error) {
+	var tables []string
+	switch dialect {
+	case "sqlserver":
+		schema, tables = sqlServerSchema, backend.StoreTables
+	case sqlitedialect.Name:
+		tables = []string{schemaLedgerTable}
+	case pgdialect.Name:
+		tables = metadataTables
+	default:
+		return nil, fmt.Errorf("bookkeeping tables: unsupported dialect %q", dialect)
+	}
+	names := make([]native.Name, len(tables))
+	for i, table := range tables {
+		names[i] = native.Name{Schema: schema, Name: table}
+	}
+	return names, nil
 }
 
 // forgetSchemaLedger empties table when the exists query counts it.

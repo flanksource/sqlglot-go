@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 
 	bundle "github.com/flanksource/sqlglot-go/database/migrate"
 	"github.com/flanksource/sqlglot-go/database/migrate/dialect"
+	"github.com/flanksource/sqlglot-go/migrate"
 	"github.com/flanksource/sqlglot-go/migrate/engine"
 )
 
@@ -54,11 +56,22 @@ func planSchema(ctx context.Context, db *sql.DB, opts Options) (PlanResult, erro
 	if err != nil {
 		return PlanResult{}, err
 	}
-	artifact, err := engine.PlanLive(ctx, db, engine.PlanLiveRequest{
+	request := engine.PlanLiveRequest{
 		Dialect: opts.Dialect, Scope: engine.Scope{Mode: engine.ScopeComplete, Schemas: desired.Schemas}, Desired: desired.Schema,
-	})
+	}
+	artifact, err := engine.PlanLive(ctx, db, request)
 	if err != nil {
 		return PlanResult{}, err
+	}
+	bookkeeping, err := bundle.BookkeepingTables(opts.Dialect, opts.Schema)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if kept := withoutBookkeeping(artifact.Changes, bookkeeping); len(kept) < len(artifact.Changes) {
+		request.Selection, request.SelectNone = kept, len(kept) == 0
+		if artifact, err = engine.PlanLive(ctx, db, request); err != nil {
+			return PlanResult{}, err
+		}
 	}
 	if err := desired.RefuseTouched(artifact.Changes); err != nil {
 		return PlanResult{}, err
@@ -68,6 +81,20 @@ func planSchema(ctx context.Context, db *sql.DB, opts Options) (PlanResult, erro
 		return PlanResult{}, err
 	}
 	return Review(data, opts.Dialect, opts.Schema)
+}
+
+// withoutBookkeeping returns the IDs of the changes that leave the migration's
+// own bookkeeping tables alone. A pasted schema never declares them, so a
+// complete-scope plan would otherwise drop the script ledger (every script
+// would run again) and the schema ledger.
+func withoutBookkeeping(changes []migrate.Change, bookkeeping []migrate.Name) []string {
+	var kept []string
+	for _, c := range changes {
+		if !slices.Contains(bookkeeping, c.Object) {
+			kept = append(kept, c.ID)
+		}
+	}
+	return kept
 }
 
 // desiredSnapshot reads the desired state of the target's schema, which must
